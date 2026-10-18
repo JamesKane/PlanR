@@ -212,7 +212,7 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
         tables.pages_used
     );
     if let Some(f) = fb {
-        mark_handoff(&f, 0);
+        mark_handoff(&f, 0, true);
     }
     // The final GetMemoryMap must fit without allocating.
     let need = bs.memory_map_size() + MAP_SLACK * 64;
@@ -321,9 +321,16 @@ fn build_tables<'a>(
 /// kernel. Nothing here may allocate.
 fn exit_and_jump(mut st: SystemTable<Boot>, image: Handle, mut p: Prepared) -> ! {
     pool::disable();
+    // SAFETY: `info` was written in `prepare`; nothing else aliases it.
+    let fb = unsafe { (*p.info).framebuffer() };
+    let mark = |pos, ok| {
+        if let Some(f) = &fb {
+            mark_handoff(f, pos, ok);
+        }
+    };
     // SAFETY: `regions` points at `capacity` Regions inside the BootInfo block.
     let regions = unsafe { core::slice::from_raw_parts_mut(p.regions, p.capacity) };
-    for _ in 0..4 {
+    for _ in 0..8 {
         let fetched = {
             let bs = st.boot_services();
             bs.memory_map(&mut p.map_buf)
@@ -331,14 +338,12 @@ fn exit_and_jump(mut st: SystemTable<Boot>, image: Handle, mut p: Prepared) -> !
                 .and_then(|map| Some((memmap::convert(&map, regions)?, map.key())))
         };
         let Some((n, key)) = fetched else { break };
-        // SAFETY: `info` was written in `prepare`; nothing else aliases it.
+        // SAFETY: as above.
         unsafe { (*p.info).memory = Slice::new(phys_to_virt(p.regions as u64) as *const Region, n) };
+        mark(1, true);
         match st.exit_boot_services(image, key) {
             Ok(_runtime) => {
-                // SAFETY: as above.
-                if let Some(f) = unsafe { (*p.info).framebuffer() } {
-                    mark_handoff(&f, 1);
-                }
+                mark(2, true);
                 // SAFETY: boot services are gone; the handoff was built for this.
                 unsafe { handoff::jump(&p.handoff) }
             }
@@ -346,7 +351,10 @@ fn exit_and_jump(mut st: SystemTable<Boot>, image: Handle, mut p: Prepared) -> !
             Err((again, _)) => st = again,
         }
     }
-    println!(st, "{ERROR_MARKER}: could not exit boot services");
+    // Shown on the screen too, for machines whose console is only that.
+    mark(1, false);
+    println!(st, "{ERROR_MARKER}: could not exit boot services; powering off in 15 s");
+    st.boot_services().stall(15_000_000);
     st.runtime_services().reset(ResetType::Shutdown, Status::ABORTED)
 }
 
@@ -358,12 +366,13 @@ pub(crate) fn read_file(root: &File<'_>, path: &str) -> uefi::Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Paints green square `pos` along the top of the framebuffer handed to
-/// the kernel, left of the kernel's own progress marks
-/// (`kernel/src/port/early.rs`): 0 just before exiting boot services, 1
-/// just after, before the jump. If they show, the kernel was given the
+/// Paints square `pos` along the top of the framebuffer handed to the
+/// kernel, left of the kernel's own progress marks
+/// (`kernel/src/port/early.rs`), green if `ok`, else magenta: 0 when the
+/// kernel is ready to start, 1 with the final memory map in hand, 2 after
+/// exiting boot services. If they show, the kernel was given the
 /// framebuffer on screen.
-fn mark_handoff(f: &Framebuffer, pos: usize) {
+fn mark_handoff(f: &Framebuffer, pos: usize, ok: bool) {
     const SIZE: usize = 24;
     const GAP: usize = 8;
     let (Ok(stride), Ok(width), Ok(height)) = (
@@ -373,6 +382,8 @@ fn mark_handoff(f: &Framebuffer, pos: usize) {
     ) else {
         return;
     };
+    // Same bytes in RGBX and BGRX order.
+    let color: u32 = if ok { 0x0000_ff00 } else { 0x00ff_00ff };
     let x0 = GAP + pos * (SIZE + GAP);
     if x0 + SIZE > width || GAP + SIZE > height {
         return;
@@ -380,7 +391,7 @@ fn mark_handoff(f: &Framebuffer, pos: usize) {
     for y in GAP..GAP + SIZE {
         for x in x0..x0 + SIZE {
             // SAFETY: inside the framebuffer, which UEFI identity-maps.
-            unsafe { (f.phys as *mut u32).add(y * stride + x).write_volatile(0x0000_ff00) };
+            unsafe { (f.phys as *mut u32).add(y * stride + x).write_volatile(color) };
         }
     }
 }

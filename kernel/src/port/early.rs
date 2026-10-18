@@ -9,12 +9,12 @@ use bootinfo::{BootInfo, phys_to_virt};
 
 use crate::arch;
 
-/// The stages, in order. Positions 0 and 1 are 9boot's: before and after
-/// it exits boot services.
+/// The stages, in order. Positions 0 to 2 are 9boot's: ready, final
+/// memory map, boot services exited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
     /// The first thing `kmain` does, before the trap handlers exist.
-    Entered = 2,
+    Entered = 3,
     Traps,
     BootInfoValid,
     Memory,
