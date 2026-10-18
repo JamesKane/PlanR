@@ -128,6 +128,31 @@ fn find_redistributor(va: u64, len: u64, aff: u32) -> Option<u64> {
     None
 }
 
+/// GIC-600/700 `GICR_PWRR` (implementation defined): bit 0 asks for the
+/// redistributor to be powered down, bit 1 reports that it is.
+const GICR_PWRR: u64 = 0x0024;
+
+/// Prints what each redistributor frame's `GICR_TYPER` and `GICR_PWRR` read
+/// as, every 128 KiB (a v3 frame; v4 frames are twice that), for
+/// diagnosing a CPU whose redistributor the walk did not find.
+fn dump_redistributors(aff: u32) {
+    crate::println!("gic: no redistributor with affinity {aff:#x}; TYPER/PWRR every 128 KiB:");
+    for (va, len) in &REGIONS[..NREGIONS.load(Ordering::Acquire)] {
+        let (va, len) = (va.load(Ordering::Relaxed), len.load(Ordering::Relaxed));
+        let mut off = 0;
+        while off + 2 * SGI_FRAME <= len {
+            crate::print!(
+                " {:#x}:{:x}/{:x}",
+                off,
+                rd64(va + off + GICR_TYPER),
+                rd32(va + off + GICR_PWRR)
+            );
+            off += 2 * SGI_FRAME;
+        }
+        crate::println!();
+    }
+}
+
 /// Maps the redistributor regions: the MADT's GICR entries, or failing
 /// those, each GICC's own redistributor.
 fn map_redistributors(madt: &Madt<'_>) -> Result<(), &'static str> {
@@ -162,13 +187,30 @@ fn add_region(n: usize, base: u64, len: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Finds and records the calling CPU's redistributor.
+/// How long a CPU waits for its redistributor to appear.
+const REDISTRIBUTOR_WAIT_MS: u64 = 100;
+
+/// Finds and records the calling CPU's redistributor. The firmware may
+/// still be powering it up when the CPU gets here (the Orange Pi's A520
+/// cluster), so the walk is retried for a while before giving up.
 fn attach_redistributor() -> Result<(), &'static str> {
     let aff = packed_affinity(mpidr());
-    let rd = REGIONS[..NREGIONS.load(Ordering::Acquire)]
-        .iter()
-        .find_map(|(va, len)| find_redistributor(va.load(Ordering::Relaxed), len.load(Ordering::Relaxed), aff))
-        .ok_or("no redistributor for this CPU")?;
+    let find = || {
+        REGIONS[..NREGIONS.load(Ordering::Acquire)]
+            .iter()
+            .find_map(|(va, len)| find_redistributor(va.load(Ordering::Relaxed), len.load(Ordering::Relaxed), aff))
+    };
+    let deadline = super::counter() + super::counter_frequency() * REDISTRIBUTOR_WAIT_MS / 1000;
+    let rd = loop {
+        if let Some(rd) = find() {
+            break rd;
+        }
+        if super::counter() > deadline {
+            dump_redistributors(aff);
+            return Err("no redistributor for this CPU");
+        }
+        core::hint::spin_loop();
+    };
     GICR[cpu::current().index()].store(rd, Ordering::Relaxed);
     Ok(())
 }
