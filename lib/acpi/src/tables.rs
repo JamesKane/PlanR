@@ -501,7 +501,8 @@ mod tests {
         assert_eq!(s.base.address, 0x0900_0000);
     }
 
-    /// Mirrors the Orange Pi 6 Plus DBG2: one SBSA UART, `\_SB.COM2`.
+    /// Mirrors the Orange Pi 6 Plus DBG2 (`oracle/acpi-corpus/opi6p`): one
+    /// PL011, `\_SB.COM2`.
     #[test]
     fn dbg2_device() {
         let ns = b"\\_SB.COM2\0";
@@ -516,7 +517,7 @@ mod tests {
         dev[4..6].copy_from_slice(&(ns.len() as u16).to_le_bytes());
         dev[6..8].copy_from_slice(&ns_off.to_le_bytes());
         dev[12..14].copy_from_slice(&0x8000u16.to_le_bytes());
-        dev[14..16].copy_from_slice(&0x000eu16.to_le_bytes());
+        dev[14..16].copy_from_slice(&0x0003u16.to_le_bytes());
         dev[18..20].copy_from_slice(&gas_off.to_le_bytes());
         dev[20..22].copy_from_slice(&size_off.to_le_bytes());
         dev.extend(gas(0, 3, 0x040d_0000));
@@ -529,7 +530,7 @@ mod tests {
         let acpi = Acpi::new(&m, 0x1000).unwrap();
         let d: Vec<_> = acpi.dbg2().collect();
         assert_eq!(d.len(), 1);
-        assert_eq!(d[0].uart(), Some(UartKind::SbsaGeneric));
+        assert_eq!(d[0].uart(), Some(UartKind::Pl011));
         assert_eq!(d[0].base.unwrap().address, 0x040d_0000);
         assert_eq!(d[0].namespace, "\\_SB.COM2");
     }

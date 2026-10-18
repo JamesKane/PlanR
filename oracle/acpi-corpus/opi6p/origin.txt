@@ -1,0 +1,10 @@
+# Copied from /sys/firmware/acpi/tables by oracle/acpi-corpus/capture.sh.
+captured: 2026-10-18
+kernel: Linux 7.0.0-41-cix
+sys_vendor: Cix Technology Group Co., Ltd.
+product_name: CIX Phecda Board
+board_vendor: Cix Technology Group Co., Ltd.
+board_name: CIX Phecda Board
+bios_vendor: Cix Technology Group Co., Ltd.
+bios_version: 1.3
+bios_date: 11/13/2025

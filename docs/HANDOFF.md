@@ -24,8 +24,10 @@ Where work stands, for picking it up in a new session. Last updated
   10. `7e61597` Stack-overflow reports on both arches (arm64 vectors test bit 16 of
       the frame address and switch to an overflow stack); the boot CPU
       moves to a guarded kernel stack.
-  11. ACPI corpus: `oracle/acpi-corpus` holds the QEMU q35 and virt
-      tables (`cargo xtask acpidump`), checked by `lib/acpi`'s corpus test.
+  11. `8aba1b4` ACPI corpus: `oracle/acpi-corpus` holds the QEMU q35 and
+      virt tables (`cargo xtask acpidump`), checked by `lib/acpi`'s corpus
+      test. The Ryzen (`ryzen-x870e`) and Orange Pi (`opi6p`) sets
+      followed in the next commit.
 - **Tree:** clean. `cargo xtask ci` is green: fmt, pedantic clippy with
   `-D warnings`, the dependency check, host tests, and every QEMU boot
   test on every profile.
@@ -36,12 +38,7 @@ Where work stands, for picking it up in a new session. Last updated
 
 In the suggested order:
 
-1. **Board ACPI sets:** the user runs `oracle/acpi-corpus/capture.sh` as
-   root on the Orange Pi (`opi6p`) and the Ryzen (`ryzen-x870e`). It only
-   reads sysfs. Then unpack the tarballs into the corpus, run
-   `UPDATE_CORPUS=1 cargo test -p acpi --test corpus`, and review the
-   summaries. Expect parser fixes: the QEMU tables already found one.
-2. **Reference boards:** check SMP, the CPU protections, the framebuffer
+1. **Reference boards:** check SMP, the CPU protections, the framebuffer
    console and log-ring survival on the Orange Pi 6 Plus and the Ryzen.
 
 ## Things to know
@@ -59,6 +56,18 @@ In the suggested order:
   `xtask` copies the linked kernel there with the symbol table written in.
   The block is 512 KiB (debug kernels use about 200 KiB); `xtask` prints
   the usage and fails with a clear error if it overflows.
+- **What the board ACPI sets show** (`oracle/acpi-corpus`):
+  - The Orange Pi has no SPCR. Its console comes from DBG2: a PL011 at
+    0x040D_0000, `\_SB.COM2`.
+  - Its IORT has named components (the DPUs) with several single
+    mappings each, one per stream ID. `map_id` returns only the first,
+    so P4's SMMU binding needs an iterator over all of a node's IDs.
+  - Its IORT also has a type-6 RMR (reserved memory range) node, which
+    is parsed only as `Other(6)`.
+  - Neither board's PPTT lists caches.
+  - The Orange Pi's MCFG has three windows on segment 0 that share one
+    ECAM base, with different bus ranges.
+  - The Ryzen's MADT matches Linux's APIC IDs exactly.
 - **Kernel stacks** come only from `mm::alloc_stack`, in 128 KiB slots.
   arm64's overflow check relies on every stack an exception can arrive on
   following that layout and being `mm::STACK_PAGES` long. A future thread

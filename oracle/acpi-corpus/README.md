@@ -10,6 +10,8 @@ disassembly as the oracle (docs/TESTING.md).
 |---|---|
 | `qemu-q35` | QEMU q35 with OVMF, 4 CPUs (`cargo xtask acpidump`) |
 | `qemu-virt` | QEMU virt (GICv3, EL2) with AAVMF, 4 CPUs (`cargo xtask acpidump`) |
+| `ryzen-x870e` | Gigabyte X870E AORUS ELITE WIFI7, Ryzen 9 7900X, AMI BIOS F2 (`capture.sh`). VFCT, the Radeon iGPU's video BIOS image, is left out |
+| `opi6p` | Orange Pi 6 Plus (CIX P1, "CIX Phecda Board"), CIX firmware 1.3 (`capture.sh`) |
 
 ## Layout
 
@@ -28,10 +30,17 @@ when a signature repeats (`SSDT1`, `SSDT2`, …).
   the tables itself and builds those two. The `synthesized_layout_matches_captured`
   test checks that this placement reads the same as an exact replay.
 
+Leave out tables that embed vendor firmware images (VFCT) or licence
+keys (MSDM). The parser does not need them, and they are not ours to
+publish.
+
 ## Adding or refreshing a set
 
-1. QEMU: `cargo xtask acpidump`. Board: copy `capture.sh` over, run
-   `sudo sh capture.sh <name>`, copy `<name>.tar` back and unpack it here.
+1. QEMU: `cargo xtask acpidump`. Board: copy `capture.sh` to the board's
+   `/tmp`, run `cd /tmp && sudo sh capture.sh <name>` there, copy
+   `<name>.tar` back and unpack it here. The script writes into the
+   current directory, so on the Ryzen run it only from `/tmp` (tmpfs),
+   never from the Fedora disk or the data array.
 2. `UPDATE_CORPUS=1 cargo test -p acpi --test corpus`, then review the
    `summary.txt` diff. A changed line is a firmware change or a parser
    change, and either one should be explained in the commit.

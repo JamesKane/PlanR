@@ -179,8 +179,8 @@ DBG2 device fields read two bytes early, a bug the synthetic unit test
 shared. The `acpidump` boot test keeps the dump path working.
 
 **Remaining:**
-BTI once the toolchain can emit landing pads; board ACPI sets; checking SMP on the reference
-boards.
+BTI once the toolchain can emit landing pads; checking SMP on the
+reference boards.
 
 - **`9boot` (UEFI loader, ours):** our own UEFI bindings (protocol
   GUIDs, Boot/Runtime Services tables, GOP, Simple File System, Loaded Image).

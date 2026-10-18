@@ -1,0 +1,133 @@
+rsdp: revision 2, OEM "PLANR"
+table: APIC rev 5 OEM "CIXTEK" "SKY1EDK2"
+table: CSRT rev 0 OEM "CIXTEK" "SKY1EDK2"
+table: DBG2 rev 0 OEM "CIXTEK" "SKY1EDK2"
+table: FACP rev 6 OEM "CIXTEK" "SKY1EDK2"
+table: GTDT rev 3 OEM "CIXTEK" "SKY1EDK2"
+table: IORT rev 5 OEM "CIXTEK" "SKY1EDK2"
+table: MCFG rev 1 OEM "CIXTEK" "SKY1EDK2"
+table: PCCT rev 2 OEM "CIXTEK" "SKY1EDK2"
+table: PPTT rev 2 OEM "CIXTEK" "SKY1EDK2"
+table: SDEI rev 1 OEM "CIXTEK" "SKY1EDK2"
+table: SSDT rev 2 OEM "CIXTEK" "SKY1EDK2"
+table: SSDT rev 2 OEM "CIXTEK" "SKY1EDK2"
+madt: 12 usable cpus
+madt: Gicc { uid: 0, mpidr: 2560, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 1, mpidr: 2816, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 2, mpidr: 0, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 3, mpidr: 256, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 4, mpidr: 512, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 5, mpidr: 768, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 6, mpidr: 1024, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 7, mpidr: 1280, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 8, mpidr: 1536, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 9, mpidr: 1792, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 10, mpidr: 2048, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 11, mpidr: 2304, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicd { id: 0, base: 234946560, version: 4 }
+madt: Gicr { base: 235470848, length: 3145728 }
+madt: GicIts { id: 0, base: 235208704 }
+fadt: revision 6.3
+fadt: dsdt present, facs absent
+fadt: boot flags 0x0, psci Some(Smc)
+fadt: reset None
+gtdt: Gtdt { secure_el1: TimerIrq { gsiv: 29, edge: false, active_low: true, always_on: false }, nonsecure_el1: TimerIrq { gsiv: 30, edge: false, active_low: true, always_on: false }, virtual_el1: TimerIrq { gsiv: 27, edge: false, active_low: true, always_on: false }, nonsecure_el2: TimerIrq { gsiv: 26, edge: false, active_low: true, always_on: false }, virtual_el2: Some(TimerIrq { gsiv: 28, edge: false, active_low: true, always_on: false }) }
+dbg2: Dbg2Device { port_type: 32768, port_subtype: 3, base: Some(Gas { space: SystemMemory, bit_width: 32, bit_offset: 0, access_size: 3, address: 67960832 }), namespace: "\\_SB.COM2" }
+mcfg: McfgEntry { base: 536870912, segment: 0, bus_start: 192, bus_end: 255 }
+mcfg: McfgEntry { base: 536870912, segment: 0, bus_start: 96, bus_end: 127 }
+mcfg: McfgEntry { base: 536870912, segment: 0, bus_start: 48, bus_end: 79 }
+pptt: Processor(ProcessorNode { offset: 36, flags: ProcessorFlags(3), parent: None, acpi_id: 0, resources: [] })
+pptt: Processor(ProcessorNode { offset: 56, flags: ProcessorFlags(18), parent: Some(36), acpi_id: 1, resources: [] })
+pptt: Processor(ProcessorNode { offset: 76, flags: ProcessorFlags(26), parent: Some(56), acpi_id: 0, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 96, flags: ProcessorFlags(26), parent: Some(56), acpi_id: 1, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 116, flags: ProcessorFlags(18), parent: Some(36), acpi_id: 2, resources: [] })
+pptt: Processor(ProcessorNode { offset: 136, flags: ProcessorFlags(26), parent: Some(116), acpi_id: 2, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 156, flags: ProcessorFlags(26), parent: Some(116), acpi_id: 3, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 176, flags: ProcessorFlags(26), parent: Some(116), acpi_id: 4, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 196, flags: ProcessorFlags(26), parent: Some(116), acpi_id: 5, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 216, flags: ProcessorFlags(18), parent: Some(36), acpi_id: 3, resources: [] })
+pptt: Processor(ProcessorNode { offset: 236, flags: ProcessorFlags(26), parent: Some(216), acpi_id: 6, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 256, flags: ProcessorFlags(26), parent: Some(216), acpi_id: 7, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 276, flags: ProcessorFlags(18), parent: Some(36), acpi_id: 4, resources: [] })
+pptt: Processor(ProcessorNode { offset: 296, flags: ProcessorFlags(26), parent: Some(276), acpi_id: 8, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 316, flags: ProcessorFlags(26), parent: Some(276), acpi_id: 9, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 336, flags: ProcessorFlags(18), parent: Some(36), acpi_id: 5, resources: [] })
+pptt: Processor(ProcessorNode { offset: 356, flags: ProcessorFlags(26), parent: Some(336), acpi_id: 10, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 376, flags: ProcessorFlags(26), parent: Some(336), acpi_id: 11, resources: [] })
+pptt:   caches []
+iort: node 48 rev 0 id 0: ItsGroup(ItsIds([0, 0, 0, 0]))
+iort: node 72 rev 2 id 0: SmmuV3 { base: 184614912, model: 0, coherent: true, event_gsiv: 107, pri_gsiv: 116, gerr_gsiv: 112, sync_gsiv: 108 }
+iort:   IdMapping { input_base: 0, count: 65536, output_base: 0, output: 48, single: false }
+iort: node 160 rev 0 id 0: RootComplex { segment: 0, coherent: true, ats: true, address_bits: 0 }
+iort:   IdMapping { input_base: 0, count: 65536, output_base: 0, output: 72, single: false }
+iort: node 220 rev 2 id 1: SmmuV3 { base: 186318848, model: 0, coherent: true, event_gsiv: 141, pri_gsiv: 150, gerr_gsiv: 146, sync_gsiv: 142 }
+iort: node 288 rev 0 id 0: NamedComponent { name: "\\_SB_.DPU0", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 0, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 1, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 3, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 4, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 5, output: 220, single: true }
+iort: node 448 rev 0 id 0: NamedComponent { name: "\\_SB_.AEU0", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 2, output: 220, single: true }
+iort: node 608 rev 0 id 0: NamedComponent { name: "\\_SB_.DPU1", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 6, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 7, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 9, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 10, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 11, output: 220, single: true }
+iort: node 768 rev 0 id 0: NamedComponent { name: "\\_SB_.AEU1", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 8, output: 220, single: true }
+iort: node 928 rev 0 id 0: NamedComponent { name: "\\_SB_.DPU2", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 12, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 13, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 15, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 16, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 17, output: 220, single: true }
+iort: node 1088 rev 0 id 0: NamedComponent { name: "\\_SB_.AEU2", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 14, output: 220, single: true }
+iort: node 1248 rev 0 id 0: NamedComponent { name: "\\_SB_.DPU3", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 18, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 19, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 21, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 22, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 23, output: 220, single: true }
+iort: node 1408 rev 0 id 0: NamedComponent { name: "\\_SB_.AEU3", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 20, output: 220, single: true }
+iort: node 1568 rev 0 id 0: NamedComponent { name: "\\_SB_.DPU4", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 24, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 25, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 27, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 28, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 29, output: 220, single: true }
+iort: node 1728 rev 0 id 0: NamedComponent { name: "\\_SB_.AEU4", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 26, output: 220, single: true }
+iort: node 1888 rev 0 id 0: NamedComponent { name: "\\_SB_.NPU0", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 30, output: 220, single: true }
+iort: node 2048 rev 0 id 0: NamedComponent { name: "\\_SB_.ISPM", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 31, output: 220, single: true }
+iort: node 2208 rev 0 id 0: NamedComponent { name: "\\_SB_.CBD0", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 33, output: 220, single: true }
+iort: node 2368 rev 0 id 0: NamedComponent { name: "\\_SB_.CBD2", coherent: true, address_bits: 40 }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 34, output: 220, single: true }
+iort: node 2528 rev 3 id 0: Other(6)
+iort:   IdMapping { input_base: 0, count: 1, output_base: 0, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 1, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 6, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 7, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 12, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 13, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 18, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 19, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 24, output: 220, single: true }
+iort:   IdMapping { input_base: 0, count: 1, output_base: 25, output: 220, single: true }

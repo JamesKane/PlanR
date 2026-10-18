@@ -2,12 +2,13 @@
 # Copies a running Linux system's ACPI tables into a tarball for
 # oracle/acpi-corpus. Run on the board as root:
 #
-#     sudo sh capture.sh <set-name>      # e.g. opi6p, ryzen-x870e
+#     cd /tmp && sudo sh capture.sh <set-name>    # e.g. opi6p, ryzen-x870e
 #
 # Only reads: /sys/firmware/acpi/tables (the tables as firmware handed them
 # over) and /sys/class/dmi/id (board and firmware versions). Writes one
 # tarball, <set-name>.tar, in the current directory, owned by the user who
-# ran sudo.
+# ran sudo. Run it from /tmp: on the Ryzen that is tmpfs, and nothing may
+# be written to its Fedora disk or data array.
 set -eu
 
 name=${1:?usage: sudo sh capture.sh <set-name>}

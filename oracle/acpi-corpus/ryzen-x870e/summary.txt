@@ -1,0 +1,73 @@
+rsdp: revision 2, OEM "PLANR"
+table: APIC rev 6 OEM "ALASKA" "A M I"
+table: BGRT rev 1 OEM "ALASKA" "A M I"
+table: FACP rev 6 OEM "ALASKA" "A M I"
+table: FIDT rev 1 OEM "ALASKA" "A M I"
+table: FPDT rev 1 OEM "ALASKA" "A M I"
+table: HPET rev 1 OEM "ALASKA" "A M I"
+table: HWIN rev 0 OEM "GBT" "AMD"
+table: IVRS rev 2 OEM "AMD" "AmdTable"
+table: MCFG rev 1 OEM "ALASKA" "A M I"
+table: SSDT rev 2 OEM "GBT" "GSWApp"
+table: SSDT rev 2 OEM "AMD" "CPMCMN"
+table: SSDT rev 2 OEM "AMD" "AOD"
+table: SSDT rev 2 OEM "AMD" "MEMTOOL0"
+table: SSDT rev 2 OEM "AMD" "CPMMSOSC"
+table: SSDT rev 2 OEM "AMD" "AMDWOV"
+table: SSDT rev 2 OEM "AMD" "CPMACPV4"
+table: SSDT rev 2 OEM "AMD" "Splinter"
+table: SSDT rev 2 OEM "ALASKA" "CPUSSDT"
+table: SSDT rev 2 OEM "AMD" "AMD CPU"
+table: SSDT rev 2 OEM "AMD" "DISCUSB4"
+table: SSDT rev 2 OEM "AMD" "CPMWLRC"
+table: SSDT rev 2 OEM "AMD" "CPMDFIG2"
+table: SSDT rev 2 OEM "AMD" "CDFAAIG2"
+table: SSDT rev 2 OEM "AMD" "CPMDFDG1"
+table: TPM2 rev 4 OEM "ALASKA" "A M I"
+table: WDRT rev 1 OEM "ALASKA" "A M I"
+table: WPBT rev 1 OEM "ALASKA" "A M I"
+table: WSMT rev 1 OEM "ALASKA" "A M I"
+madt: 24 usable cpus
+madt: LocalApic { uid: 0, apic_id: 0, enabled: true, online_capable: false }
+madt: LocalApic { uid: 2, apic_id: 2, enabled: true, online_capable: false }
+madt: LocalApic { uid: 4, apic_id: 4, enabled: true, online_capable: false }
+madt: LocalApic { uid: 6, apic_id: 6, enabled: true, online_capable: false }
+madt: LocalApic { uid: 8, apic_id: 8, enabled: true, online_capable: false }
+madt: LocalApic { uid: 10, apic_id: 10, enabled: true, online_capable: false }
+madt: LocalApic { uid: 12, apic_id: 16, enabled: true, online_capable: false }
+madt: LocalApic { uid: 14, apic_id: 18, enabled: true, online_capable: false }
+madt: LocalApic { uid: 16, apic_id: 20, enabled: true, online_capable: false }
+madt: LocalApic { uid: 18, apic_id: 22, enabled: true, online_capable: false }
+madt: LocalApic { uid: 20, apic_id: 24, enabled: true, online_capable: false }
+madt: LocalApic { uid: 22, apic_id: 26, enabled: true, online_capable: false }
+madt: LocalApic { uid: 1, apic_id: 1, enabled: true, online_capable: false }
+madt: LocalApic { uid: 3, apic_id: 3, enabled: true, online_capable: false }
+madt: LocalApic { uid: 5, apic_id: 5, enabled: true, online_capable: false }
+madt: LocalApic { uid: 7, apic_id: 7, enabled: true, online_capable: false }
+madt: LocalApic { uid: 9, apic_id: 9, enabled: true, online_capable: false }
+madt: LocalApic { uid: 11, apic_id: 11, enabled: true, online_capable: false }
+madt: LocalApic { uid: 13, apic_id: 17, enabled: true, online_capable: false }
+madt: LocalApic { uid: 15, apic_id: 19, enabled: true, online_capable: false }
+madt: LocalApic { uid: 17, apic_id: 21, enabled: true, online_capable: false }
+madt: LocalApic { uid: 19, apic_id: 23, enabled: true, online_capable: false }
+madt: LocalApic { uid: 21, apic_id: 25, enabled: true, online_capable: false }
+madt: LocalApic { uid: 23, apic_id: 27, enabled: true, online_capable: false }
+madt: LocalApic { uid: 24, apic_id: 0, enabled: false, online_capable: false }
+madt: LocalApic { uid: 25, apic_id: 0, enabled: false, online_capable: false }
+madt: LocalApic { uid: 26, apic_id: 0, enabled: false, online_capable: false }
+madt: LocalApic { uid: 27, apic_id: 0, enabled: false, online_capable: false }
+madt: LocalApic { uid: 28, apic_id: 0, enabled: false, online_capable: false }
+madt: LocalApic { uid: 29, apic_id: 0, enabled: false, online_capable: false }
+madt: LocalApic { uid: 30, apic_id: 0, enabled: false, online_capable: false }
+madt: LocalApic { uid: 31, apic_id: 0, enabled: false, online_capable: false }
+madt: LocalApicNmi { uid: 255, flags: MpsFlags(5), lint: 1 }
+madt: IoApic { id: 32, address: 4273995776, gsi_base: 0 }
+madt: IoApic { id: 33, address: 4273999872, gsi_base: 24 }
+madt: InterruptOverride { bus: 0, source: 0, gsi: 2, flags: MpsFlags(0) }
+madt: InterruptOverride { bus: 0, source: 9, gsi: 9, flags: MpsFlags(15) }
+fadt: revision 6.5
+fadt: dsdt present, facs present
+fadt: boot flags 0x0, psci None
+fadt: reset Some((Gas { space: SystemIo, bit_width: 8, bit_offset: 0, access_size: 0, address: 178 }, 190))
+hpet: Hpet { block_id: 270696961, base: Gas { space: SystemMemory, bit_width: 64, bit_offset: 0, access_size: 0, address: 4275044352 }, number: 0, min_tick: 14318 }
+mcfg: McfgEntry { base: 3758096384, segment: 0, bus_start: 0, bus_end: 255 }

@@ -1,0 +1,10 @@
+# Copied from /sys/firmware/acpi/tables by oracle/acpi-corpus/capture.sh.
+captured: 2026-10-18
+kernel: Linux 7.2.7-200.fc44.x86_64
+sys_vendor: Gigabyte Technology Co., Ltd.
+product_name: X870E AORUS ELITE WIFI7
+board_vendor: Gigabyte Technology Co., Ltd.
+board_name: X870E AORUS ELITE WIFI7
+bios_vendor: American Megatrends International, LLC.
+bios_version: F2
+bios_date: 08/14/2024
