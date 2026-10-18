@@ -60,11 +60,11 @@ See [ADR 0001](adr/0001-core-alloc-only.md). In practice:
   `alloc`. It does the jobs `std`, libc and lib9 used to do.
 - We write our own UEFI loader, ACPI tables and AML interpreter, virtio, IP
   stack, crypto, TLS, compression, regexp, graphics, fonts and so on.
-- **Host-side tools are a separate zone.** Build tools (`xtask`) and test
-  oracles run on the development host and never ship. Whether they may use
-  host `std` and the host's system libraries is open question Q1. The
-  current proposal: host `std` yes, crates.io no, and system libraries such
-  as OpenSSL only inside the oracle harness.
+- **Host-side tools are a separate zone** ([ADR 0006](adr/0006-host-zone-tools.md)).
+  Build tools (`xtask`) and test oracles run on the development host and
+  never ship. They may use host `std` and host programs (QEMU, OpenSSL,
+  plan9port, …). They may not pull unauditable dependency chains (crates.io,
+  git) into the source.
 - **Foreign code is quarantined.** Running upstream software (LLVM, rustc,
   its `std`) on Plan R for self-hosting is "foreign" code. It is built from
   source under `/sys/src/foreign` against APE2 and is not part of Plan R
