@@ -5,7 +5,7 @@
 //! TSC-deadline mode when available, so a deadline is just a TSC value;
 //! otherwise it is a one-shot count calibrated against the TSC.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use acpi::{Madt, MadtEntry};
 
@@ -43,6 +43,8 @@ const LVT_NMI: u32 = 0b100 << 8;
 const LVT_LEVEL: u32 = 1 << 15;
 const LVT_ACTIVE_LOW: u32 = 1 << 13;
 const LVT_TSC_DEADLINE: u32 = 0b10 << 17;
+const ICR_INIT: u32 = 0b101 << 8;
+const ICR_STARTUP: u32 = 0b110 << 8;
 const ICR_PENDING: u32 = 1 << 12;
 const ICR_ASSERT: u32 = 1 << 14;
 const ICR_SELF: u32 = 0b01 << 18;
@@ -52,6 +54,8 @@ const DIVIDE_BY_1: u32 = 0b1011;
 static MMIO: AtomicU64 = AtomicU64::new(0);
 static X2APIC: AtomicBool = AtomicBool::new(false);
 static TSC_DEADLINE: AtomicBool = AtomicBool::new(false);
+/// LINT1's setting, from the MADT, for every CPU.
+static LINT1: AtomicU32 = AtomicU32::new(LVT_MASKED);
 /// Local APIC timer ticks per second, for one-shot count mode.
 static TIMER_HZ: AtomicU64 = AtomicU64::new(0);
 /// TSC ticks per second.
@@ -99,16 +103,40 @@ fn send(low: u32, dest: u32) {
         // SAFETY: one ICR write sends the IPI.
         unsafe { cpu::wrmsr(0x830, u64::from(dest) << 32 | u64::from(low)) };
     } else {
+        // Interrupts off: a handler sending an IPI between the two writes
+        // would change the destination under us.
+        let pl = super::splhi();
         while read(ICR_LOW) & ICR_PENDING != 0 {
             core::hint::spin_loop();
         }
         write(ICR_HIGH, dest << 24);
         write(ICR_LOW, low);
+        super::splx(pl);
     }
 }
 
 pub(crate) fn self_ipi(vector: u8) {
     send(u32::from(vector) | ICR_ASSERT | ICR_SELF, 0);
+}
+
+/// Sends fixed interrupt `vector` to the CPU with APIC ID `dest`.
+pub(crate) fn ipi(dest: u32, vector: u8) {
+    send(u32::from(vector) | ICR_ASSERT, dest);
+}
+
+/// Sends INIT to `dest`, which resets it into waiting for a start-up IPI.
+pub(crate) fn send_init(dest: u32) {
+    send(ICR_INIT | ICR_ASSERT, dest);
+}
+
+/// Sends a start-up IPI: `dest` starts in real mode at `page * 4096`.
+pub(crate) fn send_startup(dest: u32, page: u8) {
+    send(ICR_STARTUP | ICR_ASSERT | u32::from(page), dest);
+}
+
+/// True if an xAPIC can address `id` (x2APIC IDs are 32 bits).
+pub(crate) fn addressable(id: u32) -> bool {
+    X2APIC.load(Ordering::Relaxed) || id < 0xff
 }
 
 fn error() {
@@ -117,9 +145,10 @@ fn error() {
     println!("lapic: error, status {:#x}", read(ESR));
 }
 
-/// Enables this CPU's local APIC with every local interrupt masked except
-/// NMI. `madt` supplies the xAPIC address and the NMI pin. `allow_x2apic`
-/// and `allow_deadline` permit those modes where the CPU has them.
+/// Enables the boot CPU's local APIC with every local interrupt masked
+/// except NMI. `madt` supplies the xAPIC address and the NMI pin.
+/// `allow_x2apic` and `allow_deadline` permit those modes where the CPU has
+/// them.
 pub(crate) fn init(madt: &Madt<'_>, allow_x2apic: bool, allow_deadline: bool) -> Result<(), &'static str> {
     let features = cpu::cpuid(1, 0);
     if features.edx & (1 << 9) == 0 {
@@ -128,37 +157,49 @@ pub(crate) fn init(madt: &Madt<'_>, allow_x2apic: bool, allow_deadline: bool) ->
     let base = cpu::rdmsr(IA32_APIC_BASE);
     // Firmware may already have switched to x2APIC; there is no way back.
     let x2 = base & APIC_BASE_X2APIC != 0 || (allow_x2apic && features.ecx & (1 << 21) != 0);
-    if x2 {
-        // xAPIC to x2APIC is a legal transition; the reverse is not.
-        // SAFETY: enables the APIC in x2APIC mode; nothing uses it yet.
-        unsafe { cpu::wrmsr(IA32_APIC_BASE, base | APIC_BASE_ENABLE | APIC_BASE_X2APIC) };
-        X2APIC.store(true, Ordering::Relaxed);
-    } else {
+    if !x2 {
         let phys = match madt.local_apic_address() {
             0 => base & 0xf_ffff_f000,
             a => a,
         };
         let va = mm::map_phys(phys, mm::PAGE, MapKind::Device).ok_or("cannot map the local APIC")?;
         MMIO.store(va, Ordering::Relaxed);
-        // SAFETY: enables the APIC at its current address.
-        unsafe { cpu::wrmsr(IA32_APIC_BASE, base | APIC_BASE_ENABLE) };
     }
+    X2APIC.store(x2, Ordering::Relaxed);
     TSC_DEADLINE.store(allow_deadline && features.ecx & (1 << 24) != 0, Ordering::Relaxed);
+    LINT1.store(nmi_lvt(madt).unwrap_or(LVT_MASKED), Ordering::Relaxed);
+    intr::register(usize::from(ERROR_VECTOR), "lapic error", error).map_err(|_| "error vector busy")?;
+    init_local();
 
+    let mode = if x2 { "x2APIC" } else { "xAPIC" };
+    println!("lapic: {mode}, id {}, version {:#x}", id(), read(VERSION) & 0xff);
+    Ok(())
+}
+
+/// Brings up the calling CPU's local APIC in the mode the boot CPU chose:
+/// enabled, local interrupts masked except NMI and errors.
+pub(crate) fn init_local() {
+    let base = cpu::rdmsr(IA32_APIC_BASE);
+    // SAFETY: enables the APIC at its current address (xAPIC), then, if
+    // chosen, switches to x2APIC. Disabled to x2APIC directly is not a
+    // legal transition, so xAPIC comes first. Nothing uses the APIC yet.
+    unsafe {
+        if base & APIC_BASE_ENABLE == 0 {
+            cpu::wrmsr(IA32_APIC_BASE, base | APIC_BASE_ENABLE);
+        }
+        if X2APIC.load(Ordering::Relaxed) && base & APIC_BASE_X2APIC == 0 {
+            cpu::wrmsr(IA32_APIC_BASE, base | APIC_BASE_ENABLE | APIC_BASE_X2APIC);
+        }
+    }
     write(TPR, 0);
     write(LVT_TIMER, LVT_MASKED);
     write(LVT_LINT0, LVT_MASKED);
-    write(LVT_LINT1, nmi_lvt(madt).unwrap_or(LVT_MASKED));
-    intr::register(usize::from(ERROR_VECTOR), "lapic error", error).map_err(|_| "error vector busy")?;
+    write(LVT_LINT1, LINT1.load(Ordering::Relaxed));
     write(LVT_ERROR, u32::from(ERROR_VECTOR));
     write(ESR, 0);
     write(ESR, 0);
     write(SVR, SVR_ENABLE | u32::from(SPURIOUS_VECTOR));
     eoi();
-
-    let mode = if x2 { "x2APIC" } else { "xAPIC" };
-    println!("lapic: {mode}, id {}, version {:#x}", id(), read(VERSION) & 0xff);
-    Ok(())
 }
 
 /// The LINT1 setting from MADT's NMI entries, for any processor (0xff) or
@@ -208,10 +249,6 @@ pub(crate) fn init_timer(hpet: Option<crate::drivers::hpet::Hpet>) -> Result<u64
 
     intr::register(usize::from(TIMER_VECTOR), "timer", clock::tick).map_err(|_| "timer vector busy")?;
     if TSC_DEADLINE.load(Ordering::Relaxed) {
-        write(LVT_TIMER, u32::from(TIMER_VECTOR) | LVT_TSC_DEADLINE);
-        // Intel SDM 10.5.4.1: order the LVT write before deadline writes.
-        // SAFETY: fences only.
-        unsafe { core::arch::asm!("mfence", "lfence", options(nostack)) };
         println!("lapic: timer in TSC-deadline mode");
     } else {
         write(TIMER_DIVIDE, DIVIDE_BY_1);
@@ -220,10 +257,25 @@ pub(crate) fn init_timer(hpet: Option<crate::drivers::hpet::Hpet>) -> Result<u64
             return Err("local APIC timer does not count");
         }
         TIMER_HZ.store(hz, Ordering::Relaxed);
-        write(LVT_TIMER, u32::from(TIMER_VECTOR));
         println!("lapic: timer one-shot at {} MHz", hz / 1_000_000);
     }
+    init_local_timer();
     Ok(tsc_hz)
+}
+
+/// Points the calling CPU's timer at the clock, in the mode (and, for
+/// one-shot mode, at the rate) the boot CPU measured. Every CPU's timer
+/// is assumed to run at the same rate.
+pub(crate) fn init_local_timer() {
+    if TSC_DEADLINE.load(Ordering::Relaxed) {
+        write(LVT_TIMER, u32::from(TIMER_VECTOR) | LVT_TSC_DEADLINE);
+        // Intel SDM 10.5.4.1: order the LVT write before deadline writes.
+        // SAFETY: fences only.
+        unsafe { core::arch::asm!("mfence", "lfence", options(nostack)) };
+    } else {
+        write(TIMER_DIVIDE, DIVIDE_BY_1);
+        write(LVT_TIMER, u32::from(TIMER_VECTOR));
+    }
 }
 
 /// Counts TSC ticks over 20 ms of HPET time.

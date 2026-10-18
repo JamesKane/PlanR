@@ -24,7 +24,10 @@ pub(crate) enum Expect {
 }
 const BANNER: &str = "Plan R 9boot";
 
-fn command(arch: Arch, profile: &Profile, img: &Path) -> Result<Command, String> {
+/// CPUs QEMU gives the machine unless a test says otherwise.
+pub(crate) const CPUS: u32 = 4;
+
+fn command(arch: Arch, profile: &Profile, img: &Path, cpus: u32) -> Result<Command, String> {
     let fw = arch.firmware()?;
     let dir = crate::build_dir(arch);
     let vars = dir.join("vars.fd");
@@ -37,7 +40,7 @@ fn command(arch: Arch, profile: &Profile, img: &Path) -> Result<Command, String>
         "-cpu",
         profile.cpu,
         "-smp",
-        "4",
+        &cpus.to_string(),
         "-m",
         "2G",
     ]);
@@ -53,7 +56,7 @@ fn command(arch: Arch, profile: &Profile, img: &Path) -> Result<Command, String>
 }
 
 pub(crate) fn run_interactive(arch: Arch, img: &Path, gui: bool) -> Result<(), String> {
-    let mut c = command(arch, &arch.profiles()[0], img)?;
+    let mut c = command(arch, &arch.profiles()[0], img, CPUS)?;
     // mon:stdio multiplexes the monitor onto the console: Ctrl-A X quits.
     c.args(["-serial", "mon:stdio"]);
     if !gui {
@@ -98,10 +101,11 @@ pub(crate) fn run_test(
     profile: &Profile,
     test: &str,
     img: &Path,
+    cpus: u32,
     expect: &Expect,
     timeout_secs: u64,
 ) -> Result<(), String> {
-    let mut c = command(arch, profile, img)?;
+    let mut c = command(arch, profile, img, cpus)?;
     c.args(["-display", "none", "-serial", "stdio", "-monitor", "none"]);
     c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit());
     let mut child = c.spawn().map_err(|e| format!("{}: {e}", arch.qemu()))?;

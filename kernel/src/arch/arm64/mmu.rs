@@ -40,6 +40,7 @@ pub(crate) fn map_page(va: u64, pa: u64, kind: MapKind) -> Option<()> {
     let attrs = match kind {
         MapKind::Device => (ATTR_DEVICE << 2) | PXN | UXN,
         MapKind::NormalReadOnly => (ATTR_NORMAL << 2) | SH_INNER | AP_READ_ONLY | PXN | UXN,
+        MapKind::NormalReadWrite => (ATTR_NORMAL << 2) | SH_INNER | PXN | UXN,
     };
     // SAFETY: as above. The table walker must observe the new entry before
     // any access through it: dsb orders the store, isb the pipeline.

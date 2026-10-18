@@ -38,6 +38,7 @@ pub(crate) fn map_page(va: u64, pa: u64, kind: MapKind) -> Option<()> {
     let leaf = match kind {
         MapKind::Device => PRESENT | WRITABLE | CACHE_DISABLE | WRITE_THROUGH | NO_EXECUTE,
         MapKind::NormalReadOnly => PRESENT | NO_EXECUTE,
+        MapKind::NormalReadWrite => PRESENT | WRITABLE | NO_EXECUTE,
     };
     // SAFETY: as above; a not-present entry is never cached in the TLB, so
     // no invalidation is needed for a fresh mapping.

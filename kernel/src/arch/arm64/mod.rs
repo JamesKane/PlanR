@@ -2,20 +2,24 @@
 
 mod gic;
 pub(crate) mod mmu;
+mod psci;
+mod smp;
 mod trap;
 
+pub(crate) use smp::{hwid, send_ipi, start_cpus};
 pub(crate) use trap::{breakpoint, frame_pointer, probe_read};
 
 use core::arch::{asm, global_asm};
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use acpi::{PsciConduit, UartKind};
+use acpi::UartKind;
 
 use super::ExitCode;
 use crate::drivers::uart16550::Uart16550;
 use crate::port::acpi::System;
 use crate::port::config::Config;
 use crate::port::console::{ConsoleSource, Uart};
+use crate::port::cpu::Cpu;
 use crate::port::ktest::TestFn;
 use crate::port::{clock, intr};
 use crate::println;
@@ -24,6 +28,8 @@ use crate::println;
 pub(crate) const NVEC: usize = 1020;
 /// The SGI used by the in-kernel tests' self-IPI.
 pub(crate) const TEST_VECTOR: usize = 15;
+/// The SGI that wakes a CPU to look for work ([`crate::port::cpu::call`]).
+pub(crate) const WAKE_VECTOR: usize = 0;
 /// The EL1 virtual timer's PPI when the GTDT does not say.
 const DEFAULT_TIMER_PPI: u32 = 27;
 
@@ -49,20 +55,14 @@ global_asm!(
     kmain = sym crate::kmain,
 );
 
-const PSCI_NONE: u8 = 0;
-const PSCI_SMC: u8 = 1;
-const PSCI_HVC: u8 = 2;
-static PSCI: AtomicU8 = AtomicU8::new(PSCI_NONE);
-
 /// Records how to reach PSCI firmware, from the FADT.
 pub(crate) fn init(acpi: Option<&System>) {
-    let c = match acpi.and_then(|s| s.tables.fadt()).and_then(|f| f.psci()) {
-        Some(PsciConduit::Smc) => PSCI_SMC,
-        Some(PsciConduit::Hvc) => PSCI_HVC,
-        None => PSCI_NONE,
-    };
-    PSCI.store(c, Ordering::Relaxed);
+    psci::init(acpi);
 }
+
+/// The timer's PPI and trigger, for every CPU.
+static TIMER_PPI: AtomicU32 = AtomicU32::new(DEFAULT_TIMER_PPI);
+static TIMER_EDGE: AtomicBool = AtomicBool::new(false);
 
 /// Brings up the GIC and the EL1 virtual timer and routes the timer to the
 /// clock. Returns the counter (`CNTVCT_EL0`) frequency.
@@ -80,16 +80,43 @@ pub(crate) fn init_interrupts(acpi: Option<&System>, _config: &Config<'_>) -> Re
     if hz == 0 {
         return Err("CNTFRQ_EL0 is zero (firmware did not set the counter frequency)");
     }
-    // SAFETY: disables the timer until the clock arms it.
-    unsafe { asm!("msr cntv_ctl_el0, xzr", "isb", options(nostack)) };
+    TIMER_PPI.store(ppi, Ordering::Relaxed);
+    TIMER_EDGE.store(edge, Ordering::Relaxed);
     intr::register(ppi as usize, "timer", clock::tick).map_err(|_| "timer PPI busy")?;
-    gic::enable_local(ppi, edge);
+    init_local_timer();
     let trigger = if edge { "edge" } else { "level" };
     println!(
         "clock: generic timer {} MHz, virtual timer PPI {ppi} ({trigger})",
         hz / 1_000_000
     );
     Ok(hz)
+}
+
+/// Stops the calling CPU's virtual timer until the clock arms it, and
+/// enables its interrupt.
+fn init_local_timer() {
+    // SAFETY: disables the timer.
+    unsafe { asm!("msr cntv_ctl_el0, xzr", "isb", options(nostack)) };
+    gic::enable_local(TIMER_PPI.load(Ordering::Relaxed), TIMER_EDGE.load(Ordering::Relaxed));
+}
+
+/// Installs the handlers for the kernel's own inter-processor interrupts.
+pub(crate) fn register_ipis() -> Result<(), &'static str> {
+    intr::register(WAKE_VECTOR, "wake", crate::port::cpu::wake).map_err(|_| "wake SGI busy")
+}
+
+/// Records the calling CPU's index in `TPIDR_EL1`.
+pub(crate) fn set_cpu_local(cpu: &'static Cpu) {
+    // SAFETY: TPIDR_EL1 is the kernel's to use; `cpu_index` reads it.
+    unsafe { asm!("msr tpidr_el1, {}", in(reg) cpu.index(), options(nomem, nostack)) };
+}
+
+/// The calling CPU's index.
+pub(crate) fn cpu_index() -> usize {
+    let i: usize;
+    // SAFETY: reads a system register `set_cpu_local` wrote.
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) i, options(nomem, nostack, preserves_flags)) };
+    i
 }
 
 fn counter_frequency() -> u64 {
@@ -207,14 +234,8 @@ pub(crate) fn halt() -> ! {
 /// tells success from failure by the console markers.
 pub(crate) fn exit(_code: ExitCode) -> ! {
     const SYSTEM_OFF: u64 = 0x8400_0008;
-    match PSCI.load(Ordering::Relaxed) {
-        // SAFETY: SYSTEM_OFF does not return on success; on failure the
-        // firmware returns an error code in x0, which we ignore.
-        PSCI_SMC => unsafe { asm!("smc #0", inout("x0") SYSTEM_OFF => _, options(nomem, nostack)) },
-        // SAFETY: as above.
-        PSCI_HVC => unsafe { asm!("hvc #0", inout("x0") SYSTEM_OFF => _, options(nomem, nostack)) },
-        _ => {}
-    }
+    // Does not return on success.
+    psci::call(SYSTEM_OFF, 0, 0, 0);
     halt()
 }
 

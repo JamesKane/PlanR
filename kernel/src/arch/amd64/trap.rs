@@ -10,6 +10,7 @@ use core::arch::{asm, global_asm};
 use core::cell::UnsafeCell;
 use core::fmt;
 
+use crate::port::cpu::MAXCPU;
 use crate::port::trap;
 
 const KERNEL_CS: u16 = 0x08;
@@ -26,7 +27,7 @@ const GDT: [u64; 5] = [
     0x00af_fa00_0000_ffff, // 0x20 user code: 64-bit, DPL 3
 ];
 
-const IST_BYTES: usize = 16 * 1024;
+pub(crate) const IST_BYTES: usize = 16 * 1024;
 /// IST slots, numbered from 1 as the IDT entry encodes them.
 const IST_DOUBLE_FAULT: u8 = 1;
 const IST_NMI: u8 = 2;
@@ -47,13 +48,26 @@ struct Tss {
 #[repr(C, align(16))]
 struct Stack([u8; IST_BYTES]);
 
-/// One CPU's descriptor tables. Only the boot CPU's exist for now; SMP
-/// gives each CPU its own.
+/// One CPU's descriptor tables. The IDT is shared.
 #[repr(C, align(16))]
 struct CpuTables {
     gdt: [u64; GDT.len() + 2],
     tss: Tss,
-    ist: [Stack; 3],
+}
+
+impl CpuTables {
+    const EMPTY: CpuTables = CpuTables {
+        gdt: [0; GDT.len() + 2],
+        tss: Tss {
+            _reserved0: 0,
+            rsp: [0; 3],
+            _reserved1: 0,
+            ist: [0; 7],
+            _reserved2: 0,
+            _reserved3: 0,
+            iomap_base: 0,
+        },
+    };
 }
 
 /// A 16-byte IDT gate.
@@ -97,26 +111,20 @@ impl Gate {
     }
 }
 
-/// Interior-mutable static storage, written once during bring-up.
+/// Interior-mutable static storage, written during bring-up.
 struct Boot<T>(UnsafeCell<T>);
 
-// SAFETY: written only by `init` on the boot CPU before interrupts are
-// enabled; read-only (by the CPU) afterwards.
+// SAFETY: the IDT and CPU 0's stacks are written only by `init` on the boot
+// CPU before interrupts are enabled. CPU n's tables are written only by
+// `prepare`, before CPU n starts, and afterwards only by CPU n itself (`ltr`
+// marks its TSS descriptor busy).
 unsafe impl<T> Sync for Boot<T> {}
 
-static CPU0: Boot<CpuTables> = Boot(UnsafeCell::new(CpuTables {
-    gdt: [0; GDT.len() + 2],
-    tss: Tss {
-        _reserved0: 0,
-        rsp: [0; 3],
-        _reserved1: 0,
-        ist: [0; 7],
-        _reserved2: 0,
-        _reserved3: 0,
-        iomap_base: 0,
-    },
-    ist: [const { Stack([0; IST_BYTES]) }; 3],
-}));
+static TABLES: Boot<[CpuTables; MAXCPU]> = Boot(UnsafeCell::new([const { CpuTables::EMPTY }; MAXCPU]));
+
+/// The boot CPU's IST stacks, static because traps are set up before the
+/// memory allocator. Other CPUs' come from [`crate::port::mm::alloc_stack`].
+static CPU0_IST: Boot<[Stack; 3]> = Boot(UnsafeCell::new([const { Stack([0; IST_BYTES]) }; 3]));
 
 static IDT: Boot<[Gate; 256]> = Boot(UnsafeCell::new([Gate::MISSING; 256]));
 
@@ -143,27 +151,13 @@ unsafe extern "C" {
     static planr_trap_vectors: [u8; 256 * 16];
 }
 
-/// Installs the GDT, TSS and IDT on the boot CPU.
-#[allow(clippy::cast_possible_truncation)] // table sizes are small constants
+/// Builds the IDT and installs it with CPU 0's GDT and TSS on the boot CPU.
+#[allow(clippy::cast_possible_truncation)] // vector numbers are < 256
 pub(crate) fn init() {
     let vectors = (&raw const planr_trap_vectors) as u64;
     // SAFETY: runs once on the boot CPU with interrupts disabled, before
-    // anything else uses these tables.
-    unsafe {
-        let t = &mut *CPU0.0.get();
-        let top: [u64; 3] = core::array::from_fn(|i| (&raw const t.ist[i]) as u64 + IST_BYTES as u64);
-        t.tss = Tss {
-            _reserved0: 0,
-            rsp: [0; 3],
-            _reserved1: 0,
-            ist: [top[0], top[1], top[2], 0, 0, 0, 0],
-            _reserved2: 0,
-            _reserved3: 0,
-            iomap_base: size_of::<Tss>() as u16, // no I/O permission bitmap
-        };
-        t.gdt[..GDT.len()].copy_from_slice(&GDT);
-        t.gdt[GDT.len()..].copy_from_slice(&tss_descriptor((&raw const t.tss) as u64));
-
+    // anything else uses the IDT or CPU 0's stacks.
+    let tops = unsafe {
         let idt = &mut *IDT.0.get();
         for (v, gate) in idt.iter_mut().enumerate() {
             let ist = match v {
@@ -174,18 +168,52 @@ pub(crate) fn init() {
             };
             *gate = Gate::new(vectors + 16 * v as u64, ist);
         }
+        let stacks = &*CPU0_IST.0.get();
+        core::array::from_fn(|i| (&raw const stacks[i]) as u64 + IST_BYTES as u64)
+    };
+    prepare(0, tops);
+    load(0);
+}
 
+/// Fills in CPU `index`'s GDT and TSS; `ist` holds the tops of its
+/// double-fault, NMI and machine-check stacks. Called before that CPU
+/// starts.
+#[allow(clippy::cast_possible_truncation)] // the TSS size is a small constant
+pub(crate) fn prepare(index: usize, ist: [u64; 3]) {
+    // SAFETY: CPU `index` is not running yet (or, for CPU 0, has not loaded
+    // these tables), so nothing else uses them.
+    let t = unsafe { &mut (*TABLES.0.get())[index] };
+    t.tss = Tss {
+        _reserved0: 0,
+        rsp: [0; 3],
+        _reserved1: 0,
+        ist: [ist[0], ist[1], ist[2], 0, 0, 0, 0],
+        _reserved2: 0,
+        _reserved3: 0,
+        iomap_base: size_of::<Tss>() as u16, // no I/O permission bitmap
+    };
+    t.gdt[..GDT.len()].copy_from_slice(&GDT);
+    t.gdt[GDT.len()..].copy_from_slice(&tss_descriptor((&raw const t.tss) as u64));
+}
+
+/// Loads CPU `index`'s GDT and TSS and the shared IDT on the calling CPU.
+#[allow(clippy::cast_possible_truncation)] // table sizes are small constants
+pub(crate) fn load(index: usize) {
+    // SAFETY: `prepare` filled these tables; only this CPU uses them.
+    unsafe {
+        let t = &(*TABLES.0.get())[index];
         let gdtr = Pointer {
             limit: (size_of_val(&t.gdt) - 1) as u16,
             base: (&raw const t.gdt) as u64,
         };
         let idtr = Pointer {
             limit: (size_of::<[Gate; 256]>() - 1) as u16,
-            base: idt.as_ptr() as u64,
+            base: IDT.0.get() as u64,
         };
         asm!(
             "lgdt [{gdtr}]",
-            // Reload CS with a far return, then the data segments.
+            // Reload CS with a far return, then the data segments. GS is
+            // left alone: its base holds the per-CPU pointer.
             "push {cs}",
             "lea {tmp}, [rip + 2f]",
             "push {tmp}",
@@ -195,7 +223,6 @@ pub(crate) fn init() {
             "mov ds, {ds:x}",
             "mov es, {ds:x}",
             "mov fs, {zero:x}",
-            "mov gs, {zero:x}",
             "ltr {tss:x}",
             "lidt [{idtr}]",
             gdtr = in(reg) &raw const gdtr,

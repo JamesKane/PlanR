@@ -4,8 +4,10 @@ mod apic;
 mod cpu;
 mod ioapic;
 pub(crate) mod mmu;
+mod smp;
 mod trap;
 
+pub(crate) use smp::{hwid, send_ipi, start_cpus};
 pub(crate) use trap::{breakpoint, frame_pointer, probe_read};
 
 use core::arch::{asm, global_asm};
@@ -18,6 +20,7 @@ use crate::drivers::uart16550::Uart16550;
 use crate::port::acpi::System;
 use crate::port::config::Config;
 use crate::port::console::{ConsoleSource, Uart};
+use crate::port::cpu::Cpu;
 use crate::port::intr;
 use crate::port::ktest::TestFn;
 use crate::port::lock::SpinLock;
@@ -32,6 +35,8 @@ pub(crate) const GSI_VECTOR_BASE: u8 = 0x30;
 pub(crate) const TIMER_VECTOR: u8 = 0xf0;
 /// Used by the in-kernel tests' self-IPI.
 pub(crate) const TEST_VECTOR: usize = 0xf1;
+/// Wakes a CPU to look for work ([`crate::port::cpu::call`]).
+pub(crate) const WAKE_VECTOR: usize = 0xf2;
 pub(crate) const ERROR_VECTOR: u8 = 0xfe;
 pub(crate) const SPURIOUS_VECTOR: u8 = 0xff;
 
@@ -116,6 +121,28 @@ pub(super) fn interrupt(vector: u8) -> bool {
             handled
         }
     }
+}
+
+/// Installs the handlers for the kernel's own inter-processor interrupts.
+pub(crate) fn register_ipis() -> Result<(), &'static str> {
+    intr::register(WAKE_VECTOR, "wake", crate::port::cpu::wake).map_err(|_| "wake vector busy")
+}
+
+const IA32_GS_BASE: u32 = 0xc000_0101;
+
+/// Points the calling CPU's `GS` base at its [`Cpu`].
+pub(crate) fn set_cpu_local(cpu: &'static Cpu) {
+    // SAFETY: the kernel does not otherwise use GS; `cpu_index` reads
+    // through it.
+    unsafe { cpu::wrmsr(IA32_GS_BASE, (&raw const *cpu) as u64) };
+}
+
+/// The calling CPU's index, the first field of its [`Cpu`].
+pub(crate) fn cpu_index() -> usize {
+    let i: usize;
+    // SAFETY: `set_cpu_local` pointed GS at this CPU's `Cpu`.
+    unsafe { asm!("mov {}, gs:[0]", out(reg) i, options(nostack, readonly, preserves_flags)) };
+    i
 }
 
 pub(crate) fn self_ipi(vector: usize) {

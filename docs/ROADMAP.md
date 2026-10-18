@@ -84,11 +84,28 @@ rate and (amd64) an HPET interrupt through the I/O APIC. The
 `legacy-apic` boot test forces xAPIC and the count timer, because KVM
 would otherwise hide them.
 
-**Remaining:** SMP; framebuffer console and persistent log ring; MCFG, PPTT
-and IORT parsing; PIT fallback for TSC calibration without an HPET; CPU
-security features (SMEP/SMAP/UMIP, PAN/BTI); backtrace symbolization; kernel
-stack guard pages (arm64 has no IST equivalent, so an overflow there still
-recurses); ACPI dump corpus.
+**Fourth slice done:** SMP. Each CPU has a portable `Cpu` (index, hardware
+ID, its own tick, a cross-CPU call slot), found through `GS` (amd64) or
+`TPIDR_EL1` (arm64). amd64 starts each MADT processor with INIT and
+start-up IPIs to a trampoline copied below 1 MiB, with a low copy of the
+top-level page table because 32-bit CR3 cannot reach above 4 GiB; each CPU
+gets its own GDT, TSS and IST stacks. arm64 starts each GICC with PSCI
+`CPU_ON` at a position-independent entry that handles firmware starting it
+at EL2 (VHE or not) or EL1, then attaches its own redistributor. Every CPU
+runs its own timer; CPU 0's ticks are the system's. Kernel stacks for new
+CPUs live in their own window above unmapped guard pages. In-kernel tests
+check that every listed CPU is online and ticking, that a cross-CPU call
+runs on its target, and that a spin lock hammered by all CPUs loses no
+updates; a `uniprocessor` boot test covers the one-CPU path. This meets
+P1's exit criteria under QEMU.
+
+**Remaining:** framebuffer console and persistent log ring; MCFG, PPTT and
+IORT parsing; PIT fallback for TSC calibration without an HPET; CPU
+security features (SMEP/SMAP/UMIP, PAN/BTI); backtrace symbolization;
+overflow reporting on arm64 (the guard page faults, but with no IST
+equivalent the fault handler recurses on the same stack) and a guard for
+the boot CPU's stack; ACPI dump corpus; checking SMP on the reference
+boards.
 
 - **`9boot` (UEFI loader, ours):** our own UEFI bindings (protocol
   GUIDs, Boot/Runtime Services tables, GOP, Simple File System, Loaded Image).

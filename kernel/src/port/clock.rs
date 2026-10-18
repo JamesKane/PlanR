@@ -3,11 +3,13 @@
 //! The counter is the architecture's (the TSC on amd64, `CNTVCT_EL0` on
 //! arm64). The tick is built on a one-shot timer re-armed from each
 //! interrupt at an absolute deadline, so latency does not accumulate; the
-//! same timer will drive a tickless scheduler later.
+//! same timer will drive a tickless scheduler later. Every CPU has its own
+//! timer and tick; CPU 0's ticks are the system's, as in Plan 9.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::arch;
+use crate::port::cpu;
 
 /// Ticks per second, as in Plan 9.
 pub(crate) const HZ: u64 = 100;
@@ -18,9 +20,30 @@ const NS_PER_SEC: u64 = 1_000_000_000;
 static COUNTER_HZ: AtomicU64 = AtomicU64::new(0);
 /// Counter units per tick.
 static PERIOD: AtomicU64 = AtomicU64::new(0);
-/// Counter value at which the next tick is due.
-static NEXT: AtomicU64 = AtomicU64::new(0);
+/// CPU 0's ticks.
 static TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// One CPU's tick.
+#[derive(Debug)]
+pub(crate) struct Local {
+    ticks: AtomicU64,
+    /// Counter value at which the next tick is due.
+    next: AtomicU64,
+}
+
+impl Local {
+    pub(crate) const fn new() -> Local {
+        Local {
+            ticks: AtomicU64::new(0),
+            next: AtomicU64::new(0),
+        }
+    }
+
+    /// Ticks this CPU has taken.
+    pub(crate) fn ticks(&self) -> u64 {
+        self.ticks.load(Ordering::Relaxed)
+    }
+}
 
 /// Records the counter frequency the architecture measured or was told.
 pub(crate) fn init(counter_hz: u64) {
@@ -32,25 +55,30 @@ pub(crate) fn counter_hz() -> u64 {
     COUNTER_HZ.load(Ordering::Relaxed)
 }
 
-/// Starts the tick. The architecture has routed its timer interrupt to
-/// [`tick`].
+/// Starts this CPU's tick. The architecture has routed its timer
+/// interrupt to [`tick`].
 pub(crate) fn start() {
     let next = arch::counter() + PERIOD.load(Ordering::Relaxed);
-    NEXT.store(next, Ordering::Relaxed);
+    cpu::current().clock.next.store(next, Ordering::Relaxed);
     arch::timer_at(next);
 }
 
 /// The timer interrupt.
 pub(crate) fn tick() {
-    TICKS.fetch_add(1, Ordering::Relaxed);
+    let me = cpu::current();
+    if me.index() == 0 {
+        TICKS.fetch_add(1, Ordering::Relaxed);
+    }
+    let local = &me.clock;
+    local.ticks.fetch_add(1, Ordering::Relaxed);
     let period = PERIOD.load(Ordering::Relaxed);
-    let mut next = NEXT.load(Ordering::Relaxed) + period;
+    let mut next = local.next.load(Ordering::Relaxed) + period;
     let now = arch::counter();
     if next <= now {
         // Fell behind (a long stall, or a slow emulator): skip, don't burst.
         next = now + period;
     }
-    NEXT.store(next, Ordering::Relaxed);
+    local.next.store(next, Ordering::Relaxed);
     arch::timer_at(next);
 }
 
@@ -79,6 +107,20 @@ pub(crate) fn wait_until(done: impl Fn() -> bool, timeout_ns: u64) -> bool {
             return done();
         }
         arch::idle();
+    }
+    true
+}
+
+/// Spins until `done` is true or `timeout_ns` passes; true if `done`.
+/// For waits that must not depend on interrupts, or are shorter than a
+/// tick.
+pub(crate) fn spin_until(done: impl Fn() -> bool, timeout_ns: u64) -> bool {
+    let end = now_ns().saturating_add(timeout_ns);
+    while !done() {
+        if now_ns() >= end {
+            return done();
+        }
+        core::hint::spin_loop();
     }
     true
 }

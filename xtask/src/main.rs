@@ -200,6 +200,8 @@ struct BootTest {
     every_profile: bool,
     /// Only for this architecture (the test exercises arch-specific code).
     only: Option<Arch>,
+    /// CPUs to give the machine.
+    cpus: u32,
 }
 
 const BOOT_TESTS: &[BootTest] = &[
@@ -210,6 +212,16 @@ const BOOT_TESTS: &[BootTest] = &[
         expect: Expect::Ok,
         every_profile: true,
         only: None,
+        cpus: qemu::CPUS,
+    },
+    // One CPU: the SMP code must cope with having nothing to start.
+    BootTest {
+        name: "uniprocessor",
+        config: "# Plan R test image\ntest=1\n",
+        expect: Expect::Ok,
+        every_profile: false,
+        only: None,
+        cpus: 1,
     },
     // The amd64 fallbacks KVM would otherwise hide: xAPIC registers in
     // MMIO, and the one-shot count timer instead of TSC-deadline mode.
@@ -219,6 +231,7 @@ const BOOT_TESTS: &[BootTest] = &[
         expect: Expect::Ok,
         every_profile: false,
         only: Some(Arch::Amd64),
+        cpus: qemu::CPUS,
     },
     // A deliberate fatal page fault must produce a full trap report.
     BootTest {
@@ -232,6 +245,7 @@ const BOOT_TESTS: &[BootTest] = &[
         ]),
         every_profile: false,
         only: None,
+        cpus: qemu::CPUS,
     },
 ];
 
@@ -291,7 +305,7 @@ fn test(opts: &Opts) -> Result<(), String> {
             };
             for profile in profiles {
                 let name = format!("{arch}/{} {}", profile.name, t.name);
-                match qemu::run_test(arch, profile, t.name, img, &t.expect, opts.timeout) {
+                match qemu::run_test(arch, profile, t.name, img, t.cpus, &t.expect, opts.timeout) {
                     Ok(()) => println!("xtask: {name} test: PASS"),
                     Err(e) => {
                         println!("xtask: {name} test: FAIL: {e}");

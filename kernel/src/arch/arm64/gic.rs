@@ -1,5 +1,5 @@
-//! GICv3/v4 interrupt controller: distributor, this CPU's redistributor,
-//! and the system-register CPU interface.
+//! GICv3/v4 interrupt controller: the distributor, each CPU's
+//! redistributor, and the system-register CPU interface.
 //!
 //! Interrupts are Group 1 Non-secure, all at one priority, and SPIs are
 //! routed to the boot CPU. SGIs are always enabled; PPIs and SPIs are
@@ -8,10 +8,11 @@
 //! ITS) come with `PCIe` MSI.
 
 use core::arch::asm;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use acpi::{Madt, MadtEntry};
 
+use crate::port::cpu::{self, MAXCPU};
 use crate::port::intr;
 use crate::port::mm::{self, MapKind};
 use crate::println;
@@ -53,8 +54,13 @@ const PRIORITY: u8 = 0xa0;
 const SPURIOUS: u32 = 1020;
 
 static GICD: AtomicU64 = AtomicU64::new(0);
-/// This CPU's redistributor (RD frame).
-static GICR: AtomicU64 = AtomicU64::new(0);
+/// Each CPU's redistributor (RD frame), by CPU index.
+static GICR: [AtomicU64; MAXCPU] = [const { AtomicU64::new(0) }; MAXCPU];
+
+/// The mapped redistributor regions, as (virtual address, length).
+const MAX_REGIONS: usize = 16;
+static REGIONS: [(AtomicU64, AtomicU64); MAX_REGIONS] = [const { (AtomicU64::new(0), AtomicU64::new(0)) }; MAX_REGIONS];
+static NREGIONS: AtomicUsize = AtomicUsize::new(0);
 
 fn rd32(addr: u64) -> u32 {
     // SAFETY: callers pass addresses inside the mapped GIC frames.
@@ -81,7 +87,7 @@ fn gicd() -> u64 {
 }
 
 fn gicr() -> u64 {
-    GICR.load(Ordering::Relaxed)
+    GICR[cpu::current().index()].load(Ordering::Relaxed)
 }
 
 fn wait_rwp() {
@@ -93,7 +99,7 @@ fn wait_rwp() {
     }
 }
 
-fn mpidr() -> u64 {
+pub(crate) fn mpidr() -> u64 {
     let v: u64;
     // SAFETY: reads an ID register.
     unsafe { asm!("mrs {}, mpidr_el1", out(reg) v, options(nomem, nostack)) };
@@ -105,9 +111,8 @@ fn packed_affinity(mpidr: u64) -> u32 {
     ((mpidr >> 8) & 0xff00_0000) as u32 | (mpidr & 0x00ff_ffff) as u32
 }
 
-/// Finds this CPU's redistributor in `[base, base + len)`.
-fn find_redistributor(base: u64, len: u64, aff: u32) -> Option<u64> {
-    let va = mm::map_phys(base, len, MapKind::Device)?;
+/// Finds the redistributor for affinity `aff` in a mapped region.
+fn find_redistributor(va: u64, len: u64, aff: u32) -> Option<u64> {
     let mut off = 0;
     while off + 2 * SGI_FRAME <= len {
         let typer = rd64(va + off + GICR_TYPER);
@@ -123,7 +128,52 @@ fn find_redistributor(base: u64, len: u64, aff: u32) -> Option<u64> {
     None
 }
 
-/// Brings up the distributor, this CPU's redistributor and the CPU
+/// Maps the redistributor regions: the MADT's GICR entries, or failing
+/// those, each GICC's own redistributor.
+fn map_redistributors(madt: &Madt<'_>) -> Result<(), &'static str> {
+    let regions = madt.entries().filter_map(|e| match e {
+        MadtEntry::Gicr { base, length } => Some((base, u64::from(length))),
+        _ => None,
+    });
+    let per_cpu = madt.entries().filter_map(|e| match e {
+        MadtEntry::Gicc { gicr_base, enabled, .. } if gicr_base != 0 && enabled => Some((gicr_base, 2 * SGI_FRAME)),
+        _ => None,
+    });
+    let mut n = 0;
+    for (base, len) in regions {
+        add_region(n, base, len)?;
+        n += 1;
+    }
+    if n == 0 {
+        for (base, len) in per_cpu {
+            add_region(n, base, len)?;
+            n += 1;
+        }
+    }
+    NREGIONS.store(n, Ordering::Release);
+    Ok(())
+}
+
+fn add_region(n: usize, base: u64, len: u64) -> Result<(), &'static str> {
+    let slot = REGIONS.get(n).ok_or("too many redistributor regions")?;
+    let va = mm::map_phys(base, len, MapKind::Device).ok_or("cannot map a redistributor")?;
+    slot.0.store(va, Ordering::Relaxed);
+    slot.1.store(len, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Finds and records the calling CPU's redistributor.
+fn attach_redistributor() -> Result<(), &'static str> {
+    let aff = packed_affinity(mpidr());
+    let rd = REGIONS[..NREGIONS.load(Ordering::Acquire)]
+        .iter()
+        .find_map(|(va, len)| find_redistributor(va.load(Ordering::Relaxed), len.load(Ordering::Relaxed), aff))
+        .ok_or("no redistributor for this CPU")?;
+    GICR[cpu::current().index()].store(rd, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Brings up the distributor, the boot CPU's redistributor and its CPU
 /// interface, with every interrupt disabled.
 pub(crate) fn init(madt: &Madt<'_>) -> Result<(), &'static str> {
     let (dist, version) = madt
@@ -140,34 +190,24 @@ pub(crate) fn init(madt: &Madt<'_>) -> Result<(), &'static str> {
     if version < 3 {
         return Err("GICv2 is not supported (ADR 0003 requires GICv3)");
     }
-
+    map_redistributors(madt)?;
     let me = mpidr();
-    let aff = packed_affinity(me);
-    // Redistributor regions, or failing those, each GICC's own address.
-    let rd = madt
-        .entries()
-        .filter_map(|e| match e {
-            MadtEntry::Gicr { base, length } => Some((base, u64::from(length))),
-            MadtEntry::Gicc { gicr_base, mpidr, .. }
-                if gicr_base != 0 && mpidr & 0xff_00ff_ffff == me & 0xff_00ff_ffff =>
-            {
-                Some((gicr_base, 4 * SGI_FRAME))
-            }
-            _ => None,
-        })
-        .find_map(|(base, len)| find_redistributor(base, len, aff))
-        .ok_or("no redistributor for this CPU")?;
-    GICR.store(rd, Ordering::Relaxed);
-
     init_distributor(me);
-    init_redistributor()?;
-    init_cpu_interface()?;
+    init_cpu()?;
     let lines = 32 * ((rd32(va + GICD_TYPER) & 0x1f) + 1);
     println!(
-        "gic: v{version} distributor at {dist:#x}, {} SPIs; cpu affinity {aff:#x}",
-        lines - 32
+        "gic: v{version} distributor at {dist:#x}, {} SPIs; cpu affinity {:#x}",
+        lines - 32,
+        packed_affinity(me)
     );
     Ok(())
+}
+
+/// Brings up the calling CPU's redistributor and CPU interface.
+pub(crate) fn init_cpu() -> Result<(), &'static str> {
+    attach_redistributor()?;
+    init_redistributor()?;
+    init_cpu_interface()
 }
 
 fn init_distributor(me: u64) {
@@ -273,7 +313,11 @@ pub(crate) fn enable_local(id: u32, edge: bool) {
 
 /// Sends SGI `id` to this CPU.
 pub(crate) fn self_sgi(id: u32) {
-    let m = mpidr();
+    send_sgi(id, mpidr());
+}
+
+/// Sends SGI `id` to the CPU with affinity `m` (an MPIDR value).
+pub(crate) fn send_sgi(id: u32, m: u64) {
     let aff0 = m & 0xff;
     let target = 1u64 << (aff0 % 16);
     let rs = aff0 / 16;

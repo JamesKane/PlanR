@@ -5,7 +5,7 @@
 //! `cargo xtask test` reads the console.
 
 use crate::arch;
-use crate::port::{clock, intr, trap};
+use crate::port::{clock, cpu, intr, mm, trap};
 use crate::println;
 
 /// Why a test did not pass.
@@ -13,7 +13,6 @@ use crate::println;
 pub(crate) enum Fail {
     Failed(&'static str),
     /// The machine lacks what the test needs; not a failure.
-    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))] // no arm64 test skips yet
     Skipped(&'static str),
 }
 
@@ -37,9 +36,14 @@ const TESTS: &[(&str, TestFn)] = &[
         "trap: fixup recovers bad address",
         trap::ktests::probe_recovers_bad_address,
     ),
+    ("mm: kernel stack has a guard page", mm::ktests::stack_has_guard),
     ("clock: counter advances", clock::ktests::counter_advances),
     ("intr: self-IPI delivered", intr::ktests::self_ipi_delivered),
     ("clock: ticks arrive at HZ", clock::ktests::ticks_arrive),
+    ("smp: every listed CPU online", cpu::ktests::all_online),
+    ("smp: every CPU's clock ticks", cpu::ktests::each_cpu_ticks),
+    ("smp: a call runs on its target", cpu::ktests::call_runs_on_target),
+    ("smp: spin lock serializes CPUs", cpu::ktests::lock_serializes),
 ];
 
 /// Runs every test, portable then architecture-specific, and returns the

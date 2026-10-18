@@ -3,7 +3,7 @@
 //! P1 bring-up: entered from 9boot with the boot page tables live (ADR
 //! 0010), the kernel validates the handoff, finds a console through ACPI,
 //! installs its trap vectors, takes over the interrupt controller, starts
-//! the clock, and reports what it sees. SMP comes next.
+//! the clock and the other CPUs, and reports what it sees.
 
 #![no_std]
 #![no_main]
@@ -16,7 +16,7 @@ use bootinfo::{BootInfo, EntryLevel, RegionKind};
 
 use port::config::{Config, TestMode};
 use port::console::{self, ConsoleSource};
-use port::{acpi, clock, intr, ktest, mm, trap};
+use port::{acpi, clock, cpu, intr, ktest, mm, trap};
 
 /// Marker lines `cargo xtask test` scans the serial log for.
 const OK_MARKER: &str = "kernel: ok";
@@ -25,6 +25,7 @@ pub(crate) const PANIC_MARKER: &str = "kernel: PANIC";
 /// Called by the architecture entry stub with the stack set up.
 extern "C" fn kmain(info: &'static BootInfo) -> ! {
     arch::init_traps();
+    cpu::init_boot();
     if info.validate().is_err() {
         // No console yet; nothing useful to say.
         arch::halt();
@@ -61,6 +62,7 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
             clock::start();
             arch::spllo();
             println!("clock: ticking at {} Hz", clock::HZ);
+            cpu::start_others(acpi.as_ref().ok());
         }
         Err(e) => println!("intr: {e}; continuing without interrupts"),
     }
