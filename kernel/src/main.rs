@@ -17,6 +17,7 @@ use bootinfo::{BootInfo, EntryLevel, RegionKind};
 
 use port::config::{self, Config, TestMode};
 use port::console::{self, ConsoleSource};
+use port::early::{self, Stage};
 use port::{acpi, clock, cpu, intr, ktest, mm, trap};
 
 /// Marker lines `cargo xtask test` scans the serial log for.
@@ -28,16 +29,21 @@ const RESET_LINE: &str = "ktest: warm reset to check the log ring";
 /// Called by the architecture entry stub with the stack set up.
 extern "C" fn kmain(info: &'static BootInfo) -> ! {
     arch::init_traps();
+    early::mark(info, Stage::Entered, true);
     arch::mmu::init_cpu();
     arch::protect::init_cpu();
     cpu::init_boot();
     if info.validate().is_err() {
-        // No console yet; nothing useful to say.
+        // No console yet: the magenta mark is all there is to say.
+        early::mark(info, Stage::BootInfoValid, false);
         arch::halt();
     }
+    early::mark(info, Stage::BootInfoValid, true);
     mm::init(info);
+    early::mark(info, Stage::Memory, true);
     // Leave 9boot's stack, which has no guard below it, for a kernel stack.
     let Some(stack) = mm::alloc_stack(mm::STACK_PAGES) else {
+        early::mark(info, Stage::KernelStack, false);
         arch::halt();
     };
     arch::run_on_stack(stack, boot_main, core::ptr::from_ref(info) as usize)
@@ -47,9 +53,15 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
 extern "C" fn boot_main(info: usize) -> ! {
     // SAFETY: `kmain` passed the address of its `&'static BootInfo`.
     let info: &'static BootInfo = unsafe { &*(info as *const BootInfo) };
+    early::mark(info, Stage::KernelStack, true);
     let acpi = acpi::System::new(info.rsdp());
+    early::mark(info, Stage::Acpi, acpi.is_ok());
     let source = console::init(acpi.as_ref());
+    early::mark(info, Stage::Console, true);
     let screen = info.framebuffer().map(|fb| (fb, console::attach_screen(fb)));
+    if matches!(screen, Some((_, None))) {
+        early::mark(info, Stage::Screen, false);
+    }
     let ring = info.log_ring().map(|r| (r, console::attach_ring(r)));
     arch::init(acpi.as_ref().ok());
 
@@ -127,29 +139,35 @@ extern "C" fn boot_main(info: usize) -> ! {
             println!("{OK_MARKER}");
             arch::exit(arch::ExitCode::Success);
         }
-        Some(TestMode::Reset) => match ring_boot {
-            Some(1) => {
-                println!("ktest: resetting through {}", arch::reset_method(acpi.as_ref().ok()));
-                // On a board (exit=halt: the screen is the console), leave
-                // time to read how it resets.
-                if config::halt_on_exit() {
-                    println!("ktest: resetting in 10 s");
-                    clock::spin_until(|| false, 10_000_000_000);
-                }
-                println!("{RESET_LINE}");
-                arch::reset(acpi.as_ref().ok());
-            }
-            Some(_) => {
-                println!("{OK_MARKER}");
-                arch::exit(arch::ExitCode::Success);
-            }
-            None => panic!("test=reset needs a log ring"),
-        },
+        Some(TestMode::Reset) => reset_test(ring_boot, acpi.as_ref().ok()),
         None => {}
     }
     report_interrupts();
     println!("P1 bring-up complete; halting");
     arch::halt()
+}
+
+/// `test=reset`: the first boot of a fresh log ring resets warm; the next
+/// passes if 9boot handed the ring on.
+fn reset_test(ring_boot: Option<u64>, acpi: Option<&acpi::System>) -> ! {
+    match ring_boot {
+        Some(1) => {
+            println!("ktest: resetting through {}", arch::reset_method(acpi));
+            // On a board (exit=halt: the screen is the console), leave time
+            // to read how it resets.
+            if config::halt_on_exit() {
+                println!("ktest: resetting in 10 s");
+                clock::spin_until(|| false, 10_000_000_000);
+            }
+            println!("{RESET_LINE}");
+            arch::reset(acpi);
+        }
+        Some(_) => {
+            println!("{OK_MARKER}");
+            arch::exit(arch::ExitCode::Success);
+        }
+        None => panic!("test=reset needs a log ring"),
+    }
 }
 
 /// `test=overflow`: overflows another CPU's stack if one is online, else

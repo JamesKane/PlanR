@@ -20,6 +20,9 @@ pub(crate) enum Perm {
     ReadExec,
     /// Identity map only: lets the loader keep running across the switch.
     ReadWriteExec,
+    /// Read-write, not executable, uncached: the framebuffer, so the
+    /// kernel can mark its progress before it maps anything itself.
+    Uncached,
 }
 
 /// Leaf size.
@@ -138,6 +141,9 @@ mod amd64 {
 
     const PRESENT: u64 = 1 << 0;
     const WRITABLE: u64 = 1 << 1;
+    /// PWT and PCD: with the default PAT, uncached.
+    const WRITE_THROUGH: u64 = 1 << 3;
+    const CACHE_DISABLE: u64 = 1 << 4;
     const HUGE: u64 = 1 << 7;
     const NO_EXECUTE: u64 = 1 << 63;
     const ADDR: u64 = 0x000f_ffff_ffff_f000;
@@ -155,11 +161,14 @@ mod amd64 {
         }
         fn leaf(phys: u64, perm: Perm, size: Size) -> u64 {
             let mut e = phys | PRESENT;
-            if matches!(perm, Perm::ReadWrite | Perm::ReadWriteExec) {
+            if matches!(perm, Perm::ReadWrite | Perm::ReadWriteExec | Perm::Uncached) {
                 e |= WRITABLE;
             }
-            if matches!(perm, Perm::ReadOnly | Perm::ReadWrite) {
+            if matches!(perm, Perm::ReadOnly | Perm::ReadWrite | Perm::Uncached) {
                 e |= NO_EXECUTE;
+            }
+            if perm == Perm::Uncached {
+                e |= CACHE_DISABLE | WRITE_THROUGH;
             }
             if size == Size::Block2M {
                 e |= HUGE;
@@ -181,7 +190,7 @@ mod amd64 {
 #[cfg(target_arch = "aarch64")]
 mod arm64 {
     use super::{Format, Perm, Size};
-    use bootinfo::arm64::ATTR_NORMAL;
+    use bootinfo::arm64::{ATTR_NORMAL, ATTR_NORMAL_NC};
 
     const VALID: u64 = 1 << 0;
     const TABLE_OR_PAGE: u64 = 1 << 1;
@@ -204,14 +213,19 @@ mod arm64 {
             phys | VALID | TABLE_OR_PAGE
         }
         fn leaf(phys: u64, perm: Perm, size: Size) -> u64 {
-            let mut e = phys | VALID | AF | SH_INNER | (ATTR_NORMAL << 2) | UXN;
+            let attr = if perm == Perm::Uncached {
+                ATTR_NORMAL_NC
+            } else {
+                ATTR_NORMAL
+            };
+            let mut e = phys | VALID | AF | SH_INNER | (attr << 2) | UXN;
             if size == Size::Page4K {
                 e |= TABLE_OR_PAGE;
             }
             if matches!(perm, Perm::ReadOnly | Perm::ReadExec) {
                 e |= AP_READ_ONLY;
             }
-            if matches!(perm, Perm::ReadOnly | Perm::ReadWrite) {
+            if matches!(perm, Perm::ReadOnly | Perm::ReadWrite | Perm::Uncached) {
                 e |= PXN;
             }
             e

@@ -173,7 +173,8 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
         let map = bs.memory_map(&mut map_buf).ctx("memory map")?;
         (memmap::ram_ranges(&map), map.len())
     };
-    let tables = build_tables(st, &ram, &kernel)?;
+    let fb = framebuffer(st);
+    let tables = build_tables(st, &ram, &kernel, fb)?;
 
     // Boot stack and the BootInfo block: [BootInfo][Region; capacity][config].
     let stack = bs
@@ -195,7 +196,7 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     let mut info = BootInfo::new(handoff::entry_level());
     info.rsdp = st.config_table(guid::ACPI_20_TABLE).map_or(0, |p| p as u64);
     info.uefi_system_table = st_phys;
-    info.set_framebuffer(framebuffer(st));
+    info.set_framebuffer(fb);
     info.set_log_ring(log_ring.map(|(r, _)| r));
     info.kernel_phys = kernel.phys;
     info.kernel_size = kernel.size;
@@ -272,6 +273,7 @@ fn build_tables<'a>(
     st: &'a SystemTable<Boot>,
     ram: &[(u64, u64)],
     k: &Kernel<'_>,
+    fb: Option<Framebuffer>,
 ) -> Result<Tables<'a, Native>, Error> {
     let mut tables = Tables::<Native>::new(st.boot_services()).ctx("page tables")?;
     for &(start, end) in ram {
@@ -281,6 +283,17 @@ fn build_tables<'a>(
         tables
             .map(HHDM_BASE + start, start, end - start, Perm::ReadWrite)
             .ctx("direct map")?;
+    }
+    // The framebuffer in the direct map too, uncached, so the kernel can
+    // mark its progress before it maps anything (`kernel/src/port/early.rs`).
+    // Not if it is RAM (QEMU's ramfb): that is mapped already.
+    if let Some(fb) = fb {
+        let (start, end) = (fb.phys & !(PAGE - 1), (fb.phys + fb.size).next_multiple_of(PAGE));
+        if !ram.iter().any(|&(s, e)| start < e && s < end) {
+            tables
+                .map(HHDM_BASE + start, start, end - start, Perm::Uncached)
+                .ctx("framebuffer map")?;
+        }
     }
     let mut prev_end = 0;
     for s in k.elf.segments() {
