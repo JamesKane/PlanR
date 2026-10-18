@@ -220,7 +220,17 @@ pub enum MadtEntry {
         bus: u8,
         source: u8,
         gsi: u32,
-        flags: u16,
+        flags: MpsFlags,
+    },
+    /// Which local APIC pin carries NMI. `uid` 0xff means every processor.
+    LocalApicNmi {
+        uid: u8,
+        flags: MpsFlags,
+        lint: u8,
+    },
+    /// A 64-bit local APIC address replacing the MADT header's.
+    LocalApicOverride {
+        address: u64,
     },
     X2Apic {
         uid: u32,
@@ -279,6 +289,48 @@ impl MadtEntry {
     }
 }
 
+/// Polarity and trigger mode of an interrupt input (`MPS INTI` flags).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MpsFlags(pub u16);
+
+/// Interrupt input polarity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Polarity {
+    /// As the bus defines it: active high for ISA.
+    BusDefault,
+    High,
+    Low,
+}
+
+/// Interrupt input trigger mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// As the bus defines it: edge for ISA.
+    BusDefault,
+    Edge,
+    Level,
+}
+
+impl MpsFlags {
+    #[must_use]
+    pub fn polarity(self) -> Polarity {
+        match self.0 & 3 {
+            1 => Polarity::High,
+            3 => Polarity::Low,
+            _ => Polarity::BusDefault,
+        }
+    }
+
+    #[must_use]
+    pub fn trigger(self) -> Trigger {
+        match (self.0 >> 2) & 3 {
+            1 => Trigger::Edge,
+            3 => Trigger::Level,
+            _ => Trigger::BusDefault,
+        }
+    }
+}
+
 /// Multiple APIC Description Table.
 #[derive(Debug, Clone, Copy)]
 pub struct Madt<'a>(Sdt<'a>);
@@ -288,10 +340,16 @@ impl<'a> Madt<'a> {
         Madt(t)
     }
 
-    /// The legacy local APIC physical address.
+    /// The local APIC physical address: the header's, unless an
+    /// address-override entry replaces it.
     #[must_use]
-    pub fn local_apic_address(&self) -> u32 {
-        u32_at(self.0.bytes(), 36).unwrap_or(0)
+    pub fn local_apic_address(&self) -> u64 {
+        self.entries()
+            .find_map(|e| match e {
+                MadtEntry::LocalApicOverride { address } => Some(address),
+                _ => None,
+            })
+            .unwrap_or_else(|| u64::from(u32_at(self.0.bytes(), 36).unwrap_or(0)))
     }
 
     /// True if the system also has dual 8259 PICs (`PCAT_COMPAT`).
@@ -339,8 +397,14 @@ fn parse_madt_entry(ty: u8, len: u8, e: &[u8]) -> Option<MadtEntry> {
             bus: e[2],
             source: e[3],
             gsi: u32_at(e, 4)?,
-            flags: u16_at(e, 8)?,
+            flags: MpsFlags(u16_at(e, 8)?),
         },
+        4 => MadtEntry::LocalApicNmi {
+            uid: e[2],
+            flags: MpsFlags(u16_at(e, 3)?),
+            lint: *e.get(5)?,
+        },
+        5 => MadtEntry::LocalApicOverride { address: u64_at(e, 4)? },
         9 => {
             let (enabled, online_capable) = flag(u32_at(e, 8)?);
             MadtEntry::X2Apic {
@@ -478,6 +542,75 @@ mod tests {
     }
 
     #[test]
+    fn madt_overrides_and_nmi() {
+        let mut body = 0xfee0_0000u32.to_le_bytes().to_vec();
+        body.extend(1u32.to_le_bytes()); // PCAT_COMPAT
+        // ISA IRQ 0 -> GSI 2, bus-default flags.
+        body.extend([2, 10, 0, 0]);
+        body.extend(2u32.to_le_bytes());
+        body.extend(0u16.to_le_bytes());
+        // SCI: ISA IRQ 9 -> GSI 9, level, active low.
+        body.extend([2, 10, 0, 9]);
+        body.extend(9u32.to_le_bytes());
+        body.extend(0b1111u16.to_le_bytes());
+        // NMI on LINT1 for every processor.
+        body.extend([4, 6, 0xff, 0, 0, 1]);
+        // A 64-bit local APIC address.
+        body.extend([5, 12, 0, 0]);
+        body.extend(0x1_fee0_0000u64.to_le_bytes());
+        let m = system(&[sdt(*b"APIC", 5, &body)]);
+        let madt = Acpi::new(&m, 0x1000).unwrap().madt().unwrap();
+        assert!(madt.has_8259());
+        assert_eq!(madt.local_apic_address(), 0x1_fee0_0000);
+        let e: Vec<_> = madt.entries().collect();
+        let MadtEntry::InterruptOverride { gsi: 2, flags, .. } = e[0] else {
+            panic!("{:?}", e[0])
+        };
+        assert_eq!(
+            (flags.polarity(), flags.trigger()),
+            (Polarity::BusDefault, Trigger::BusDefault)
+        );
+        let MadtEntry::InterruptOverride { source: 9, flags, .. } = e[1] else {
+            panic!("{:?}", e[1])
+        };
+        assert_eq!((flags.polarity(), flags.trigger()), (Polarity::Low, Trigger::Level));
+        assert!(matches!(e[2], MadtEntry::LocalApicNmi { uid: 0xff, lint: 1, .. }));
+    }
+
+    #[test]
+    fn hpet_table() {
+        let mut body = 0x8086_a201u32.to_le_bytes().to_vec();
+        body.extend(gas(0, 0, 0xfed0_0000));
+        body.push(0);
+        body.extend(0x80u16.to_le_bytes());
+        body.push(0);
+        let m = system(&[sdt(*b"HPET", 1, &body)]);
+        let h = Acpi::new(&m, 0x1000).unwrap().hpet().unwrap();
+        assert_eq!(h.base.address, 0xfed0_0000);
+        assert_eq!(h.block_id, 0x8086_a201);
+        assert_eq!(h.min_tick, 0x80);
+    }
+
+    /// QEMU `virt`: PPIs 29 (secure), 30, 27, 26; flags 4 (always on).
+    #[test]
+    fn gtdt_timers() {
+        let mut body = vec![0u8; 12];
+        for gsiv in [29u32, 30, 27, 26] {
+            body.extend(gsiv.to_le_bytes());
+            body.extend(4u32.to_le_bytes());
+        }
+        body.extend([0u8; 16]); // CntReadBase, platform timer count/offset
+        body.extend(28u32.to_le_bytes());
+        body.extend(0u32.to_le_bytes());
+        let m = system(&[sdt(*b"GTDT", 3, &body)]);
+        let g = Acpi::new(&m, 0x1000).unwrap().gtdt().unwrap();
+        assert_eq!(g.virtual_el1.gsiv, 27);
+        assert!(g.virtual_el1.always_on && !g.virtual_el1.edge);
+        assert_eq!(g.nonsecure_el1.gsiv, 30);
+        assert_eq!(g.virtual_el2.unwrap().gsiv, 28);
+    }
+
+    #[test]
     fn madt_stops_on_zero_length_entry() {
         let mut body = vec![0u8; 8];
         body.extend([0, 0, 0, 0]);
@@ -493,5 +626,83 @@ mod tests {
         let acpi = Acpi::new(&m, 0x1000).unwrap();
         assert_eq!(acpi.fadt().unwrap().psci(), Some(PsciConduit::Smc));
         assert!(acpi.find(Signature::FADT).is_some());
+    }
+}
+
+/// HPET description table (IA-PC HPET specification §3.2.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hpet {
+    /// The event timer block ID: hardware revision, comparator count,
+    /// counter size and vendor, as in the block's capabilities register.
+    pub block_id: u32,
+    pub base: Gas,
+    pub number: u8,
+    /// Minimum periodic tick, in main counter ticks.
+    pub min_tick: u16,
+}
+
+impl Hpet {
+    #[must_use]
+    pub fn parse(t: Sdt<'_>) -> Option<Hpet> {
+        let b = t.bytes();
+        Some(Hpet {
+            block_id: u32_at(b, 36)?,
+            base: Gas::parse(b, 40)?,
+            number: *b.get(52)?,
+            min_tick: u16_at(b, 53)?,
+        })
+    }
+}
+
+/// One architected timer interrupt from the GTDT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimerIrq {
+    /// The GIC interrupt ID (a PPI, 16-31); 0 if not provided.
+    pub gsiv: u32,
+    pub edge: bool,
+    pub active_low: bool,
+    pub always_on: bool,
+}
+
+impl TimerIrq {
+    fn parse(b: &[u8], o: usize) -> Option<TimerIrq> {
+        let flags = u32_at(b, o + 4)?;
+        Some(TimerIrq {
+            gsiv: u32_at(b, o)?,
+            edge: flags & 1 != 0,
+            active_low: flags & 2 != 0,
+            always_on: flags & 4 != 0,
+        })
+    }
+}
+
+/// Generic Timer Description Table (ACPI 6.5 §5.2.25): the arm64
+/// architected timers' interrupts. Platform (memory-mapped) timers come
+/// later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gtdt {
+    pub secure_el1: TimerIrq,
+    pub nonsecure_el1: TimerIrq,
+    pub virtual_el1: TimerIrq,
+    pub nonsecure_el2: TimerIrq,
+    /// GTDT revision 3 and later.
+    pub virtual_el2: Option<TimerIrq>,
+}
+
+impl Gtdt {
+    #[must_use]
+    pub fn parse(t: Sdt<'_>) -> Option<Gtdt> {
+        let b = t.bytes();
+        Some(Gtdt {
+            secure_el1: TimerIrq::parse(b, 48)?,
+            nonsecure_el1: TimerIrq::parse(b, 56)?,
+            virtual_el1: TimerIrq::parse(b, 64)?,
+            nonsecure_el2: TimerIrq::parse(b, 72)?,
+            virtual_el2: if t.revision() >= 3 {
+                TimerIrq::parse(b, 96)
+            } else {
+                None
+            },
+        })
     }
 }

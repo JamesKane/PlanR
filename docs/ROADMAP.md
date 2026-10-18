@@ -70,8 +70,22 @@ fixup table (the basis for `copyin`/`copyout`), and otherwise print a
 register dump and frame-pointer backtrace. An in-kernel test runner
 (`test=1`) and a negative trap test (`test=trap`) run in CI.
 
-**Remaining:** xAPIC/x2APIC + IOAPIC and GICv3; timers; SMP; framebuffer
-console and persistent log ring; HPET, MCFG, GTDT, PPTT and IORT parsing; CPU
+**Third slice done:** interrupts and the clock. amd64 masks the 8259s and
+runs the local APIC in x2APIC mode where available (xAPIC otherwise), with
+I/O APIC routing of GSIs and ISA overrides. The TSC is calibrated against
+the HPET (or CPUID leaf 0x15), and the APIC timer runs in TSC-deadline mode
+where available (one-shot count otherwise). arm64 brings up a GICv3
+distributor, redistributor and system-register CPU interface (9boot opens
+`ICC_SRE_EL2`), with the EL1 virtual timer on the PPI from the GTDT. A
+portable interrupt table dispatches by vector. `SpinLock` holds interrupts
+off (Plan 9's `ilock`). The clock ticks at `HZ`=100 from a one-shot timer
+re-armed at absolute deadlines. In-kernel tests cover a self-IPI, the tick
+rate and (amd64) an HPET interrupt through the I/O APIC. The
+`legacy-apic` boot test forces xAPIC and the count timer, because KVM
+would otherwise hide them.
+
+**Remaining:** SMP; framebuffer console and persistent log ring; MCFG, PPTT
+and IORT parsing; PIT fallback for TSC calibration without an HPET; CPU
 security features (SMEP/SMAP/UMIP, PAN/BTI); backtrace symbolization; kernel
 stack guard pages (arm64 has no IST equivalent, so an overflow there still
 recurses); ACPI dump corpus.

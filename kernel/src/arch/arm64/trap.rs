@@ -294,6 +294,11 @@ extern "C" fn trap(f: &mut TrapFrame) {
     }
     match ex {
         // elr points at the brk itself; step over it.
+        Exception::Irq => {
+            if !super::interrupt() {
+                trap::fatal(&format_args!("unhandled IRQ"), f, f.elr, f.x[29]);
+            }
+        }
         Exception::Breakpoint(_) => {
             trap::count_breakpoint();
             f.elr += 4;

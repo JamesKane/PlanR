@@ -88,35 +88,36 @@ pub(crate) fn backtrace(pc: Option<u64>, mut fp: u64) {
 pub(crate) mod ktests {
     use super::{BREAKPOINTS, UNMAPPED};
     use crate::arch;
+    use crate::port::ktest::TestResult;
     use core::sync::atomic::Ordering;
 
-    pub(crate) fn breakpoint_resumes() -> Result<(), &'static str> {
+    pub(crate) fn breakpoint_resumes() -> TestResult {
         let before = BREAKPOINTS.load(Ordering::Relaxed);
         arch::breakpoint();
         if BREAKPOINTS.load(Ordering::Relaxed) == before + 1 {
             Ok(())
         } else {
-            Err("breakpoint not counted")
+            Err("breakpoint not counted".into())
         }
     }
 
-    pub(crate) fn probe_reads_mapped() -> Result<(), &'static str> {
+    pub(crate) fn probe_reads_mapped() -> TestResult {
         static WORD: u64 = 0x9b00_7ed0_c0ff_ee00;
         match arch::probe_read((&raw const WORD) as u64) {
             Some(v) if v == WORD => Ok(()),
-            Some(_) => Err("wrong value"),
-            None => Err("mapped read faulted"),
+            Some(_) => Err("wrong value".into()),
+            None => Err("mapped read faulted".into()),
         }
     }
 
-    pub(crate) fn probe_recovers_unmapped() -> Result<(), &'static str> {
-        arch::probe_read(UNMAPPED).map_or(Ok(()), |_| Err("unmapped read succeeded"))
+    pub(crate) fn probe_recovers_unmapped() -> TestResult {
+        arch::probe_read(UNMAPPED).map_or(Ok(()), |_| Err("unmapped read succeeded".into()))
     }
 
     /// Outside both translation ranges: non-canonical on amd64 (#GP), and
     /// neither all-zero nor all-one top bits on arm64.
-    pub(crate) fn probe_recovers_bad_address() -> Result<(), &'static str> {
-        arch::probe_read(0x8000_0000_0000_0000).map_or(Ok(()), |_| Err("bad-address read succeeded"))
+    pub(crate) fn probe_recovers_bad_address() -> TestResult {
+        arch::probe_read(0x8000_0000_0000_0000).map_or(Ok(()), |_| Err("bad-address read succeeded".into()))
     }
 }
 

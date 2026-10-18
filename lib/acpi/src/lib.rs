@@ -11,7 +11,10 @@ mod tables;
 
 use core::fmt;
 
-pub use tables::{AddressSpace, Dbg2Device, Fadt, Gas, Madt, MadtEntry, PsciConduit, Spcr, UartKind, dbg2_devices};
+pub use tables::{
+    AddressSpace, Dbg2Device, Fadt, Gas, Gtdt, Hpet, Madt, MadtEntry, MpsFlags, Polarity, PsciConduit, Spcr, TimerIrq,
+    Trigger, UartKind, dbg2_devices,
+};
 
 /// Read access to physical memory.
 pub trait PhysMem {
@@ -52,6 +55,8 @@ impl Signature {
     pub const FADT: Signature = Signature(*b"FACP");
     pub const SPCR: Signature = Signature(*b"SPCR");
     pub const DBG2: Signature = Signature(*b"DBG2");
+    pub const HPET: Signature = Signature(*b"HPET");
+    pub const GTDT: Signature = Signature(*b"GTDT");
 }
 
 impl fmt::Display for Signature {
@@ -260,6 +265,16 @@ impl<'m, M: PhysMem> Acpi<'m, M> {
     #[must_use]
     pub fn spcr(&self) -> Option<Spcr> {
         self.find(Signature::SPCR).and_then(Spcr::parse)
+    }
+
+    #[must_use]
+    pub fn hpet(&self) -> Option<Hpet> {
+        self.find(Signature::HPET).and_then(Hpet::parse)
+    }
+
+    #[must_use]
+    pub fn gtdt(&self) -> Option<Gtdt> {
+        self.find(Signature::GTDT).and_then(Gtdt::parse)
     }
 
     pub fn dbg2(&self) -> impl Iterator<Item = Dbg2Device<'m>> + 'm {

@@ -1,4 +1,13 @@
 //! `plan9.ini`-style boot configuration: `key=value` lines, `#` comments.
+//!
+//! Keys the kernel reads:
+//!
+//! - `test=1` runs the in-kernel tests and powers off; `test=trap` takes a
+//!   deliberate fatal fault.
+//! - `apic=xapic` (amd64) keeps the local APIC in xAPIC mode even if the
+//!   CPU has x2APIC.
+//! - `apictimer=oneshot` (amd64) uses the local APIC timer's one-shot count
+//!   mode even if the CPU has TSC-deadline mode.
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Config<'a> {
@@ -30,6 +39,12 @@ impl<'a> Config<'a> {
             .filter(|(k, _)| k.trim() == key)
             .map(|(_, v)| v.trim())
             .next_back()
+    }
+
+    /// True if `key` is set to `value`.
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))] // only amd64 has switches so far
+    pub(crate) fn is(&self, key: &str, value: &str) -> bool {
+        self.get(key) == Some(value)
     }
 
     pub(crate) fn test_mode(&self) -> Option<TestMode> {

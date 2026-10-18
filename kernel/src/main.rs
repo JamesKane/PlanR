@@ -2,8 +2,8 @@
 //!
 //! P1 bring-up: entered from 9boot with the boot page tables live (ADR
 //! 0010), the kernel validates the handoff, finds a console through ACPI,
-//! installs its trap vectors, and reports what it sees. Interrupts, timers
-//! and SMP come next.
+//! installs its trap vectors, takes over the interrupt controller, starts
+//! the clock, and reports what it sees. SMP comes next.
 
 #![no_std]
 #![no_main]
@@ -16,7 +16,7 @@ use bootinfo::{BootInfo, EntryLevel, RegionKind};
 
 use port::config::{Config, TestMode};
 use port::console::{self, ConsoleSource};
-use port::{acpi, ktest, mm, trap};
+use port::{acpi, clock, intr, ktest, mm, trap};
 
 /// Marker lines `cargo xtask test` scans the serial log for.
 const OK_MARKER: &str = "kernel: ok";
@@ -54,8 +54,18 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
         Ok(sys) => sys.report(),
         Err(e) => println!("acpi: {e}"),
     }
+    let config = Config::parse(info.config());
+    match arch::init_interrupts(acpi.as_ref().ok(), &config) {
+        Ok(counter_hz) => {
+            clock::init(counter_hz);
+            clock::start();
+            arch::spllo();
+            println!("clock: ticking at {} Hz", clock::HZ);
+        }
+        Err(e) => println!("intr: {e}; continuing without interrupts"),
+    }
 
-    match Config::parse(info.config()).test_mode() {
+    match config.test_mode() {
         Some(TestMode::Run) => {
             let failed = ktest::run();
             assert!(failed == 0, "{failed} kernel tests failed");
@@ -70,8 +80,13 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
         }
         None => {}
     }
+    report_interrupts();
     println!("P1 bring-up complete; halting");
     arch::halt()
+}
+
+fn report_interrupts() {
+    intr::each(|v, name, n| println!("intr: {v:#x} {name}: {n}"));
 }
 
 fn report_memory(info: &BootInfo) {

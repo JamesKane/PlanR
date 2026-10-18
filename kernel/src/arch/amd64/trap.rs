@@ -472,6 +472,11 @@ extern "C" fn trap(f: &mut TrapFrame) {
     match ex {
         // int3 leaves rip after itself, so returning resumes.
         Exception::Breakpoint => trap::count_breakpoint(),
+        Exception::Interrupt(v) => {
+            if !super::interrupt(v) {
+                trap::fatal(&ex, f, f.rip, f.rbp);
+            }
+        }
         Exception::PageFault { .. } | Exception::GeneralProtection(_) => match trap::fixup(f.rip) {
             Some(resume) => f.rip = resume,
             None => trap::fatal(&ex, f, f.rip, f.rbp),

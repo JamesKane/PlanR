@@ -156,7 +156,7 @@ fn sh(mut cmd: Command) -> Result<(), String> {
 }
 
 /// Built artifacts for one architecture.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Built {
     arch: Arch,
     loader: PathBuf,
@@ -198,6 +198,8 @@ struct BootTest {
     expect: Expect,
     /// Boot every profile under `--all-profiles`, not just the first.
     every_profile: bool,
+    /// Only for this architecture (the test exercises arch-specific code).
+    only: Option<Arch>,
 }
 
 const BOOT_TESTS: &[BootTest] = &[
@@ -207,6 +209,16 @@ const BOOT_TESTS: &[BootTest] = &[
         config: "# Plan R test image\ntest=1\n",
         expect: Expect::Ok,
         every_profile: true,
+        only: None,
+    },
+    // The amd64 fallbacks KVM would otherwise hide: xAPIC registers in
+    // MMIO, and the one-shot count timer instead of TSC-deadline mode.
+    BootTest {
+        name: "legacy-apic",
+        config: "# Plan R test image: xAPIC, one-shot timer\ntest=1\napic=xapic\napictimer=oneshot\n",
+        expect: Expect::Ok,
+        every_profile: false,
+        only: Some(Arch::Amd64),
     },
     // A deliberate fatal page fault must produce a full trap report.
     BootTest {
@@ -219,6 +231,7 @@ const BOOT_TESTS: &[BootTest] = &[
             "#1 0x",
         ]),
         every_profile: false,
+        only: None,
     },
 ];
 
@@ -264,8 +277,13 @@ fn test(opts: &Opts) -> Result<(), String> {
     let built = build(opts)?;
     let mut failed = Vec::new();
     for t in BOOT_TESTS {
+        let built: Vec<Built> = built
+            .iter()
+            .filter(|b| t.only.is_none_or(|a| a == b.arch))
+            .cloned()
+            .collect();
         let imgs = write_images(&built, &format!("planr-{}.img", t.name), t.config)?;
-        for (&arch, img) in opts.arches.iter().zip(&imgs) {
+        for (arch, img) in built.iter().map(|b| b.arch).zip(&imgs) {
             let profiles = if opts.all_profiles && t.every_profile {
                 arch.profiles()
             } else {

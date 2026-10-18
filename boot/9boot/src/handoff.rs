@@ -155,6 +155,34 @@ mod arm64 {
         };
     }
 
+    /// Lets EL1 use the `GICv3` system-register CPU interface: sets
+    /// `ICC_SRE_EL2.SRE` and `.Enable` and turns the virtual CPU interface
+    /// off (`ICH_HCR_EL2` = 0). Firmware usually leaves it so; we make sure.
+    /// The generic encodings avoid needing the assembler's GIC extension.
+    fn open_gic_to_el1() {
+        let pfr0: u64;
+        // SAFETY: reading an ID register has no side effects.
+        unsafe { asm!("mrs {}, id_aa64pfr0_el1", out(reg) pfr0, options(nomem, nostack)) };
+        if pfr0 & (0xf << 24) == 0 {
+            return; // no system-register GIC interface
+        }
+        // SAFETY: at EL2 with a GICv3 CPU interface; affects only what EL1
+        // may access.
+        unsafe {
+            asm!(
+                "mrs {t}, S3_4_C12_C9_5",
+                "orr {t}, {t}, #1", // SRE
+                "orr {t}, {t}, #8", // Enable: EL1 may use ICC_SRE_EL1
+                "msr S3_4_C12_C9_5, {t}",
+                "isb",
+                "msr S3_4_C12_C11_0, xzr",
+                "isb",
+                t = out(reg) _,
+                options(nostack),
+            );
+        }
+    }
+
     /// `SPSR_EL2` for the eret: `EL1h` (EL1 using `SP_EL1`), DAIF masked.
     const SPSR_EL1H_MASKED: u64 = 0x3c5;
 
@@ -216,6 +244,7 @@ mod arm64 {
             // SAFETY: reading HCR_EL2 at EL2 has no side effects.
             unsafe { asm!("mrs {}, hcr_el2", out(reg) hcr, options(nomem, nostack)) };
             let regs = El2Regs::new(hcr & HCR_E2H != 0);
+            open_gic_to_el1();
             // With E2H=1 (VHE, as AAVMF runs), `*_EL1` names accessed from
             // EL2 are redirected to the EL2 registers, so the EL1 registers
             // must be written through their `*_EL12` aliases. The generic

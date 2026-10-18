@@ -4,10 +4,27 @@
 //! its exception machinery and page tables. Each test prints one line;
 //! `cargo xtask test` reads the console.
 
-use crate::port::trap;
+use crate::arch;
+use crate::port::{clock, intr, trap};
 use crate::println;
 
-type TestFn = fn() -> Result<(), &'static str>;
+/// Why a test did not pass.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Fail {
+    Failed(&'static str),
+    /// The machine lacks what the test needs; not a failure.
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))] // no arm64 test skips yet
+    Skipped(&'static str),
+}
+
+impl From<&'static str> for Fail {
+    fn from(why: &'static str) -> Fail {
+        Fail::Failed(why)
+    }
+}
+
+pub(crate) type TestResult = Result<(), Fail>;
+pub(crate) type TestFn = fn() -> TestResult;
 
 const TESTS: &[(&str, TestFn)] = &[
     ("trap: breakpoint resumes", trap::ktests::breakpoint_resumes),
@@ -20,20 +37,31 @@ const TESTS: &[(&str, TestFn)] = &[
         "trap: fixup recovers bad address",
         trap::ktests::probe_recovers_bad_address,
     ),
+    ("clock: counter advances", clock::ktests::counter_advances),
+    ("intr: self-IPI delivered", intr::ktests::self_ipi_delivered),
+    ("clock: ticks arrive at HZ", clock::ktests::ticks_arrive),
 ];
 
-/// Runs every test and returns the number that failed.
+/// Runs every test, portable then architecture-specific, and returns the
+/// number that failed.
 pub(crate) fn run() -> usize {
-    let mut failed = 0;
-    for (name, test) in TESTS {
+    let (mut passed, mut failed, mut skipped) = (0, 0, 0);
+    for (name, test) in TESTS.iter().chain(arch::KTESTS) {
         match test() {
-            Ok(()) => println!("ktest: {name}: ok"),
-            Err(why) => {
+            Ok(()) => {
+                println!("ktest: {name}: ok");
+                passed += 1;
+            }
+            Err(Fail::Skipped(why)) => {
+                println!("ktest: {name}: skipped: {why}");
+                skipped += 1;
+            }
+            Err(Fail::Failed(why)) => {
                 println!("ktest: {name}: FAILED: {why}");
                 failed += 1;
             }
         }
     }
-    println!("ktest: {} passed, {failed} failed", TESTS.len() - failed);
+    println!("ktest: {passed} passed, {failed} failed, {skipped} skipped");
     failed
 }
