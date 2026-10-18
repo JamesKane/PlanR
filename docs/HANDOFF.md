@@ -1,7 +1,7 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-18, after slice 11.
+2026-10-18, after slice 11 and the first Orange Pi run.
 
 ## State
 
@@ -38,8 +38,20 @@ Where work stands, for picking it up in a new session. Last updated
 
 In the suggested order:
 
-1. **Reference boards:** check SMP, the CPU protections, the framebuffer
-   console and log-ring survival on the Orange Pi 6 Plus and the Ryzen.
+1. **Reference boards** (procedure in `docs/HARDWARE.md`, "Booting Plan R
+   on a board"):
+   - **Orange Pi 6 Plus: passed on 2026-10-18** with `scripts/hwcheck.ini`.
+     It entered at EL2 and ran at EL1, with PAN on, 12 of 12 CPUs online,
+     the DBG2 PL011 console chosen, and the 1920×1080 framebuffer at
+     scale 1. The log ring attached and all 17 in-kernel tests passed.
+     Serial output itself is unobserved (no USB-TTL adapter yet).
+   - **Still to do there:** log-ring survival across a warm reset. Plan R
+     has to boot twice in a row, but BootNext covers only one boot. One
+     way: 9boot sets BootNext to BootCurrent when `test=reset` asks for a
+     second boot.
+   - **Ryzen:** not yet run. Write `build/amd64/planr.img` to the same
+     stick, run `boot-once.sh` on Fedora, and reboot. The Ryzen has no
+     serial, so the screen is the console.
 
 ## Things to know
 
@@ -68,6 +80,14 @@ In the suggested order:
   - The Orange Pi's MCFG has three windows on segment 0 that share one
     ECAM base, with different bus ranges.
   - The Ryzen's MADT matches Linux's APIC IDs exactly.
+- **EL2 must set VPIDR_EL2/VMPIDR_EL2** before dropping to EL1. EL1
+  reads MIDR/MPIDR from them, and they reset to unknown values. The Orange
+  Pi's A520s read garbage affinities until both 9boot and the AP entry set
+  them (`b17a270`). QEMU resets them to the real values, so no CI test
+  catches a regression.
+- **Panic backtraces stop after one frame:** the prebuilt `core` has no
+  frame pointers, so the chain breaks in the panic machinery. Trap
+  backtraces are unaffected.
 - **Kernel stacks** come only from `mm::alloc_stack`, in 128 KiB slots.
   arm64's overflow check relies on every stack an exception can arrive on
   following that layout and being `mm::STACK_PAGES` long. A future thread
