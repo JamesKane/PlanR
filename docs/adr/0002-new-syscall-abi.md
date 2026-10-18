@@ -1,7 +1,7 @@
 # ADR 0002: A new syscall ABI with Plan 9 semantics
 
-- Status: Proposed
-- Date: 2026-10-17
+- Status: Accepted
+- Date: 2026-10-17 (accepted 2026-10-17)
 
 ## Context
 
