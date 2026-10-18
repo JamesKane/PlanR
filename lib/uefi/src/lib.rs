@@ -259,6 +259,13 @@ impl<S> SystemTable<S> {
         unsafe { self.raw.as_ref() }
     }
 
+    /// The handle of the active console output device. On a machine with
+    /// several displays, its Graphics Output is the one being shown.
+    #[must_use]
+    pub fn console_out_handle(&self) -> Handle {
+        self.raw().console_out_handle
+    }
+
     #[must_use]
     pub fn firmware_vendor(&self) -> Option<Ucs2Str<'_>> {
         NonNull::new(self.raw().firmware_vendor.cast_mut()).map(|ptr| Ucs2Str {

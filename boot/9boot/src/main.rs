@@ -174,6 +174,13 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
         (memmap::ram_ranges(&map), map.len())
     };
     let fb = framebuffer(st);
+    match fb {
+        Some(f) => println!(
+            st,
+            "9boot: display {}x{} {:?} at {:#x}", f.width, f.height, f.format, f.phys
+        ),
+        None => println!(st, "9boot: no linear framebuffer; the kernel will have no screen"),
+    }
     let tables = build_tables(st, &ram, &kernel, fb)?;
 
     // Boot stack and the BootInfo block: [BootInfo][Region; capacity][config].
@@ -349,12 +356,17 @@ pub(crate) fn read_file(root: &File<'_>, path: &str) -> uefi::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// The framebuffer of the display the console is on. With several GPUs
+/// (the Ryzen: an RTX 4070 driving the monitor, a Radeon iGPU idle), the
+/// first Graphics Output the firmware lists may be one nothing shows, so
+/// the console output handle's comes first.
 fn framebuffer(st: &SystemTable<Boot>) -> Option<Framebuffer> {
-    let m = st
-        .boot_services()
-        .locate_protocol::<GraphicsOutput>()
-        .ok()?
-        .mode_info()?;
+    let bs = st.boot_services();
+    let gop = bs
+        .handle_protocol::<GraphicsOutput>(st.console_out_handle())
+        .or_else(|_| bs.locate_protocol::<GraphicsOutput>())
+        .ok()?;
+    let m = gop.mode_info()?;
     let format = match m.format {
         PixelFormat::Rgbx => bootinfo::PixelFormat::Rgbx,
         PixelFormat::Bgrx => bootinfo::PixelFormat::Bgrx,
