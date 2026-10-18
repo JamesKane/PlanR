@@ -382,15 +382,22 @@ fn mark_handoff(f: &Framebuffer) {
 /// first Graphics Output the firmware lists may be one nothing shows, so
 /// the console output handle's comes first.
 fn framebuffer(st: &SystemTable<Boot>) -> Option<Framebuffer> {
-    let fb = find_framebuffer(st);
-    match fb {
-        Some(f) => println!(
-            st,
-            "9boot: display {}x{} {:?} at {:#x}", f.width, f.height, f.format, f.phys
-        ),
-        None => println!(st, "9boot: no linear framebuffer; the kernel will have no screen"),
+    let Some(mut f) = find_framebuffer(st) else {
+        println!(st, "9boot: no linear framebuffer; the kernel will have no screen");
+        return None;
+    };
+    println!(
+        st,
+        "9boot: display {}x{} {:?} at {:#x}, {:#x} bytes", f.width, f.height, f.format, f.phys, f.size
+    );
+    // Some GOP drivers report a FrameBufferSize smaller than the mode
+    // needs (Linux's efifb allows for it too): trust the geometry.
+    let needed = u64::from(f.stride) * u64::from(f.height) * 4;
+    if f.size < needed {
+        println!(st, "9boot: that is less than the mode needs; using {needed:#x}");
+        f.size = needed;
     }
-    fb
+    Some(f)
 }
 
 fn find_framebuffer(st: &SystemTable<Boot>) -> Option<Framebuffer> {
