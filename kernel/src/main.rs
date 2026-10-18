@@ -28,8 +28,9 @@ const RESET_LINE: &str = "ktest: warm reset to check the log ring";
 
 /// Called by the architecture entry stub with the stack set up.
 extern "C" fn kmain(info: &'static BootInfo) -> ! {
-    arch::init_traps();
     early::mark(info, Stage::Entered, true);
+    arch::init_traps();
+    early::mark(info, Stage::Traps, true);
     arch::mmu::init_cpu();
     arch::protect::init_cpu();
     cpu::init_boot();

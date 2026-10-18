@@ -9,10 +9,13 @@ use bootinfo::{BootInfo, phys_to_virt};
 
 use crate::arch;
 
-/// The stages, in order.
-#[derive(Debug, Clone, Copy)]
+/// The stages, in order. Positions 0 and 1 are 9boot's: before and after
+/// it exits boot services.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
-    Entered = 1,
+    /// The first thing `kmain` does, before the trap handlers exist.
+    Entered = 2,
+    Traps,
     BootInfoValid,
     Memory,
     KernelStack,
@@ -38,7 +41,9 @@ pub(crate) fn mark(info: &BootInfo, stage: Stage, ok: bool) {
         return;
     };
     let base = phys_to_virt(fb.phys);
-    if arch::probe_read(base).is_none() {
+    // Before the trap handlers there is no fixup to probe with; 9boot maps
+    // the framebuffer (as RAM, or uncached) whenever it hands one over.
+    if stage != Stage::Entered && arch::probe_read(base).is_none() {
         return;
     }
     let (Ok(stride), Ok(width), Ok(height)) = (

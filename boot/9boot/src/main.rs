@@ -212,7 +212,7 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
         tables.pages_used
     );
     if let Some(f) = fb {
-        mark_handoff(&f);
+        mark_handoff(&f, 0);
     }
     // The final GetMemoryMap must fit without allocating.
     let need = bs.memory_map_size() + MAP_SLACK * 64;
@@ -334,8 +334,14 @@ fn exit_and_jump(mut st: SystemTable<Boot>, image: Handle, mut p: Prepared) -> !
         // SAFETY: `info` was written in `prepare`; nothing else aliases it.
         unsafe { (*p.info).memory = Slice::new(phys_to_virt(p.regions as u64) as *const Region, n) };
         match st.exit_boot_services(image, key) {
-            // SAFETY: boot services are gone; the handoff was built for this.
-            Ok(_runtime) => unsafe { handoff::jump(&p.handoff) },
+            Ok(_runtime) => {
+                // SAFETY: as above.
+                if let Some(f) = unsafe { (*p.info).framebuffer() } {
+                    mark_handoff(&f, 1);
+                }
+                // SAFETY: boot services are gone; the handoff was built for this.
+                unsafe { handoff::jump(&p.handoff) }
+            }
             // The map changed under us (an event fired): fetch it again.
             Err((again, _)) => st = again,
         }
@@ -352,11 +358,12 @@ pub(crate) fn read_file(root: &File<'_>, path: &str) -> uefi::Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Paints a green square at the top left of the framebuffer handed to the
-/// kernel, left of the kernel's own progress marks
-/// (`kernel/src/port/early.rs`). If it shows, the kernel was given the
+/// Paints green square `pos` along the top of the framebuffer handed to
+/// the kernel, left of the kernel's own progress marks
+/// (`kernel/src/port/early.rs`): 0 just before exiting boot services, 1
+/// just after, before the jump. If they show, the kernel was given the
 /// framebuffer on screen.
-fn mark_handoff(f: &Framebuffer) {
+fn mark_handoff(f: &Framebuffer, pos: usize) {
     const SIZE: usize = 24;
     const GAP: usize = 8;
     let (Ok(stride), Ok(width), Ok(height)) = (
@@ -366,11 +373,12 @@ fn mark_handoff(f: &Framebuffer) {
     ) else {
         return;
     };
-    if GAP + SIZE > width.min(height) {
+    let x0 = GAP + pos * (SIZE + GAP);
+    if x0 + SIZE > width || GAP + SIZE > height {
         return;
     }
     for y in GAP..GAP + SIZE {
-        for x in GAP..GAP + SIZE {
+        for x in x0..x0 + SIZE {
             // SAFETY: inside the framebuffer, which UEFI identity-maps.
             unsafe { (f.phys as *mut u32).add(y * stride + x).write_volatile(0x0000_ff00) };
         }
