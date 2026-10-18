@@ -77,9 +77,9 @@ fn rewrite(root: &File<'_>, text: &str) -> Result<()> {
 
 /// Reports that the ring the first boot put at `at` did not survive, saves
 /// the report over the marker, and stops.
-pub(crate) fn lost(st: &SystemTable<Boot>, root: &File<'_>, at: u64) -> ! {
+pub(crate) fn lost(st: &SystemTable<Boot>, root: &File<'_>, at: u64, what: &str) -> ! {
     let mut report = format!("9boot: reset test FAILED: the log ring at {at:#x} did not survive the reset.\n");
-    let _ = writeln!(report, "9boot: that memory is now {}", describe(st, at));
+    let _ = writeln!(report, "9boot: that memory was {what}");
     let _ = rewrite(root, &report);
     let mut out = st.stdout();
     let _ = write!(out, "{report}");
@@ -93,7 +93,7 @@ pub(crate) fn lost(st: &SystemTable<Boot>, root: &File<'_>, at: u64) -> ! {
 }
 
 /// What the memory map says `at` is now, and what its first bytes hold.
-fn describe(st: &SystemTable<Boot>, at: u64) -> String {
+pub(crate) fn describe(st: &SystemTable<Boot>, at: u64) -> String {
     let bs = st.boot_services();
     let mut buf = alloc::vec![0u8; bs.memory_map_size() * 2 + 4096];
     let ty = bs.memory_map(&mut buf).ok().and_then(|m| {
@@ -124,7 +124,16 @@ fn describe(st: &SystemTable<Boot>, at: u64) -> String {
     let contents = if head.iter().all(|&b| b == 0) {
         String::from("all zeros (cleared)")
     } else if head[..8] == MAGIC.to_le_bytes() {
-        String::from("a ring header that fails its check")
+        // Header fields: version (u32 at 8), capacity, boot, head, check.
+        let word = |o: usize| u64::from_le_bytes(head[o..o + 8].try_into().unwrap_or([0; 8]));
+        format!(
+            "a ring header that fails its check: version {}, capacity {:#x}, boot {}, written {:#x}, check {:#x}",
+            word(8) & 0xffff_ffff,
+            word(16),
+            word(24),
+            word(32),
+            word(40)
+        )
     } else {
         let mut s = String::from("other data:");
         for b in &head[..16] {

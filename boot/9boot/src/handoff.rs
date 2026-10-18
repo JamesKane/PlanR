@@ -10,9 +10,9 @@ pub(crate) struct Handoff {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub(crate) use amd64::{entry_level, jump};
+pub(crate) use amd64::{entry_level, flush_to_memory, jump};
 #[cfg(target_arch = "aarch64")]
-pub(crate) use arm64::{entry_level, jump, prepare_exec};
+pub(crate) use arm64::{entry_level, flush_to_memory, jump, prepare_exec};
 
 #[cfg(target_arch = "x86_64")]
 mod amd64 {
@@ -22,6 +22,19 @@ mod amd64 {
 
     pub(crate) fn entry_level() -> EntryLevel {
         EntryLevel::NotApplicable
+    }
+
+    /// Writes `[start, start + len)` back from the caches to RAM and drops
+    /// it from them, for memory the kernel maps uncached (the log ring).
+    pub(crate) fn flush_to_memory(start: u64, len: u64) {
+        let mut a = start & !63;
+        while a < start + len {
+            // SAFETY: flushes a cache line of memory we own.
+            unsafe { asm!("clflush [{}]", in(reg) a, options(nostack, preserves_flags)) };
+            a += 64;
+        }
+        // SAFETY: a barrier.
+        unsafe { asm!("mfence", options(nostack, preserves_flags)) };
     }
 
     /// Enables NX and write protection, switches to the boot page tables
@@ -216,6 +229,26 @@ mod arm64 {
         let ips = (mmfr0 & 0xf).min(5); // up to 48-bit PA; 52-bit needs LPA
         let half = 16 | (1 << 8) | (1 << 10) | (3 << 12); // TxSZ=16, IRGN/ORGN WB, SH inner
         half | (half << 16) | (2 << 30) | (ips << 32) // TG1 = 4 KiB
+    }
+
+    /// Writes `[start, start + len)` back from the caches to RAM (the point
+    /// of coherency) and drops it from them, for memory the kernel maps
+    /// non-cacheable (the log ring). Otherwise a dirty line written here
+    /// can stay in the cache over the kernel's writes and a reset discards
+    /// it, so RAM never holds what 9boot wrote.
+    pub(crate) fn flush_to_memory(start: u64, len: u64) {
+        let ctr: u64;
+        // SAFETY: reading CTR_EL0 has no side effects.
+        unsafe { asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack)) };
+        let line = 4u64 << ((ctr >> 16) & 0xf);
+        let mut a = start & !(line - 1);
+        while a < start + len {
+            // SAFETY: cache maintenance by address on memory we own.
+            unsafe { asm!("dc civac, {}", in(reg) a, options(nostack)) };
+            a += line;
+        }
+        // SAFETY: a barrier.
+        unsafe { asm!("dsb sy", options(nostack)) };
     }
 
     /// Makes freshly copied code visible to instruction fetch: clean the

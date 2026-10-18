@@ -56,6 +56,8 @@ pub(crate) fn setup(st: &SystemTable<Boot>, root: &File<'_>) -> Option<(LogRing,
     let mut ring = open(phys)?;
     let boot = previous.map_or(1, |(_, f)| f.boot + 1);
     ring.reset(boot);
+    // The kernel writes the ring uncached; RAM must hold the header first.
+    crate::handoff::flush_to_memory(phys, RING_BYTES);
     Some((LogRing { phys, size: RING_BYTES }, boot))
 }
 

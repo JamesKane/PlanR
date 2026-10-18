@@ -145,11 +145,13 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     // A reset test: read its marker before `setup` saves over it.
     let reset_test = bootnext::config_is(&config, "test", "reset");
     let pending = if reset_test { bootnext::pending(&root) } else { None };
+    // What the old ring's memory holds, read before `setup` can reuse it.
+    let before = pending.map(|at| (at, bootnext::describe(st, at)));
     let log_ring = logring::setup(st, &root);
     if reset_test {
-        match (log_ring, pending) {
+        match (log_ring, before) {
             // A fresh ring after the first boot: the old one was lost.
-            (Some((_, 1)), Some(at)) => bootnext::lost(st, &root, at),
+            (Some((_, 1)), Some((at, what))) => bootnext::lost(st, &root, at, &what),
             // The first boot arranges the second.
             (Some((ring, 1)), None) => match bootnext::arrange(st, &root, ring.phys) {
                 Ok(n) => println!(st, "9boot: BootNext = {n:04X}, so Plan R starts again after the reset"),
