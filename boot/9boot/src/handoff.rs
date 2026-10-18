@@ -128,6 +128,12 @@ mod arm64 {
                 "msr cntvoff_el2, xzr",
                 "msr cptr_el2, x11",
                 "msr vttbr_el2, xzr",
+                // EL1 reads MIDR_EL1/MPIDR_EL1 from VPIDR_EL2/VMPIDR_EL2,
+                // which reset to unknown values. (x13 is free: noreturn.)
+                "mrs x13, midr_el1",
+                "msr vpidr_el2, x13",
+                "mrs x13, mpidr_el1",
+                "msr vmpidr_el2, x13",
                 "isb",
                 "tlbi vmalle1",
                 "dsb ish",

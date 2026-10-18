@@ -187,30 +187,16 @@ fn add_region(n: usize, base: u64, len: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// How long a CPU waits for its redistributor to appear.
-const REDISTRIBUTOR_WAIT_MS: u64 = 100;
-
-/// Finds and records the calling CPU's redistributor. The firmware may
-/// still be powering it up when the CPU gets here (the Orange Pi's A520
-/// cluster), so the walk is retried for a while before giving up.
+/// Finds and records the calling CPU's redistributor.
 fn attach_redistributor() -> Result<(), &'static str> {
     let aff = packed_affinity(mpidr());
-    let find = || {
-        REGIONS[..NREGIONS.load(Ordering::Acquire)]
-            .iter()
-            .find_map(|(va, len)| find_redistributor(va.load(Ordering::Relaxed), len.load(Ordering::Relaxed), aff))
-    };
-    let deadline = super::counter() + super::counter_frequency() * REDISTRIBUTOR_WAIT_MS / 1000;
-    let rd = loop {
-        if let Some(rd) = find() {
-            break rd;
-        }
-        if super::counter() > deadline {
+    let rd = REGIONS[..NREGIONS.load(Ordering::Acquire)]
+        .iter()
+        .find_map(|(va, len)| find_redistributor(va.load(Ordering::Relaxed), len.load(Ordering::Relaxed), aff))
+        .ok_or_else(|| {
             dump_redistributors(aff);
-            return Err("no redistributor for this CPU");
-        }
-        core::hint::spin_loop();
-    };
+            "no redistributor for this CPU"
+        })?;
     GICR[cpu::current().index()].store(rd, Ordering::Relaxed);
     Ok(())
 }

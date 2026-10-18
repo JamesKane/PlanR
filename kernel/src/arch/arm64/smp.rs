@@ -81,6 +81,12 @@ global_asm!(
     "    isb",
     "    msr cntvoff_el2, xzr",
     "    msr vttbr_el2, xzr",
+    // EL1 reads MIDR_EL1/MPIDR_EL1 from VPIDR_EL2/VMPIDR_EL2, which reset
+    // to unknown values: the Orange Pi's A520s read garbage affinities.
+    "    mrs x10, midr_el1",
+    "    msr vpidr_el2, x10",
+    "    mrs x10, mpidr_el1",
+    "    msr vmpidr_el2, x10",
     "    cbz x9, 2f",
     // VHE: CNTHCTL EL1PCTEN|EL1PTEN; CPTR in CPACR layout, FPEN|ZEN.
     "    mov x10, #(3 << 10)",
