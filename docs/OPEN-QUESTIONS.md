@@ -17,5 +17,5 @@ it as an ADR and link it here.
 | Q10 | ~~AMD64 baseline ISA level?~~ | **Resolved, [ADR 0007](adr/0007-amd64-baseline-x86-64-v2.md):** x86-64-v2, with runtime dispatch for newer extensions. | — |
 | Q11 | Orange Pi 6 Plus ACPI gaps? | Mostly answered by AbyssBSD's bring-up: ACPI is usable. Known gaps: no SPCR (use DBG2), dangling `I2C0.UXC*` references, clocks via AML→PCC→SCMI. Handle them in code; no device tree needed. | P7 |
 | Q12 | Kernel wait primitive for multiplexing many fds (needed by APE2 `poll` and useful natively)? | Prototype in P3 using helper procs (Plan 9 style); add a kernel primitive only if measurements demand it. | P8 |
-| Q13 | Kernel-resident vs user-space drivers for storage/net on the hot path? | Kernel for NVMe/virtio/NICs (performance, boot); user-space via `#H` for GPU/NPU/USB class drivers. | P4 |
+| Q13 | Kernel-resident vs user-space drivers for storage/net on the hot path? | Kernel for NVMe/virtio/NICs (performance, boot); user-space via `#H` for GPU/NPU/USB class drivers. Placement rule in [DRIVER-MODEL.md §3.1](DRIVER-MODEL.md). | P4 |
 | Q14 | Keep `troff`/`postscript` documentation tooling? | Keep `man` working (a smaller man-macro renderer); defer full troff. | Later |

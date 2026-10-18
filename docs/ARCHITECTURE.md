@@ -116,6 +116,12 @@ associated typed value instead of Plan 9's `void *aux` / `c->qid.path`
 bit-packing. Each device defines `enum Node { Root, Ctl, Data(u32), … }`
 and stores its encoding in the qid path.
 
+### Devices and drivers
+
+How devices are found, matched to drivers, granted hardware and detached,
+and which drivers run in user space through `#H`, is in
+[DRIVER-MODEL.md](DRIVER-MODEL.md) (proposed).
+
 ### Namespaces
 
 `Pgrp` holds the mount table: a map from `(Qid, devtype, devno)` to
