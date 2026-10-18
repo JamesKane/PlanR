@@ -14,6 +14,19 @@ const HUGE: u64 = 1 << 7;
 const NO_EXECUTE: u64 = 1 << 63;
 const ADDR: u64 = 0x000f_ffff_ffff_f000;
 
+const IA32_PAT: u32 = 0x277;
+/// The page attribute table: the power-on types (WB, WT, UC-, UC, twice)
+/// except that entry 1, which `WRITE_THROUGH` alone selects, is
+/// write-combining instead of write-through.
+const PAT: u64 = 0x0007_0106_0007_0106;
+
+/// Programs this CPU's page attribute table; every CPU must agree.
+pub(crate) fn init_cpu() {
+    // SAFETY: nothing maps with `WRITE_THROUGH` alone before this (9boot
+    // never sets it), so no translation uses the entry that changes.
+    unsafe { super::cpu::wrmsr(IA32_PAT, PAT) };
+}
+
 fn table(phys: u64) -> *mut u64 {
     phys_to_virt(phys) as *mut u64
 }
@@ -39,6 +52,7 @@ pub(crate) fn map_page(va: u64, pa: u64, kind: MapKind) -> Option<()> {
         MapKind::Device => PRESENT | WRITABLE | CACHE_DISABLE | WRITE_THROUGH | NO_EXECUTE,
         MapKind::NormalReadOnly => PRESENT | NO_EXECUTE,
         MapKind::NormalReadWrite => PRESENT | WRITABLE | NO_EXECUTE,
+        MapKind::WriteCombining => PRESENT | WRITABLE | WRITE_THROUGH | NO_EXECUTE,
     };
     // SAFETY: as above; a not-present entry is never cached in the TLB, so
     // no invalidation is needed for a fresh mapping.

@@ -16,7 +16,7 @@ use core::fmt;
 /// `BootInfo::magic`: "PLANR9BI".
 pub const MAGIC: u64 = u64::from_le_bytes(*b"PLANR9BI");
 /// Bumped on any layout change.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// Base of the direct map of physical memory: `phys` is at `HHDM_BASE + phys`.
 pub const HHDM_BASE: u64 = 0xffff_8000_0000_0000;
@@ -44,6 +44,8 @@ pub mod uefi_type {
     pub const KERNEL: u32 = 0x8000_0001;
     /// Page tables, boot stack, `BootInfo` and the memory map array.
     pub const BOOT: u32 = 0x8000_0002;
+    /// The persistent log ring.
+    pub const LOG: u32 = 0x8000_0003;
 }
 
 /// A `(pointer, length)` pair pointing into the direct map.
@@ -119,13 +121,17 @@ pub enum RegionKind {
     Bad = 8,
     /// Anything else the firmware reserved.
     Reserved = 9,
+    /// The persistent log ring ([`BootInfo::log_ring`]). Left out of the
+    /// direct map, so the kernel can map it write-combining without a
+    /// cacheable alias.
+    LogRing = 10,
 }
 
 impl RegionKind {
     /// RAM that 9boot includes in the direct map.
     #[must_use]
     pub fn is_ram(self) -> bool {
-        !matches!(self, RegionKind::Bad | RegionKind::Reserved)
+        !matches!(self, RegionKind::Bad | RegionKind::Reserved | RegionKind::LogRing)
     }
 }
 
@@ -169,6 +175,15 @@ pub struct Framebuffer {
     pub format: PixelFormat,
 }
 
+/// Where the persistent log ring is (`lib/logring`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogRing {
+    /// Physical address; 0 means there is none.
+    pub phys: u64,
+    pub size: u64,
+}
+
 /// The exception level 9boot was entered at, on arm64.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +209,7 @@ pub struct BootInfo {
     /// Physical address of the UEFI system table (for runtime services).
     pub uefi_system_table: u64,
     framebuffer: Framebuffer,
+    log_ring: LogRing,
     /// Physical load address and size of the kernel image.
     pub kernel_phys: u64,
     pub kernel_size: u64,
@@ -237,6 +253,7 @@ impl BootInfo {
                 stride: 0,
                 format: PixelFormat::Bgrx,
             },
+            log_ring: LogRing { phys: 0, size: 0 },
             kernel_phys: 0,
             kernel_size: 0,
             config: Slice::empty(),
@@ -280,6 +297,17 @@ impl BootInfo {
     pub fn set_framebuffer(&mut self, fb: Option<Framebuffer>) {
         if let Some(fb) = fb {
             self.framebuffer = fb;
+        }
+    }
+
+    #[must_use]
+    pub fn log_ring(&self) -> Option<LogRing> {
+        (self.log_ring.phys != 0).then_some(self.log_ring)
+    }
+
+    pub fn set_log_ring(&mut self, ring: Option<LogRing>) {
+        if let Some(r) = ring {
+            self.log_ring = r;
         }
     }
 
@@ -361,7 +389,8 @@ mod tests {
     }
 
     #[test]
-    fn framebuffer_absent_by_default() {
+    fn framebuffer_and_log_ring_absent_by_default() {
         assert!(BootInfo::new(EntryLevel::El1).framebuffer().is_none());
+        assert!(BootInfo::new(EntryLevel::El1).log_ring().is_none());
     }
 }

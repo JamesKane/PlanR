@@ -15,6 +15,7 @@ bench = false
 [dependencies]
 bootinfo = { path = "../../lib/bootinfo" }
 elf = { path = "../../lib/elf" }
+logring = { path = "../../lib/logring" }
 uefi = { path = "../../lib/uefi" }
 
 [lints]

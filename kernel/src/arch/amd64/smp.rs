@@ -295,6 +295,7 @@ fn start(t: Trampoline, id: u32) -> Result<(), &'static str> {
 /// page tables.
 extern "C" fn ap_entry(index: usize) -> ! {
     ARRIVED.store(index, Ordering::Release);
+    super::mmu::init_cpu();
     trap::load(index);
     let Some(cpu) = cpu::get(index) else {
         super::halt();

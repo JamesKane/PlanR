@@ -102,7 +102,9 @@ cycles. ACPI dumps go into `oracle/acpi-corpus/opi6p/`.
 
 **Console strategy without serial:** (1) GOP framebuffer console from P1;
 (2) a persistent log ring in loader-reserved RAM that survives warm reset,
-which 9boot saves to the ESP on the next boot; (3) the FCH watchdog (WDRT),
+which 9boot saves to `\planr\last.log` on the next boot (it only
+overwrites that file where it already exists, so it never writes a volume
+that is not Plan R media); (3) the FCH watchdog (WDRT),
 so hangs become warm resets; (4) optional UDP log over the RTL8125, or a PCIe
 16550 card; (5) USB keyboard with the xHCI work.
 

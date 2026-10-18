@@ -3,7 +3,8 @@
 //! Keys the kernel reads:
 //!
 //! - `test=1` runs the in-kernel tests and powers off; `test=trap` takes a
-//!   deliberate fatal fault.
+//!   deliberate fatal fault; `test=reset` resets warm once and checks that
+//!   9boot recovered the log ring.
 //! - `apic=xapic` (amd64) keeps the local APIC in xAPIC mode even if the
 //!   CPU has x2APIC.
 //! - `apictimer=oneshot` (amd64) uses the local APIC timer's one-shot count
@@ -22,6 +23,10 @@ pub(crate) enum TestMode {
     /// `test=trap`: take a deliberate fatal page fault, so the harness can
     /// check the trap report.
     Trap,
+    /// `test=reset`: on the first boot of a fresh log ring, print a line
+    /// and reset warm; on the next, power off. The harness checks that
+    /// 9boot reported saving the first boot's log, ending with that line.
+    Reset,
 }
 
 impl<'a> Config<'a> {
@@ -51,6 +56,7 @@ impl<'a> Config<'a> {
         match self.get("test")? {
             "1" => Some(TestMode::Run),
             "trap" => Some(TestMode::Trap),
+            "reset" => Some(TestMode::Reset),
             _ => None,
         }
     }

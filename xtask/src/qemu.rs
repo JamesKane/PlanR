@@ -16,8 +16,9 @@ const LOADER_FAIL_MARKERS: &[&str] = &["9boot: PANIC", "9boot: error"];
 /// What a boot test must see.
 #[derive(Debug)]
 pub(crate) enum Expect {
-    /// The OK marker, no failure marker, and a clean power-off.
-    Ok,
+    /// The OK marker, a line containing each of these strings, no failure
+    /// marker, and a clean power-off.
+    Ok(&'static [&'static str]),
     /// A kernel panic whose report contains every one of these strings,
     /// then the failure power-off.
     Panic(&'static [&'static str]),
@@ -27,7 +28,15 @@ const BANNER: &str = "Plan R 9boot";
 /// CPUs QEMU gives the machine unless a test says otherwise.
 pub(crate) const CPUS: u32 = 4;
 
-fn command(arch: Arch, profile: &Profile, img: &Path, cpus: u32) -> Result<Command, String> {
+/// The virtual machine beyond the profile.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Machine {
+    pub(crate) cpus: u32,
+    /// Let the guest reset itself; otherwise a reset exits QEMU.
+    pub(crate) reboot: bool,
+}
+
+fn command(arch: Arch, profile: &Profile, img: &Path, m: Machine) -> Result<Command, String> {
     let fw = arch.firmware()?;
     let dir = crate::build_dir(arch);
     let vars = dir.join("vars.fd");
@@ -40,7 +49,7 @@ fn command(arch: Arch, profile: &Profile, img: &Path, cpus: u32) -> Result<Comma
         "-cpu",
         profile.cpu,
         "-smp",
-        &cpus.to_string(),
+        &m.cpus.to_string(),
         "-m",
         "2G",
     ]);
@@ -51,12 +60,19 @@ fn command(arch: Arch, profile: &Profile, img: &Path, cpus: u32) -> Result<Comma
         .arg(format!("if=pflash,format=raw,file={}", vars.display()));
     c.arg("-drive")
         .arg(format!("if=none,id=disk,format=raw,file={}", img.display()));
-    c.args(["-device", "virtio-blk-pci,drive=disk", "-no-reboot"]);
+    c.args(["-device", "virtio-blk-pci,drive=disk"]);
+    if !m.reboot {
+        c.arg("-no-reboot");
+    }
     Ok(c)
 }
 
 pub(crate) fn run_interactive(arch: Arch, img: &Path, gui: bool) -> Result<(), String> {
-    let mut c = command(arch, &arch.profiles()[0], img, CPUS)?;
+    let m = Machine {
+        cpus: CPUS,
+        reboot: true,
+    };
+    let mut c = command(arch, &arch.profiles()[0], img, m)?;
     // mon:stdio multiplexes the monitor onto the console: Ctrl-A X quits.
     c.args(["-serial", "mon:stdio"]);
     if !gui {
@@ -101,11 +117,11 @@ pub(crate) fn run_test(
     profile: &Profile,
     test: &str,
     img: &Path,
-    cpus: u32,
+    m: Machine,
     expect: &Expect,
     timeout_secs: u64,
 ) -> Result<(), String> {
-    let mut c = command(arch, profile, img, cpus)?;
+    let mut c = command(arch, profile, img, m)?;
     c.args(["-display", "none", "-serial", "stdio", "-monitor", "none"]);
     c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit());
     let mut child = c.spawn().map_err(|e| format!("{}: {e}", arch.qemu()))?;
@@ -126,8 +142,7 @@ pub(crate) fn run_test(
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let (mut ok, mut failed, mut panicked, mut echo) = (false, None, false, false);
     let needles: &[&str] = match expect {
-        Expect::Ok => &[],
-        Expect::Panic(n) => n,
+        Expect::Ok(n) | Expect::Panic(n) => n,
     };
     let mut seen = vec![false; needles.len()];
     let outcome = loop {
@@ -146,7 +161,7 @@ pub(crate) fn run_test(
                     *s |= line.contains(n);
                 }
                 let fail_marker = LOADER_FAIL_MARKERS.iter().any(|m| line.contains(m))
-                    || (matches!(expect, Expect::Ok) && line.contains(KERNEL_PANIC));
+                    || (matches!(expect, Expect::Ok(_)) && line.contains(KERNEL_PANIC));
                 if failed.is_none() && fail_marker {
                     failed = Some(line.trim().to_string());
                 }
@@ -164,8 +179,13 @@ pub(crate) fn run_test(
         return fail(why);
     }
     let want_status = match expect {
-        Expect::Ok if !ok => return fail(format!("QEMU exited ({status}) without {OK_MARKER:?}")),
-        Expect::Ok => arch.success_status(),
+        Expect::Ok(_) if !ok => return fail(format!("QEMU exited ({status}) without {OK_MARKER:?}")),
+        Expect::Ok(_) => {
+            if let Some((n, _)) = needles.iter().zip(&seen).find(|(_, s)| !**s) {
+                return fail(format!("console lacks {n:?}"));
+            }
+            arch.success_status()
+        }
         Expect::Panic(_) if !panicked => return fail(format!("QEMU exited ({status}) without {KERNEL_PANIC:?}")),
         Expect::Panic(_) => {
             if let Some((n, _)) = needles.iter().zip(&seen).find(|(_, s)| !**s) {

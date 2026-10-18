@@ -200,38 +200,42 @@ struct BootTest {
     every_profile: bool,
     /// Only for this architecture (the test exercises arch-specific code).
     only: Option<Arch>,
-    /// CPUs to give the machine.
-    cpus: u32,
+    machine: qemu::Machine,
 }
+
+const FOUR_CPUS: qemu::Machine = qemu::Machine {
+    cpus: qemu::CPUS,
+    reboot: false,
+};
 
 const BOOT_TESTS: &[BootTest] = &[
     // The kernel runs its in-kernel tests and powers off.
     BootTest {
         name: "boot",
         config: "# Plan R test image\ntest=1\n",
-        expect: Expect::Ok,
+        expect: Expect::Ok(&[]),
         every_profile: true,
         only: None,
-        cpus: qemu::CPUS,
+        machine: FOUR_CPUS,
     },
     // One CPU: the SMP code must cope with having nothing to start.
     BootTest {
         name: "uniprocessor",
         config: "# Plan R test image\ntest=1\n",
-        expect: Expect::Ok,
+        expect: Expect::Ok(&[]),
         every_profile: false,
         only: None,
-        cpus: 1,
+        machine: qemu::Machine { cpus: 1, reboot: false },
     },
     // The amd64 fallbacks KVM would otherwise hide: xAPIC registers in
     // MMIO, and the one-shot count timer instead of TSC-deadline mode.
     BootTest {
         name: "legacy-apic",
         config: "# Plan R test image: xAPIC, one-shot timer\ntest=1\napic=xapic\napictimer=oneshot\n",
-        expect: Expect::Ok,
+        expect: Expect::Ok(&[]),
         every_profile: false,
         only: Some(Arch::Amd64),
-        cpus: qemu::CPUS,
+        machine: FOUR_CPUS,
     },
     // A deliberate fatal page fault must produce a full trap report.
     BootTest {
@@ -245,7 +249,21 @@ const BOOT_TESTS: &[BootTest] = &[
         ]),
         every_profile: false,
         only: None,
-        cpus: qemu::CPUS,
+        machine: FOUR_CPUS,
+    },
+    // The kernel resets warm; 9boot must find the log ring the first boot
+    // wrote, save it to the boot volume, and show how it ended.
+    BootTest {
+        name: "log-ring",
+        config: "# Plan R log ring test image\ntest=reset\n",
+        expect: Expect::Ok(&[
+            "9boot: saved boot 1's log",
+            "9boot: it ends: ktest: warm reset to check the log ring",
+            "log: ring at",
+        ]),
+        every_profile: false,
+        only: None,
+        machine: qemu::Machine { cpus: 1, reboot: true },
     },
 ];
 
@@ -271,7 +289,7 @@ fn write_images(built: &[Built], name: &str, config: &str) -> Result<Vec<PathBuf
 }
 
 /// Crates with host unit tests (everything except the bare-metal binaries).
-const HOST_TESTED: &[&str] = &["acpi", "bootinfo", "elf", "uefi", "xtask"];
+const HOST_TESTED: &[&str] = &["acpi", "bootinfo", "elf", "fbtext", "logring", "uefi", "xtask"];
 
 fn with_packages(c: &mut Command, packages: &[&str]) {
     for p in packages {
@@ -305,7 +323,7 @@ fn test(opts: &Opts) -> Result<(), String> {
             };
             for profile in profiles {
                 let name = format!("{arch}/{} {}", profile.name, t.name);
-                match qemu::run_test(arch, profile, t.name, img, t.cpus, &t.expect, opts.timeout) {
+                match qemu::run_test(arch, profile, t.name, img, t.machine, &t.expect, opts.timeout) {
                     Ok(()) => println!("xtask: {name} test: PASS"),
                     Err(e) => {
                         println!("xtask: {name} test: FAIL: {e}");

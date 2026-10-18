@@ -183,6 +183,18 @@ impl<'a> Fadt<'a> {
         (f & 1 != 0).then_some(if f & 2 != 0 { PsciConduit::Hvc } else { PsciConduit::Smc })
     }
 
+    /// `RESET_REG` and `RESET_VALUE`: writing the value to the register
+    /// resets the machine. `None` unless the firmware sets `RESET_REG_SUP`.
+    #[must_use]
+    pub fn reset(&self) -> Option<(Gas, u8)> {
+        const RESET_REG_SUP: u32 = 1 << 10;
+        let b = self.0.bytes();
+        if u32_at(b, 112)? & RESET_REG_SUP == 0 {
+            return None;
+        }
+        Some((Gas::parse(b, 116)?, *b.get(128)?))
+    }
+
     /// `FADT Minor Version` (the major version is the header revision).
     #[must_use]
     pub fn minor_version(&self) -> u8 {
@@ -626,6 +638,20 @@ mod tests {
         let acpi = Acpi::new(&m, 0x1000).unwrap();
         assert_eq!(acpi.fadt().unwrap().psci(), Some(PsciConduit::Smc));
         assert!(acpi.find(Signature::FADT).is_some());
+    }
+
+    /// QEMU q35: the ICH9 reset control register, I/O port 0xcf9, value 6.
+    #[test]
+    fn fadt_reset_register() {
+        let mut body = vec![0u8; 240];
+        let m = system(&[sdt(*b"FACP", 6, &body)]);
+        assert_eq!(Acpi::new(&m, 0x1000).unwrap().fadt().unwrap().reset(), None);
+        body[112 - 36..116 - 36].copy_from_slice(&(1u32 << 10).to_le_bytes());
+        body[116 - 36..128 - 36].copy_from_slice(&gas(1, 1, 0xcf9));
+        body[128 - 36] = 6;
+        let m = system(&[sdt(*b"FACP", 6, &body)]);
+        let (reg, value) = Acpi::new(&m, 0x1000).unwrap().fadt().unwrap().reset().unwrap();
+        assert_eq!((reg.space, reg.address, value), (AddressSpace::SystemIo, 0xcf9, 6));
     }
 }
 

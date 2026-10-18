@@ -179,12 +179,12 @@ pub struct FileProtocol {
     pub close: unsafe extern "efiapi" fn(*mut FileProtocol) -> Status,
     pub delete: Unused,
     pub read: unsafe extern "efiapi" fn(*mut FileProtocol, *mut usize, *mut c_void) -> Status,
-    pub write: Unused,
+    pub write: unsafe extern "efiapi" fn(*mut FileProtocol, *mut usize, *const c_void) -> Status,
     pub get_position: Unused,
     pub set_position: Unused,
     pub get_info: unsafe extern "efiapi" fn(*mut FileProtocol, *const Guid, *mut usize, *mut c_void) -> Status,
-    pub set_info: Unused,
-    pub flush: Unused,
+    pub set_info: unsafe extern "efiapi" fn(*mut FileProtocol, *const Guid, usize, *const c_void) -> Status,
+    pub flush: unsafe extern "efiapi" fn(*mut FileProtocol) -> Status,
 }
 
 /// `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`.

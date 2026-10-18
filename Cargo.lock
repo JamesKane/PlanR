@@ -15,12 +15,22 @@ name = "elf"
 version = "0.1.0"
 
 [[package]]
+name = "fbtext"
+version = "0.1.0"
+
+[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [
  "acpi",
  "bootinfo",
+ "fbtext",
+ "logring",
 ]
+
+[[package]]
+name = "logring"
+version = "0.1.0"
 
 [[package]]
 name = "nineboot"
@@ -28,6 +38,7 @@ version = "0.1.0"
 dependencies = [
  "bootinfo",
  "elf",
+ "logring",
  "uefi",
 ]
 

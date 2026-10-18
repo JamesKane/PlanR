@@ -348,6 +348,8 @@ pub struct BootServices<'a>(&'a raw::BootServices);
 
 /// `EFI_ALLOCATE_TYPE::AllocateAnyPages`.
 const ALLOCATE_ANY_PAGES: u32 = 0;
+/// `EFI_ALLOCATE_TYPE::AllocateAddress`.
+const ALLOCATE_ADDRESS: u32 = 2;
 
 impl BootServices<'_> {
     /// The raw table, for code (such as a global allocator) that must reach
@@ -375,6 +377,15 @@ impl BootServices<'_> {
         let mut addr = 0u64;
         // SAFETY: valid out-pointer.
         unsafe { (self.0.allocate_pages)(ALLOCATE_ANY_PAGES, ty.to_raw(), pages, &raw mut addr) }.to_result()?;
+        Ok(addr)
+    }
+
+    /// Allocates `pages` contiguous 4 KiB pages at physical address `addr`,
+    /// tagged as `ty`. Fails with `NOT_FOUND` if any of them is taken.
+    pub fn allocate_pages_at(&self, ty: MemoryType, pages: usize, addr: u64) -> Result<u64> {
+        let mut addr = addr;
+        // SAFETY: valid in/out pointer.
+        unsafe { (self.0.allocate_pages)(ALLOCATE_ADDRESS, ty.to_raw(), pages, &raw mut addr) }.to_result()?;
         Ok(addr)
     }
 

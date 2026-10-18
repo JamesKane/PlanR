@@ -5,7 +5,7 @@
 //! `cargo xtask test` reads the console.
 
 use crate::arch;
-use crate::port::{clock, cpu, intr, mm, trap};
+use crate::port::{clock, console, cpu, intr, mm, trap};
 use crate::println;
 
 /// Why a test did not pass.
@@ -37,6 +37,11 @@ const TESTS: &[(&str, TestFn)] = &[
         trap::ktests::probe_recovers_bad_address,
     ),
     ("mm: kernel stack has a guard page", mm::ktests::stack_has_guard),
+    ("console: text drawn on the screen", console::ktests::screen_shows_text),
+    (
+        "console: output kept in the log ring",
+        console::ktests::ring_records_output,
+    ),
     ("clock: counter advances", clock::ktests::counter_advances),
     ("intr: self-IPI delivered", intr::ktests::self_ipi_delivered),
     ("clock: ticks arrive at HZ", clock::ktests::ticks_arrive),

@@ -14,6 +14,7 @@ fn kind(t: MemoryType) -> Option<RegionKind> {
         | MemoryType::BootServicesData => RegionKind::Usable,
         MemoryType::Other(uefi_type::KERNEL) => RegionKind::Kernel,
         MemoryType::Other(uefi_type::BOOT) => RegionKind::Boot,
+        MemoryType::Other(uefi_type::LOG) => RegionKind::LogRing,
         MemoryType::AcpiReclaim => RegionKind::AcpiReclaimable,
         MemoryType::AcpiNvs => RegionKind::AcpiNvs,
         MemoryType::RuntimeServicesCode | MemoryType::RuntimeServicesData => RegionKind::UefiRuntime,

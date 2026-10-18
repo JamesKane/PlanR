@@ -239,6 +239,16 @@ pub(crate) fn exit(_code: ExitCode) -> ! {
     halt()
 }
 
+/// Resets the machine warm (PSCI `SYSTEM_RESET`), keeping RAM and so the
+/// log ring.
+pub(crate) fn reset(_acpi: Option<&System>) -> ! {
+    const SYSTEM_RESET: u64 = 0x8400_0009;
+    // SAFETY: a barrier; completes the log ring's non-cacheable writes.
+    unsafe { asm!("dsb sy", options(nostack)) };
+    psci::call(SYSTEM_RESET, 0, 0, 0);
+    halt()
+}
+
 /// arm64 has no I/O ports. Reads float high, so a 16550 "at port 0" looks
 /// absent and its output is dropped.
 pub(crate) fn inb(_port: u16) -> u8 {

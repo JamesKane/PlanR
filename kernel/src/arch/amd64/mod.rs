@@ -12,7 +12,7 @@ pub(crate) use trap::{breakpoint, frame_pointer, probe_read};
 
 use core::arch::{asm, global_asm};
 
-use acpi::UartKind;
+use acpi::{AddressSpace, UartKind};
 
 use super::ExitCode;
 use crate::drivers::hpet::Hpet;
@@ -268,6 +268,34 @@ pub(crate) fn exit(code: ExitCode) -> ! {
     };
     // SAFETY: a write to an unused I/O port has no effect.
     unsafe { asm!("out dx, eax", in("dx") 0xf4u16, in("eax") v, options(nomem, nostack)) };
+    halt()
+}
+
+/// Resets the machine warm, keeping RAM and so the log ring: through the
+/// FADT reset register, else the PCI reset control port, else the
+/// keyboard controller.
+pub(crate) fn reset(acpi: Option<&System>) -> ! {
+    // SAFETY: a barrier; drains the write-combining buffers (the log ring).
+    unsafe { asm!("sfence", options(nostack, preserves_flags)) };
+    match acpi.and_then(|s| s.tables.fadt()).and_then(|f| f.reset()) {
+        Some((reg, value)) if reg.space == AddressSpace::SystemIo => {
+            if let Ok(port) = u16::try_from(reg.address) {
+                outb(port, value);
+            }
+        }
+        Some((reg, value)) if reg.space == AddressSpace::SystemMemory => {
+            if let Some(va) = mm::map_phys(reg.address, 1, MapKind::Device) {
+                // SAFETY: the firmware's reset register, just mapped.
+                unsafe { (va as *mut u8).write_volatile(value) };
+            }
+        }
+        _ => {}
+    }
+    crate::port::clock::spin_until(|| false, 100_000_000);
+    outb(0xcf9, 0x02); // reset control: arm a hard reset...
+    outb(0xcf9, 0x06); // ...and start it
+    crate::port::clock::spin_until(|| false, 100_000_000);
+    outb(0x64, 0xfe); // keyboard controller: pulse the reset line
     halt()
 }
 

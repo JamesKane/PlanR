@@ -33,6 +33,10 @@ pub(crate) enum MapKind {
     /// Ordinary memory outside the direct map (kernel stacks): cacheable,
     /// writable, never executable.
     NormalReadWrite,
+    /// Memory that is written far more than read and must reach RAM or the
+    /// device promptly (framebuffers, the log ring): uncached, but writes
+    /// may be combined. Writable, never executable.
+    WriteCombining,
 }
 
 #[derive(Debug)]
@@ -139,6 +143,16 @@ pub(crate) fn in_direct_map(phys: u64, len: u64) -> bool {
         .lock()
         .iter()
         .any(|r| r.kind.is_ram() && r.start <= phys && end <= r.end())
+}
+
+/// True if any of `[phys, phys+len)` is RAM the frame allocator may hand
+/// out.
+pub(crate) fn overlaps_usable(phys: u64, len: u64) -> bool {
+    let end = phys.saturating_add(len);
+    MEMORY
+        .lock()
+        .iter()
+        .any(|r| r.kind == RegionKind::Usable && r.start < end && phys < r.end())
 }
 
 /// Maps `len` bytes of physical memory at `phys` into the MMIO window and

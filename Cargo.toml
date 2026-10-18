@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["boot/9boot", "kernel", "lib/acpi", "lib/bootinfo", "lib/elf", "lib/uefi", "xtask"]
+members = ["boot/9boot", "kernel", "lib/acpi", "lib/bootinfo", "lib/elf", "lib/fbtext", "lib/logring", "lib/uefi", "xtask"]
 # Plan R crates build for their own targets via `cargo xtask`; a bare
 # `cargo build` at the root builds only the host tool.
 default-members = ["xtask"]

@@ -26,6 +26,9 @@ pub(crate) fn write(arch: Arch, c: &Contents<'_>, out: &Path) -> Result<(), Stri
     root.insert(&format!("EFI/BOOT/{}", arch.boot_file()), read(c.loader)?)?;
     root.insert("PLANR/KERNEL", read(c.kernel)?)?;
     root.insert("PLANR/PLAN9.INI", c.config.as_bytes().to_vec())?;
+    // Marks the volume as one 9boot may write: it saves the previous boot's
+    // log ring here, and never creates the file itself.
+    root.insert("PLANR/LAST.LOG", Vec::new())?;
 
     let sectors = DISK_BYTES / SECTOR;
     let (_, last) = gpt::usable(sectors);

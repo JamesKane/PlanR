@@ -1,7 +1,8 @@
 //! The Plan R kernel.
 //!
 //! P1 bring-up: entered from 9boot with the boot page tables live (ADR
-//! 0010), the kernel validates the handoff, finds a console through ACPI,
+//! 0010), the kernel validates the handoff, finds a console through ACPI
+//! (and draws it on the framebuffer and keeps it in the log ring),
 //! installs its trap vectors, takes over the interrupt controller, starts
 //! the clock and the other CPUs, and reports what it sees.
 
@@ -21,10 +22,13 @@ use port::{acpi, clock, cpu, intr, ktest, mm, trap};
 /// Marker lines `cargo xtask test` scans the serial log for.
 const OK_MARKER: &str = "kernel: ok";
 pub(crate) const PANIC_MARKER: &str = "kernel: PANIC";
+/// The last line before `test=reset` resets; 9boot must echo it.
+const RESET_LINE: &str = "ktest: warm reset to check the log ring";
 
 /// Called by the architecture entry stub with the stack set up.
 extern "C" fn kmain(info: &'static BootInfo) -> ! {
     arch::init_traps();
+    arch::mmu::init_cpu();
     cpu::init_boot();
     if info.validate().is_err() {
         // No console yet; nothing useful to say.
@@ -33,6 +37,8 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
     mm::init(info);
     let acpi = acpi::System::new(info.rsdp());
     let source = console::init(acpi.as_ref());
+    let screen = info.framebuffer().map(|fb| (fb, console::attach_screen(fb)));
+    let ring = info.log_ring().map(|r| (r, console::attach_ring(r)));
     arch::init(acpi.as_ref().ok());
 
     println!();
@@ -48,9 +54,27 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
         ConsoleSource::Default(k) => println!("console: {k:?} (default)"),
     }
     report_memory(info);
-    if let Some(fb) = info.framebuffer() {
-        println!("display: {}x{} {:?} at {:#x}", fb.width, fb.height, fb.format, fb.phys);
+    if let Some((fb, screen)) = screen {
+        print!("display: {}x{} {:?} at {:#x}", fb.width, fb.height, fb.format, fb.phys);
+        match screen {
+            Some(s) => println!("; text {}x{} at scale {}", s.cols, s.rows, s.scale),
+            None => println!("; not usable for text"),
+        }
     }
+    let ring_boot = match ring {
+        Some((r, Some(boot))) => {
+            println!("log: ring at {:#x}, {} KiB, boot {boot}", r.phys, r.size >> 10);
+            Some(boot)
+        }
+        Some((r, None)) => {
+            println!("log: ring at {:#x} not usable", r.phys);
+            None
+        }
+        None => {
+            println!("log: no ring");
+            None
+        }
+    };
     match &acpi {
         Ok(sys) => sys.report(),
         Err(e) => println!("acpi: {e}"),
@@ -80,6 +104,17 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
             let v = unsafe { core::ptr::read_volatile(trap::UNMAPPED as *const u64) };
             panic!("read of unmapped {:#x} returned {v:#x}", trap::UNMAPPED);
         }
+        Some(TestMode::Reset) => match ring_boot {
+            Some(1) => {
+                println!("{RESET_LINE}");
+                arch::reset(acpi.as_ref().ok());
+            }
+            Some(_) => {
+                println!("{OK_MARKER}");
+                arch::exit(arch::ExitCode::Success);
+            }
+            None => panic!("test=reset needs a log ring"),
+        },
         None => {}
     }
     report_interrupts();

@@ -99,7 +99,19 @@ runs on its target, and that a spin lock hammered by all CPUs loses no
 updates; a `uniprocessor` boot test covers the one-CPU path. This meets
 P1's exit criteria under QEMU.
 
-**Remaining:** framebuffer console and persistent log ring; MCFG, PPTT and
+**Fifth slice done:** console output for machines without a serial port.
+The kernel draws its console as text on the GOP framebuffer (`lib/fbtext`:
+an 8×16 font drawn for Plan R, scaled up on wide screens, mapped
+write-combining via the PAT on amd64 and Normal-NC on arm64), and copies
+it into a 1 MiB persistent log ring (`lib/logring`). 9boot places the ring
+at the top of RAM, finds the previous boot's ring by checking each 2 MiB
+boundary of free memory for a valid header, saves it to `\planr\last.log`
+and echoes its last line. In-kernel tests read the text back from the
+screen and the ring; the `log-ring` boot test resets warm (FADT reset
+register on amd64, PSCI `SYSTEM_RESET` on arm64) and checks that the next
+boot recovered the log.
+
+**Remaining:** MCFG, PPTT and
 IORT parsing; PIT fallback for TSC calibration without an HPET; CPU
 security features (SMEP/SMAP/UMIP, PAN/BTI); backtrace symbolization;
 overflow reporting on arm64 (the guard page faults, but with no IST

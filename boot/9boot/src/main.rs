@@ -3,7 +3,8 @@
 //! Loads `\planr\kernel` (a static ELF) and `\planr\plan9.ini` from the
 //! volume it was started from, builds the boot page tables, collects the
 //! memory map and firmware facts into a `BootInfo`, exits boot services, and
-//! jumps to the kernel (ADR 0010).
+//! jumps to the kernel (ADR 0010). On the way it saves the log ring the
+//! previous boot left in RAM to `\planr\last.log`.
 
 #![no_std]
 #![no_main]
@@ -11,6 +12,7 @@
 extern crate alloc;
 
 mod handoff;
+mod logring;
 mod memmap;
 mod paging;
 mod pool;
@@ -137,6 +139,9 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
         Err(e) => return Err(Error::Uefi("reading plan9.ini", e)),
     };
     let kernel_file = read_file(&root, KERNEL_PATH).ctx("reading kernel")?;
+    // Before anything else allocates much: the previous ring is in free
+    // memory until it is reserved.
+    let log_ring = logring::setup(st, &root);
 
     let kernel = load_kernel(st, &kernel_file)?;
     let elf = &kernel.elf;
@@ -170,6 +175,7 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     info.rsdp = st.config_table(guid::ACPI_20_TABLE).map_or(0, |p| p as u64);
     info.uefi_system_table = st_phys;
     info.set_framebuffer(framebuffer(st));
+    info.set_log_ring(log_ring);
     info.kernel_phys = kernel.phys;
     info.kernel_size = kernel.size;
     info.config = Slice::new(phys_to_virt(config_phys) as *const u8, config.len());

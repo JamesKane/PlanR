@@ -60,8 +60,20 @@ translation on. EL2 stays available for a future hypervisor. Installing an
 EL2 stub vector table for that is future work.
 
 **`BootInfo`** (`lib/bootinfo`): magic `PLANR9BI`, a version, entry level,
-memory regions, RSDP, UEFI system table, framebuffer, kernel physical
-location, and config text. All pointers are direct-map addresses.
+memory regions, RSDP, UEFI system table, framebuffer, persistent log
+ring, kernel physical location, and config text. All pointers are
+direct-map addresses.
+
+**Persistent log ring** (`lib/logring`, version 2 of `BootInfo`): 1 MiB at
+the top of the highest RAM range, 2 MiB aligned, so it lands at the same
+address on every boot of a machine. 9boot allocates it as memory type
+`0x8000_0003` (region kind `LogRing`, outside the direct map), saves what
+a previous boot left there to `\planr\last.log` on the boot volume
+(only overwriting that file, never creating it, so only Plan R media
+that carry one are written), starts a fresh ring, and hands it over. The kernel maps it
+write-combining and appends all console output. Only a warm reset keeps
+the contents, and firmware may still overwrite them; the header check
+rejects anything damaged.
 
 ## Consequences
 
