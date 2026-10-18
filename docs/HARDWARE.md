@@ -77,8 +77,9 @@ Ground truth comes from AbyssBSD's board notes
 | Console | 10-pin 3.3 V debug header: UART2 pin 1 TX, pin 3 RX, pin 5 GND. GOP 1920×1080 | USB-TTL adapter is the bring-up console |
 | Accelerators | Immortalis-G720 GPU (Panthor/CSF), Linlon display, Zhouyi NPU, Mali-V codec, HDA | P9 targets (§6) |
 
-**Access.** Ubuntu at `192.168.0.27` (user `jkane`, key login; root
-steps go through a script the user runs). The board is shared with
+**Access.** Ubuntu on DHCP, so the address moves (seen at `192.168.0.27`
+and `192.168.0.19`); user `jkane`, key login; root steps go through a
+script the user runs. The board is shared with
 AbyssBSD. Plan R boots from USB until a dedicated medium is agreed. Read
 the Linux/FreeBSD ground truth before experimenting, since hangs cost power
 cycles. ACPI dumps go into `oracle/acpi-corpus/opi6p/`.
@@ -111,6 +112,20 @@ so hangs become warm resets; (4) optional UDP log over the RTL8125, or a PCIe
 **Access.** Fedora 44 at `192.168.0.30` (user `jkane`, key login; root
 steps via a user-run script). Boot with `BootNext` (`efibootmgr -n`) so a
 failed boot falls back to Fedora on reset.
+
+### Booting Plan R on a board
+
+1. `cargo xtask image --arch <arch> --config scripts/hwcheck.ini` builds
+   `build/<arch>/planr.img`. That config runs the in-kernel tests and
+   halts with the report on screen (`exit=halt`).
+2. On brimstone: `sudo scripts/write-medium.sh build/<arch>/planr.img
+   <serial>`. It writes only a USB disk whose serial is listed in
+   `scripts/planr-media.conf`, and reads the image back to verify.
+3. Plug the stick into the board, copy `scripts/boot-once.sh` to the
+   board's `/tmp`, and run `sudo bash /tmp/boot-once.sh` there. It finds
+   the stick by Plan R's GPT disk GUID, adds a "Plan R" entry with
+   `--create-only` (BootOrder untouched), and sets `BootNext`.
+4. Reboot. Plan R runs once; the next reset boots the usual OS.
 
 ### Storage safety rule
 

@@ -254,6 +254,10 @@ pub(crate) fn halt() -> ! {
 /// tells success from failure by the console markers.
 pub(crate) fn exit(_code: ExitCode) -> ! {
     const SYSTEM_OFF: u64 = 0x8400_0008;
+    if crate::port::config::halt_on_exit() {
+        crate::println!("kernel: halted (exit=halt); reset or power-cycle to continue");
+        halt();
+    }
     // Does not return on success.
     psci::call(SYSTEM_OFF, 0, 0, 0);
     halt()

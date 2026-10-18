@@ -11,6 +11,19 @@
 //!   mode even if the CPU has TSC-deadline mode.
 //! - `tsc=hpet` or `tsc=pit` (amd64) calibrates the TSC against that timer
 //!   only, even if CPUID reports the frequency or an HPET is present.
+//! - `exit=halt` stops the machine where it would power off (after the
+//!   tests, or on a panic), so the report stays on screen. For boards with
+//!   no serial console.
+
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// Set from `exit=halt` by [`Config::apply`].
+static HALT_ON_EXIT: AtomicBool = AtomicBool::new(false);
+
+/// True if the kernel should halt rather than power off (`exit=halt`).
+pub(crate) fn halt_on_exit() -> bool {
+    HALT_ON_EXIT.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Config<'a> {
@@ -54,8 +67,12 @@ impl<'a> Config<'a> {
             .next_back()
     }
 
+    /// Records the settings that act outside the code reading the config.
+    pub(crate) fn apply(&self) {
+        HALT_ON_EXIT.store(self.is("exit", "halt"), Ordering::Relaxed);
+    }
+
     /// True if `key` is set to `value`.
-    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))] // only amd64 has switches so far
     pub(crate) fn is(&self, key: &str, value: &str) -> bool {
         self.get(key) == Some(value)
     }

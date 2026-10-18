@@ -93,6 +93,7 @@ extern "C" fn boot_main(info: usize) -> ! {
         Err(e) => println!("acpi: {e}"),
     }
     let config = Config::parse(info.config());
+    config.apply();
     match arch::init_interrupts(acpi.as_ref().ok(), &config) {
         Ok(counter_hz) => {
             clock::init(counter_hz);

@@ -316,6 +316,10 @@ pub(crate) fn halt() -> ! {
 /// `(value << 1) | 1`: 99 for success, 97 for failure. On real hardware the
 /// write goes nowhere and we halt.
 pub(crate) fn exit(code: ExitCode) -> ! {
+    if crate::port::config::halt_on_exit() {
+        crate::println!("kernel: halted (exit=halt); reset or power-cycle to continue");
+        halt();
+    }
     let v: u32 = match code {
         ExitCode::Success => 0x31,
         ExitCode::Failure => 0x30,

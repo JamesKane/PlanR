@@ -40,6 +40,8 @@ options:
   --gui                    qemu: show a display window
   --timeout SECS           test: per-boot timeout (default 120)
   --all-profiles           test: boot every QEMU profile (ci does this)
+  --config FILE            image, qemu: use FILE as plan9.ini (e.g.
+                           scripts/hwcheck.ini for the boards)
 ";
 
 #[derive(Debug, Clone)]
@@ -50,6 +52,8 @@ struct Opts {
     timeout: u64,
     /// Boot every QEMU profile, not just each arch's first.
     all_profiles: bool,
+    /// image, qemu: the `plan9.ini` to put on the image instead of [`CONFIG`].
+    config: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -106,6 +110,7 @@ fn parse_opts(args: &[String], single_default: bool) -> Result<Opts, String> {
         gui: false,
         timeout: 120,
         all_profiles: false,
+        config: None,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -121,6 +126,7 @@ fn parse_opts(args: &[String], single_default: bool) -> Result<Opts, String> {
             "--release" => opts.release = true,
             "--gui" => opts.gui = true,
             "--all-profiles" => opts.all_profiles = true,
+            "--config" => opts.config = Some(it.next().ok_or("--config needs a file")?.into()),
             "--timeout" => {
                 let v = it.next().ok_or("--timeout needs a value")?;
                 opts.timeout = v.parse().map_err(|_| format!("bad --timeout {v:?}"))?;
@@ -324,7 +330,11 @@ const BOOT_TESTS: &[BootTest] = &[
 ];
 
 fn images(opts: &Opts) -> Result<Vec<PathBuf>, String> {
-    write_images(&build(opts)?, "planr.img", CONFIG)
+    let config = match &opts.config {
+        Some(p) => fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?,
+        None => CONFIG.to_string(),
+    };
+    write_images(&build(opts)?, "planr.img", &config)
 }
 
 fn write_images(built: &[Built], name: &str, config: &str) -> Result<Vec<PathBuf>, String> {
