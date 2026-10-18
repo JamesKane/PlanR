@@ -174,13 +174,6 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
         (memmap::ram_ranges(&map), map.len())
     };
     let fb = framebuffer(st);
-    match fb {
-        Some(f) => println!(
-            st,
-            "9boot: display {}x{} {:?} at {:#x}", f.width, f.height, f.format, f.phys
-        ),
-        None => println!(st, "9boot: no linear framebuffer; the kernel will have no screen"),
-    }
     let tables = build_tables(st, &ram, &kernel, fb)?;
 
     // Boot stack and the BootInfo block: [BootInfo][Region; capacity][config].
@@ -218,6 +211,9 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
         ram.len(),
         tables.pages_used
     );
+    if let Some(f) = fb {
+        mark_handoff(&f);
+    }
     // The final GetMemoryMap must fit without allocating.
     let need = bs.memory_map_size() + MAP_SLACK * 64;
     if map_buf.len() < need {
@@ -356,11 +352,48 @@ pub(crate) fn read_file(root: &File<'_>, path: &str) -> uefi::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Paints a green square at the top left of the framebuffer handed to the
+/// kernel, left of the kernel's own progress marks
+/// (`kernel/src/port/early.rs`). If it shows, the kernel was given the
+/// framebuffer on screen.
+fn mark_handoff(f: &Framebuffer) {
+    const SIZE: usize = 24;
+    const GAP: usize = 8;
+    let (Ok(stride), Ok(width), Ok(height)) = (
+        usize::try_from(f.stride),
+        usize::try_from(f.width),
+        usize::try_from(f.height),
+    ) else {
+        return;
+    };
+    if GAP + SIZE > width.min(height) {
+        return;
+    }
+    for y in GAP..GAP + SIZE {
+        for x in GAP..GAP + SIZE {
+            // SAFETY: inside the framebuffer, which UEFI identity-maps.
+            unsafe { (f.phys as *mut u32).add(y * stride + x).write_volatile(0x0000_ff00) };
+        }
+    }
+}
+
 /// The framebuffer of the display the console is on. With several GPUs
 /// (the Ryzen: an RTX 4070 driving the monitor, a Radeon iGPU idle), the
 /// first Graphics Output the firmware lists may be one nothing shows, so
 /// the console output handle's comes first.
 fn framebuffer(st: &SystemTable<Boot>) -> Option<Framebuffer> {
+    let fb = find_framebuffer(st);
+    match fb {
+        Some(f) => println!(
+            st,
+            "9boot: display {}x{} {:?} at {:#x}", f.width, f.height, f.format, f.phys
+        ),
+        None => println!(st, "9boot: no linear framebuffer; the kernel will have no screen"),
+    }
+    fb
+}
+
+fn find_framebuffer(st: &SystemTable<Boot>) -> Option<Framebuffer> {
     let bs = st.boot_services();
     let gop = bs
         .handle_protocol::<GraphicsOutput>(st.console_out_handle())
