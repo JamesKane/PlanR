@@ -16,11 +16,18 @@ die() { echo "boot-once: $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "must run as root"
 command -v efibootmgr >/dev/null || die "efibootmgr is not installed"
 
+amd64_guid=4bcb9d0c-7869-4731-a911-b885abf8b21a
+arm64_guid=abbd20ac-16ac-4905-b3c3-0d0c50139892
 case $(uname -m) in
-x86_64) guid=4bcb9d0c-7869-4731-a911-b885abf8b21a loader='\EFI\BOOT\BOOTX64.EFI' ;;
-aarch64) guid=abbd20ac-16ac-4905-b3c3-0d0c50139892 loader='\EFI\BOOT\BOOTAA64.EFI' ;;
+x86_64) guid=$amd64_guid other=$arm64_guid other_arch=arm64 loader='\EFI\BOOT\BOOTX64.EFI' ;;
+aarch64) guid=$arm64_guid other=$amd64_guid other_arch=amd64 loader='\EFI\BOOT\BOOTAA64.EFI' ;;
 *) die "unknown architecture $(uname -m)" ;;
 esac
+
+# A stick written for the other architecture is the likeliest mistake.
+if lsblk -dnr -o PTUUID | grep -qix "$other"; then
+	die "the Plan R stick holds the $other_arch image; write this machine's image to it first"
+fi
 
 mapfile -t disks < <(lsblk -dnr -o NAME,PTUUID,TRAN | awk -v g="$guid" 'tolower($2) == g {print $1 " " $3}')
 [ ${#disks[@]} -eq 1 ] || die "${#disks[@]} disks carry the Plan R disk GUID $guid; want exactly one (is the stick in?)"
