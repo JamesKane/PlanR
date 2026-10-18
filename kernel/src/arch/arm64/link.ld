@@ -22,6 +22,11 @@ SECTIONS
     . = ALIGN(4096);
     .rodata : {
         *(.rodata .rodata.*)
+        /* Fault fixups (port/trap.rs): (faulting pc, resume pc) pairs. */
+        . = ALIGN(8);
+        __fixup_start = .;
+        KEEP(*(.fixup))
+        __fixup_end = .;
     } :rodata
 
     . = ALIGN(4096);

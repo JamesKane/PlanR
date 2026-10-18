@@ -10,7 +10,18 @@ use crate::arch::{Arch, Profile};
 
 /// Must match the markers in `boot/9boot/src/main.rs` and `kernel/src/main.rs`.
 const OK_MARKER: &str = "kernel: ok";
-const FAIL_MARKERS: &[&str] = &["9boot: PANIC", "9boot: error", "kernel: PANIC"];
+const KERNEL_PANIC: &str = "kernel: PANIC";
+const LOADER_FAIL_MARKERS: &[&str] = &["9boot: PANIC", "9boot: error"];
+
+/// What a boot test must see.
+#[derive(Debug)]
+pub(crate) enum Expect {
+    /// The OK marker, no failure marker, and a clean power-off.
+    Ok,
+    /// A kernel panic whose report contains every one of these strings,
+    /// then the failure power-off.
+    Panic(&'static [&'static str]),
+}
 const BANNER: &str = "Plan R 9boot";
 
 fn command(arch: Arch, profile: &Profile, img: &Path) -> Result<Command, String> {
@@ -80,9 +91,16 @@ fn strip_escapes(s: &str) -> String {
     out
 }
 
-/// Boots `img` headless and passes if the loader prints the OK marker and
-/// QEMU exits cleanly within `timeout_secs`.
-pub(crate) fn run_test(arch: Arch, profile: &Profile, img: &Path, timeout_secs: u64) -> Result<(), String> {
+/// Boots `img` headless and checks the console and QEMU's exit status
+/// against `expect`, within `timeout_secs`.
+pub(crate) fn run_test(
+    arch: Arch,
+    profile: &Profile,
+    test: &str,
+    img: &Path,
+    expect: &Expect,
+    timeout_secs: u64,
+) -> Result<(), String> {
     let mut c = command(arch, profile, img)?;
     c.args(["-display", "none", "-serial", "stdio", "-monitor", "none"]);
     c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit());
@@ -99,10 +117,15 @@ pub(crate) fn run_test(arch: Arch, profile: &Profile, img: &Path, timeout_secs: 
         }
     });
 
-    let log_path = crate::build_dir(arch).join(format!("serial-{}.log", profile.name));
+    let log_path = crate::build_dir(arch).join(format!("serial-{test}-{}.log", profile.name));
     let mut log = std::fs::File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    let (mut ok, mut failed, mut echo) = (false, None, false);
+    let (mut ok, mut failed, mut panicked, mut echo) = (false, None, false, false);
+    let needles: &[&str] = match expect {
+        Expect::Ok => &[],
+        Expect::Panic(n) => n,
+    };
+    let mut seen = vec![false; needles.len()];
     let outcome = loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left) {
@@ -114,7 +137,13 @@ pub(crate) fn run_test(arch: Arch, profile: &Profile, img: &Path, timeout_secs: 
                     println!("[{arch}] {line}");
                 }
                 ok |= line.contains(OK_MARKER);
-                if failed.is_none() && FAIL_MARKERS.iter().any(|m| line.contains(m)) {
+                panicked |= line.contains(KERNEL_PANIC);
+                for (s, n) in seen.iter_mut().zip(needles) {
+                    *s |= line.contains(n);
+                }
+                let fail_marker = LOADER_FAIL_MARKERS.iter().any(|m| line.contains(m))
+                    || (matches!(expect, Expect::Ok) && line.contains(KERNEL_PANIC));
+                if failed.is_none() && fail_marker {
                     failed = Some(line.trim().to_string());
                 }
             }
@@ -127,14 +156,24 @@ pub(crate) fn run_test(arch: Arch, profile: &Profile, img: &Path, timeout_secs: 
     }
     let status = child.wait().map_err(|e| e.to_string())?;
     let fail = |why: String| Err(format!("{why} (serial log: {})", log_path.display()));
-    match outcome {
-        Some(why) => fail(why),
-        None if failed.is_some() => fail(failed.unwrap_or_default()),
-        None if !ok => fail(format!("QEMU exited ({status}) without {OK_MARKER:?}")),
-        None if status.code() != Some(arch.success_status()) => {
-            fail(format!("QEMU exited with {status}, expected {}", arch.success_status()))
+    if let Some(why) = outcome.or(failed) {
+        return fail(why);
+    }
+    let want_status = match expect {
+        Expect::Ok if !ok => return fail(format!("QEMU exited ({status}) without {OK_MARKER:?}")),
+        Expect::Ok => arch.success_status(),
+        Expect::Panic(_) if !panicked => return fail(format!("QEMU exited ({status}) without {KERNEL_PANIC:?}")),
+        Expect::Panic(_) => {
+            if let Some((n, _)) = needles.iter().zip(&seen).find(|(_, s)| !**s) {
+                return fail(format!("panic report lacks {n:?}"));
+            }
+            arch.failure_status()
         }
-        None => Ok(()),
+    };
+    if status.code() == Some(want_status) {
+        Ok(())
+    } else {
+        fail(format!("QEMU exited with {status}, expected {want_status}"))
     }
 }
 

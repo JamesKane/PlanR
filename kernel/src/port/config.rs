@@ -5,6 +5,16 @@ pub(crate) struct Config<'a> {
     text: &'a str,
 }
 
+/// What a test image asks the kernel to do (`test=`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TestMode {
+    /// `test=1`: run the in-kernel tests, report, and power off.
+    Run,
+    /// `test=trap`: take a deliberate fatal page fault, so the harness can
+    /// check the trap report.
+    Trap,
+}
+
 impl<'a> Config<'a> {
     pub(crate) fn parse(text: &'a str) -> Self {
         Config { text }
@@ -22,8 +32,11 @@ impl<'a> Config<'a> {
             .next_back()
     }
 
-    /// `test=1`: run the boot self-checks, report, and power off.
-    pub(crate) fn test_mode(&self) -> bool {
-        self.get("test") == Some("1")
+    pub(crate) fn test_mode(&self) -> Option<TestMode> {
+        match self.get("test")? {
+            "1" => Some(TestMode::Run),
+            "trap" => Some(TestMode::Trap),
+            _ => None,
+        }
     }
 }

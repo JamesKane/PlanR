@@ -1,6 +1,9 @@
 //! amd64 support.
 
 pub(crate) mod mmu;
+mod trap;
+
+pub(crate) use trap::{breakpoint, frame_pointer, probe_read};
 
 use core::arch::{asm, global_asm};
 
@@ -10,6 +13,12 @@ use super::ExitCode;
 use crate::drivers::uart16550::Uart16550;
 use crate::port::acpi::System;
 use crate::port::console::{ConsoleSource, Uart};
+
+/// Installs the trap vectors. First thing the kernel does, so even an
+/// early fault powers off with a failure instead of resetting.
+pub(crate) fn init_traps() {
+    trap::init();
+}
 
 pub(crate) const NAME: &str = "amd64";
 

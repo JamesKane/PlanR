@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use arch::Arch;
+use qemu::Expect;
 
 const USAGE: &str = "\
 usage: cargo xtask <command> [options]
@@ -65,7 +66,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let opts = parse_opts(rest, cmd == "qemu")?;
     match cmd.as_str() {
         "build" => build(&opts).map(drop),
-        "image" => images(&opts, false).map(drop),
+        "image" => images(&opts).map(drop),
         "qemu" => {
             let [arch] = opts.arches[..] else {
                 return Err("qemu boots one arch at a time; pass --arch amd64 or --arch arm64".into());
@@ -74,7 +75,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 arches: vec![arch],
                 ..opts.clone()
             };
-            let img = images(&single, false)?.remove(0);
+            let img = images(&single)?.remove(0);
             qemu::run_interactive(arch, &img, opts.gui)
         }
         "test" => test(&opts),
@@ -187,17 +188,47 @@ fn build(opts: &Opts) -> Result<Vec<Built>, String> {
 
 /// Default boot configuration for interactive images.
 const CONFIG: &str = "# Plan R boot configuration (see kernel/src/port/config.rs)\n";
-/// Test images: the kernel runs its checks and powers off.
-const TEST_CONFIG: &str = "# Plan R test image\ntest=1\n";
 
-fn images(opts: &Opts, test: bool) -> Result<Vec<PathBuf>, String> {
-    let (name, config) = if test {
-        ("planr-test.img", TEST_CONFIG)
-    } else {
-        ("planr.img", CONFIG)
-    };
-    build(opts)?
-        .into_iter()
+/// A headless QEMU boot test: an image with its own `plan9.ini`, and what
+/// the console must show.
+#[derive(Debug)]
+struct BootTest {
+    name: &'static str,
+    config: &'static str,
+    expect: Expect,
+    /// Boot every profile under `--all-profiles`, not just the first.
+    every_profile: bool,
+}
+
+const BOOT_TESTS: &[BootTest] = &[
+    // The kernel runs its in-kernel tests and powers off.
+    BootTest {
+        name: "boot",
+        config: "# Plan R test image\ntest=1\n",
+        expect: Expect::Ok,
+        every_profile: true,
+    },
+    // A deliberate fatal page fault must produce a full trap report.
+    BootTest {
+        name: "trap",
+        config: "# Plan R trap test image\ntest=trap\n",
+        expect: Expect::Panic(&[
+            "kernel: PANIC: trap:",
+            "address 0xffff9000dead0000",
+            "backtrace:",
+            "#1 0x",
+        ]),
+        every_profile: false,
+    },
+];
+
+fn images(opts: &Opts) -> Result<Vec<PathBuf>, String> {
+    write_images(&build(opts)?, "planr.img", CONFIG)
+}
+
+fn write_images(built: &[Built], name: &str, config: &str) -> Result<Vec<PathBuf>, String> {
+    built
+        .iter()
         .map(|b| {
             let out = build_dir(b.arch).join(name);
             let contents = image::Contents {
@@ -230,21 +261,24 @@ fn host_tests() -> Result<(), String> {
 
 fn test(opts: &Opts) -> Result<(), String> {
     host_tests()?;
-    let imgs = images(opts, true)?;
+    let built = build(opts)?;
     let mut failed = Vec::new();
-    for (&arch, img) in opts.arches.iter().zip(&imgs) {
-        let profiles = if opts.all_profiles {
-            arch.profiles()
-        } else {
-            &arch.profiles()[..1]
-        };
-        for profile in profiles {
-            let name = format!("{arch}/{}", profile.name);
-            match qemu::run_test(arch, profile, img, opts.timeout) {
-                Ok(()) => println!("xtask: {name} boot test: PASS"),
-                Err(e) => {
-                    println!("xtask: {name} boot test: FAIL: {e}");
-                    failed.push(name);
+    for t in BOOT_TESTS {
+        let imgs = write_images(&built, &format!("planr-{}.img", t.name), t.config)?;
+        for (&arch, img) in opts.arches.iter().zip(&imgs) {
+            let profiles = if opts.all_profiles && t.every_profile {
+                arch.profiles()
+            } else {
+                &arch.profiles()[..1]
+            };
+            for profile in profiles {
+                let name = format!("{arch}/{} {}", profile.name, t.name);
+                match qemu::run_test(arch, profile, t.name, img, &t.expect, opts.timeout) {
+                    Ok(()) => println!("xtask: {name} test: PASS"),
+                    Err(e) => {
+                        println!("xtask: {name} test: FAIL: {e}");
+                        failed.push(name);
+                    }
                 }
             }
         }

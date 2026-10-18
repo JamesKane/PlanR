@@ -6,7 +6,7 @@
 |---|---|---|
 | Unit tests | host (`cargo test` on `no_std` crates via a host test shim) | 9P codec, namespace union logic, allocators, AML interpreter, fs format, crypto, TCP state machine, memdraw |
 | Property tests & fuzzing | host | 9P decode/encode round-trip, ELF parser, ACPI/AML, IP packets, fs images, TLS records. Fuzz harness ours (coverage via `-C instrument-coverage` / sancov); libFuzzer may be used in the host zone (Q1) |
-| Kernel self-tests | QEMU | In-kernel `#[test_case]` runner (ours); results over serial + `isa-debug-exit` / PSCI exit code |
+| Kernel self-tests | QEMU | In-kernel runner (`kernel/src/port/ktest.rs`, `test=1`): one `ktest:` line per test over serial, then `isa-debug-exit` / PSCI. Negative tests (`test=trap`) check that a fatal trap prints its report and backtrace |
 | User integration tests | QEMU | `rc` scripts under `/sys/test`, run by `init` in test mode; TAP-style output over serial |
 | Oracle tests | host + QEMU | Same input to Plan R and a reference; byte-compare (below) |
 | Multi-node tests | 2+ QEMU instances | `cpu`, `import`, `exportfs`, auth, TLS |

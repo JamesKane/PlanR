@@ -2,6 +2,7 @@
 //! architecture's default.
 
 use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use acpi::{AddressSpace, Gas, UartKind};
 
@@ -91,11 +92,28 @@ impl Write for Writer<'_> {
     }
 }
 
+static PANICKING: AtomicBool = AtomicBool::new(false);
+
+/// Enters panic mode: from now on, output takes the console even if the
+/// code that panicked holds it. Returns false if already panicking, so a
+/// nested panic can give up instead of recursing.
+pub(crate) fn begin_panic() -> bool {
+    !PANICKING.swap(true, Ordering::AcqRel)
+}
+
 pub(crate) fn print(args: fmt::Arguments<'_>) {
-    // A panic while printing must still get its message out, so never wait
-    // on a lock that might be held by the panicking code: drop the output
-    // instead. (Bring-up is single-CPU, so contention means re-entry.)
-    if let Some(mut c) = CONSOLE.try_lock()
+    // Never wait on the lock: bring-up is single-CPU, so contention means
+    // re-entry (a trap or panic while printing). Outside panic mode the
+    // output is dropped; in panic mode the lock is taken over.
+    let guard = CONSOLE.try_lock().or_else(|| {
+        if !PANICKING.load(Ordering::Acquire) {
+            return None;
+        }
+        // SAFETY: the panic path never returns to the interrupted printer.
+        unsafe { CONSOLE.force_unlock() };
+        CONSOLE.try_lock()
+    });
+    if let Some(mut c) = guard
         && let Some(u) = c.as_mut()
     {
         let _ = Writer(u).write_fmt(args);

@@ -61,6 +61,15 @@ impl Arch {
         }
     }
 
+    /// QEMU's exit status when a test-mode kernel powers off after a
+    /// failure: `(0x30 << 1) | 1` on amd64; arm64 cannot tell (0).
+    pub(crate) fn failure_status(self) -> i32 {
+        match self {
+            Arch::Amd64 => 97,
+            Arch::Arm64 => 0,
+        }
+    }
+
     /// The removable-media boot path's file name, `\EFI\BOOT\<this>`.
     pub(crate) fn boot_file(self) -> &'static str {
         match self {

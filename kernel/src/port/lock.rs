@@ -43,6 +43,16 @@ impl<T> SpinLock<T> {
             .is_ok()
             .then_some(SpinGuard { lock: self })
     }
+
+    /// Releases the lock whoever holds it.
+    ///
+    /// # Safety
+    ///
+    /// The holder must never touch the value again: only for the panic
+    /// path, which does not return to the code it interrupted.
+    pub(crate) unsafe fn force_unlock(&self) {
+        self.locked.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Debug)]

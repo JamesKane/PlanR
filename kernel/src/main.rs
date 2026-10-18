@@ -2,7 +2,8 @@
 //!
 //! P1 bring-up: entered from 9boot with the boot page tables live (ADR
 //! 0010), the kernel validates the handoff, finds a console through ACPI,
-//! and reports what it sees. Interrupts, timers and SMP come next.
+//! installs its trap vectors, and reports what it sees. Interrupts, timers
+//! and SMP come next.
 
 #![no_std]
 #![no_main]
@@ -13,15 +14,17 @@ mod port;
 
 use bootinfo::{BootInfo, EntryLevel, RegionKind};
 
+use port::config::{Config, TestMode};
 use port::console::{self, ConsoleSource};
-use port::{acpi, config::Config, mm};
+use port::{acpi, ktest, mm, trap};
 
 /// Marker lines `cargo xtask test` scans the serial log for.
 const OK_MARKER: &str = "kernel: ok";
-const PANIC_MARKER: &str = "kernel: PANIC";
+pub(crate) const PANIC_MARKER: &str = "kernel: PANIC";
 
 /// Called by the architecture entry stub with the stack set up.
 extern "C" fn kmain(info: &'static BootInfo) -> ! {
+    arch::init_traps();
     if info.validate().is_err() {
         // No console yet; nothing useful to say.
         arch::halt();
@@ -52,10 +55,20 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
         Err(e) => println!("acpi: {e}"),
     }
 
-    let config = Config::parse(info.config());
-    if config.test_mode() {
-        println!("{OK_MARKER}");
-        arch::exit(arch::ExitCode::Success);
+    match Config::parse(info.config()).test_mode() {
+        Some(TestMode::Run) => {
+            let failed = ktest::run();
+            assert!(failed == 0, "{failed} kernel tests failed");
+            println!("{OK_MARKER}");
+            arch::exit(arch::ExitCode::Success);
+        }
+        Some(TestMode::Trap) => {
+            println!("ktest: deliberate page fault at {:#x}", trap::UNMAPPED);
+            // SAFETY: none; this is meant to fault, and the fault is fatal.
+            let v = unsafe { core::ptr::read_volatile(trap::UNMAPPED as *const u64) };
+            panic!("read of unmapped {:#x} returned {v:#x}", trap::UNMAPPED);
+        }
+        None => {}
     }
     println!("P1 bring-up complete; halting");
     arch::halt()
@@ -83,6 +96,9 @@ fn report_memory(info: &BootInfo) {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
-    println!("{PANIC_MARKER}: {info}");
+    if console::begin_panic() {
+        println!("{PANIC_MARKER}: {info}");
+        trap::backtrace(None, arch::frame_pointer());
+    }
     arch::exit(arch::ExitCode::Failure)
 }

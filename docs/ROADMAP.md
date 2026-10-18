@@ -62,10 +62,19 @@ MMIO-mapped through its own page-table code), and in test mode reports and
 powers off (isa-debug-exit / PSCI). CI boots amd64 plus three arm64
 profiles (EL2+VHE, EL2 without VHE, EL1).
 
-**Remaining:** GDT/IDT and arm64 exception vectors; xAPIC/x2APIC + IOAPIC and
-GICv3; timers; SMP; framebuffer console and persistent log ring; HPET, MCFG,
-GTDT, PPTT and IORT parsing; CPU security features (SMEP/SMAP/UMIP,
-PAN/BTI); backtraces; in-kernel test runner.
+**Second slice done:** traps. amd64 has its own GDT, TSS (IST stacks for
+double fault, NMI, machine check) and a 256-vector IDT; arm64 has a
+`VBAR_EL1` table with `SError` unmasked. Both decode the trap into a typed
+`Exception`, resume breakpoints, recover faults listed in a linker-built
+fixup table (the basis for `copyin`/`copyout`), and otherwise print a
+register dump and frame-pointer backtrace. An in-kernel test runner
+(`test=1`) and a negative trap test (`test=trap`) run in CI.
+
+**Remaining:** xAPIC/x2APIC + IOAPIC and GICv3; timers; SMP; framebuffer
+console and persistent log ring; HPET, MCFG, GTDT, PPTT and IORT parsing; CPU
+security features (SMEP/SMAP/UMIP, PAN/BTI); backtrace symbolization; kernel
+stack guard pages (arm64 has no IST equivalent, so an overflow there still
+recurses); ACPI dump corpus.
 
 - **`9boot` (UEFI loader, ours):** our own UEFI bindings (protocol
   GUIDs, Boot/Runtime Services tables, GOP, Simple File System, Loaded Image).
