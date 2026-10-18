@@ -263,12 +263,34 @@ pub(crate) fn exit(_code: ExitCode) -> ! {
     halt()
 }
 
-/// Resets the machine warm (PSCI `SYSTEM_RESET`), keeping RAM and so the
-/// log ring.
+const PSCI_FEATURES: u64 = 0x8400_000a;
+const SYSTEM_RESET: u64 = 0x8400_0009;
+/// PSCI 1.1 `SYSTEM_RESET2` (SMC64), whose type 0 is an architectural warm
+/// reset. Plain `SYSTEM_RESET` may be a cold one, which loses RAM.
+const SYSTEM_RESET2: u64 = 0xc400_0012;
+const SYSTEM_WARM_RESET: u64 = 0;
+
+fn has_warm_reset() -> bool {
+    psci::call(PSCI_FEATURES, SYSTEM_RESET2, 0, 0) >= 0
+}
+
+/// How [`reset`] will reset the machine.
+pub(crate) fn reset_method(_acpi: Option<&System>) -> &'static str {
+    if has_warm_reset() {
+        "PSCI SYSTEM_RESET2, warm"
+    } else {
+        "PSCI SYSTEM_RESET (no SYSTEM_RESET2; warm or cold is the firmware's choice)"
+    }
+}
+
+/// Resets the machine warm, keeping RAM and so the log ring: PSCI
+/// `SYSTEM_RESET2` if the firmware has it, else `SYSTEM_RESET`.
 pub(crate) fn reset(_acpi: Option<&System>) -> ! {
-    const SYSTEM_RESET: u64 = 0x8400_0009;
     // SAFETY: a barrier; completes the log ring's non-cacheable writes.
     unsafe { asm!("dsb sy", options(nostack)) };
+    if has_warm_reset() {
+        psci::call(SYSTEM_RESET2, SYSTEM_WARM_RESET, 0, 0);
+    }
     psci::call(SYSTEM_RESET, 0, 0, 0);
     halt()
 }

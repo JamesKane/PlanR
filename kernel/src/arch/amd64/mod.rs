@@ -332,6 +332,15 @@ pub(crate) fn exit(code: ExitCode) -> ! {
 /// Resets the machine warm, keeping RAM and so the log ring: through the
 /// FADT reset register, else the PCI reset control port, else the
 /// keyboard controller.
+/// How [`reset`] will first try to reset the machine.
+pub(crate) fn reset_method(acpi: Option<&System>) -> &'static str {
+    match acpi.and_then(|s| s.tables.fadt()).and_then(|f| f.reset()) {
+        Some((reg, _)) if reg.space == AddressSpace::SystemIo => "the FADT reset register (I/O port)",
+        Some((reg, _)) if reg.space == AddressSpace::SystemMemory => "the FADT reset register (memory)",
+        _ => "the PCI reset control port",
+    }
+}
+
 pub(crate) fn reset(acpi: Option<&System>) -> ! {
     // SAFETY: a barrier; drains the write-combining buffers (the log ring).
     unsafe { asm!("sfence", options(nostack, preserves_flags)) };

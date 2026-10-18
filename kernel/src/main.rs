@@ -129,6 +129,7 @@ extern "C" fn boot_main(info: usize) -> ! {
         }
         Some(TestMode::Reset) => match ring_boot {
             Some(1) => {
+                println!("ktest: resetting through {}", arch::reset_method(acpi.as_ref().ok()));
                 println!("{RESET_LINE}");
                 arch::reset(acpi.as_ref().ok());
             }

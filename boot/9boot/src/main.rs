@@ -142,12 +142,23 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     let kernel_file = read_file(&root, KERNEL_PATH).ctx("reading kernel")?;
     // Before anything else allocates much: the previous ring is in free
     // memory until it is reserved.
+    // A reset test: read its marker before `setup` saves over it.
+    let reset_test = bootnext::config_is(&config, "test", "reset");
+    let pending = if reset_test { bootnext::pending(&root) } else { None };
     let log_ring = logring::setup(st, &root);
-    // The first boot of a reset test arranges the second.
-    if log_ring.is_some_and(|(_, boot)| boot == 1) && bootnext::config_is(&config, "test", "reset") {
-        match bootnext::repeat(st) {
-            Ok(n) => println!(st, "9boot: BootNext = {n:04X}, so Plan R starts again after the reset"),
-            Err(e) => println!(st, "9boot: cannot set BootNext ({e}); the reset may boot another OS"),
+    if reset_test {
+        match (log_ring, pending) {
+            // A fresh ring after the first boot: the old one was lost.
+            (Some((_, 1)), Some(at)) => bootnext::lost(st, &root, at),
+            // The first boot arranges the second.
+            (Some((ring, 1)), None) => match bootnext::arrange(st, &root, ring.phys) {
+                Ok(n) => println!(st, "9boot: BootNext = {n:04X}, so Plan R starts again after the reset"),
+                Err(e) => println!(
+                    st,
+                    "9boot: cannot arrange a second boot ({e}); the reset may boot another OS"
+                ),
+            },
+            _ => {}
         }
     }
 
@@ -315,7 +326,7 @@ fn exit_and_jump(mut st: SystemTable<Boot>, image: Handle, mut p: Prepared) -> !
     st.runtime_services().reset(ResetType::Shutdown, Status::ABORTED)
 }
 
-fn read_file(root: &File<'_>, path: &str) -> uefi::Result<Vec<u8>> {
+pub(crate) fn read_file(root: &File<'_>, path: &str) -> uefi::Result<Vec<u8>> {
     let mut f = root.open(path)?;
     let len = usize::try_from(f.size()?).map_err(|_| Status::BAD_BUFFER_SIZE)?;
     let mut buf = vec![0u8; len];
