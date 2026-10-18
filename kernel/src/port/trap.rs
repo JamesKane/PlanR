@@ -88,7 +88,8 @@ pub(crate) fn backtrace(pc: Option<u64>, mut fp: u64) {
 pub(crate) mod ktests {
     use super::{BREAKPOINTS, UNMAPPED};
     use crate::arch;
-    use crate::port::ktest::TestResult;
+    use crate::port::ktest::{Fail, TestResult};
+    use crate::port::mm;
     use core::sync::atomic::Ordering;
 
     pub(crate) fn breakpoint_resumes() -> TestResult {
@@ -108,6 +109,19 @@ pub(crate) mod ktests {
             Some(_) => Err("wrong value".into()),
             None => Err("mapped read faulted".into()),
         }
+    }
+
+    /// The user-access path reads a user page. With SMAP or PAN on, a
+    /// plain kernel read of it faults.
+    pub(crate) fn user_page_guarded() -> TestResult {
+        let va = mm::ktests::user_page()?;
+        if arch::probe_user_read(va) != Some(mm::ktests::USER_WORD) {
+            return Err("user-access read failed".into());
+        }
+        if !arch::protect::user_access_guarded() {
+            return Err(Fail::Skipped("no SMAP or PAN; the user-access read works"));
+        }
+        arch::probe_read(va).map_or(Ok(()), |_| Err("plain read of a user page succeeded".into()))
     }
 
     pub(crate) fn probe_recovers_unmapped() -> TestResult {

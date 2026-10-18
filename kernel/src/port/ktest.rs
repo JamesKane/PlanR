@@ -36,6 +36,10 @@ const TESTS: &[(&str, TestFn)] = &[
         "trap: fixup recovers bad address",
         trap::ktests::probe_recovers_bad_address,
     ),
+    (
+        "trap: user page guarded from the kernel",
+        trap::ktests::user_page_guarded,
+    ),
     ("mm: kernel stack has a guard page", mm::ktests::stack_has_guard),
     ("console: text drawn on the screen", console::ktests::screen_shows_text),
     (

@@ -328,8 +328,39 @@ global_asm!(
     ".popsection",
 );
 
+// The same for a word in a user page, inside a window with PAN clear when
+// PAN is on. Exception entry sets PAN again (`SCTLR_EL1.SPAN` is clear) and
+// eret restores the saved PSTATE, so a fault resumes at 4 with PAN clear;
+// x3 survives the trap.
+global_asm!(
+    ".section .text.probe, \"ax\"",
+    ".arch_extension pan",
+    ".global planr_probe_user_read",
+    "planr_probe_user_read:",
+    "    adrp x3, {pan}",
+    "    ldrb w3, [x3, :lo12:{pan}]",
+    "    cbz w3, 2f",
+    "    msr pan, #0",
+    "2:  ldr x2, [x0]",
+    "    cbz w3, 3f",
+    "    msr pan, #1",
+    "3:  str x2, [x1]",
+    "    mov w0, #1",
+    "    ret",
+    "4:  cbz w3, 5f",
+    "    msr pan, #1",
+    "5:  mov w0, #0",
+    "    ret",
+    ".pushsection .fixup, \"a\"",
+    ".balign 8",
+    ".quad 2b, 4b",
+    ".popsection",
+    pan = sym super::protect::PAN,
+);
+
 unsafe extern "C" {
     fn planr_probe_read(addr: u64, out: *mut u64) -> bool;
+    fn planr_probe_user_read(addr: u64, out: *mut u64) -> bool;
 }
 
 /// Reads the word at `addr`, or `None` if the read faults.
@@ -338,6 +369,14 @@ pub(crate) fn probe_read(addr: u64) -> Option<u64> {
     // SAFETY: the only memory written is `v`; a fault at `addr` is fixed
     // up and reported as failure.
     unsafe { planr_probe_read(addr, &raw mut v) }.then_some(v)
+}
+
+/// Reads the word at `addr`, a user address, or `None` if the read faults.
+/// The one path through which the kernel may touch user memory.
+pub(crate) fn probe_user_read(addr: u64) -> Option<u64> {
+    let mut v = 0;
+    // SAFETY: as for `probe_read`; PAN is set again on both exits.
+    unsafe { planr_probe_user_read(addr, &raw mut v) }.then_some(v)
 }
 
 pub(crate) fn breakpoint() {

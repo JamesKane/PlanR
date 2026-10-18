@@ -4,11 +4,12 @@ mod apic;
 mod cpu;
 mod ioapic;
 pub(crate) mod mmu;
+pub(crate) mod protect;
 mod smp;
 mod trap;
 
 pub(crate) use smp::{hwid, send_ipi, start_cpus};
-pub(crate) use trap::{breakpoint, frame_pointer, probe_read};
+pub(crate) use trap::{breakpoint, frame_pointer, probe_read, probe_user_read};
 
 use core::arch::{asm, global_asm};
 
@@ -200,7 +201,12 @@ pub(crate) fn idle() {
 }
 
 /// amd64 in-kernel tests, run after the portable ones.
-pub(crate) const KTESTS: &[(&str, TestFn)] = &[("ioapic: HPET interrupt delivered", hpet_through_ioapic)];
+pub(crate) const KTESTS: &[(&str, TestFn)] = &[
+    ("cpu: SMEP on every CPU", protect::ktests::smep),
+    ("cpu: SMAP on every CPU", protect::ktests::smap),
+    ("cpu: UMIP on every CPU", protect::ktests::umip),
+    ("ioapic: HPET interrupt delivered", hpet_through_ioapic),
+];
 
 /// An HPET comparator raises an edge on an I/O APIC input, which must
 /// arrive at the GSI's vector: the external interrupt path end to end.

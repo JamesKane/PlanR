@@ -2,12 +2,13 @@
 
 mod gic;
 pub(crate) mod mmu;
+pub(crate) mod protect;
 mod psci;
 mod smp;
 mod trap;
 
 pub(crate) use smp::{hwid, send_ipi, start_cpus};
-pub(crate) use trap::{breakpoint, frame_pointer, probe_read};
+pub(crate) use trap::{breakpoint, frame_pointer, probe_read, probe_user_read};
 
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -163,7 +164,7 @@ pub(crate) fn self_ipi(vector: usize) {
 }
 
 /// arm64 has no tests of its own yet.
-pub(crate) const KTESTS: &[(&str, TestFn)] = &[];
+pub(crate) const KTESTS: &[(&str, TestFn)] = &[("cpu: PAN on every CPU", protect::ktests::pan)];
 
 /// A saved interrupt state (`DAIF`), from [`splhi`].
 #[derive(Debug, Clone, Copy)]

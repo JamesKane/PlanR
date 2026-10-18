@@ -279,6 +279,7 @@ fn start(target: u64, entry: u64) -> Result<(), &'static str> {
 /// regime, on the CPU's own stack.
 extern "C" fn ap_entry(index: usize) -> ! {
     super::init_traps();
+    super::protect::init_cpu();
     let Some(cpu) = cpu::get(index) else {
         super::halt();
     };

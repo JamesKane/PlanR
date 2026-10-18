@@ -182,7 +182,7 @@ impl Trampoline {
         let p = Params {
             low_cr3: self.phys + PAGE,
             cr0: read_cr0(),
-            cr4: read_cr4(),
+            cr4: super::cpu::read_cr4(),
             cr3: read_cr3(),
             stack,
             index: index as u64,
@@ -210,13 +210,6 @@ fn read_cr3() -> u64 {
     let v: u64;
     // SAFETY: reads a control register.
     unsafe { asm!("mov {}, cr3", out(reg) v, options(nomem, nostack)) };
-    v
-}
-
-fn read_cr4() -> u64 {
-    let v: u64;
-    // SAFETY: reads a control register.
-    unsafe { asm!("mov {}, cr4", out(reg) v, options(nomem, nostack)) };
     v
 }
 
@@ -296,6 +289,7 @@ fn start(t: Trampoline, id: u32) -> Result<(), &'static str> {
 extern "C" fn ap_entry(index: usize) -> ! {
     ARRIVED.store(index, Ordering::Release);
     super::mmu::init_cpu();
+    super::protect::init_cpu();
     trap::load(index);
     let Some(cpu) = cpu::get(index) else {
         super::halt();

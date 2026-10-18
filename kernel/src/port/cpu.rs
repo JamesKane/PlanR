@@ -216,7 +216,7 @@ pub(crate) fn wake() {}
 
 /// Tests run by [`crate::port::ktest`].
 pub(crate) mod ktests {
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
     use super::{CallError, call, current, found, online, wait_calls};
     use crate::port::clock;
@@ -231,6 +231,31 @@ pub(crate) mod ktests {
         } else {
             Err(Fail::Skipped("only one CPU"))
         }
+    }
+
+    /// Runs `check` on every online CPU, one at a time, and returns
+    /// whether it held on all of them.
+    pub(crate) fn holds_everywhere(check: fn() -> bool) -> Result<bool, &'static str> {
+        static CHECK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+        static FAILED: AtomicBool = AtomicBool::new(false);
+        fn run() {
+            // SAFETY: only `holds_everywhere` stores here, and it stores a
+            // `fn() -> bool`.
+            let check = unsafe { core::mem::transmute::<*mut (), fn() -> bool>(CHECK.load(Ordering::Acquire)) };
+            if !check() {
+                FAILED.store(true, Ordering::Release);
+            }
+        }
+        CHECK.store(check as *mut (), Ordering::Release);
+        FAILED.store(false, Ordering::Relaxed);
+        let here = check();
+        for c in online().filter(|c| c.index() != current().index()) {
+            let before = call(c.index(), run).map_err(|_| "call refused")?;
+            if !wait_calls(c.index(), before, SECOND) {
+                return Err("call not finished within 1 s");
+            }
+        }
+        Ok(here && !FAILED.load(Ordering::Acquire))
     }
 
     pub(crate) fn all_online() -> TestResult {

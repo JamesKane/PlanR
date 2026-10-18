@@ -29,6 +29,7 @@ const RESET_LINE: &str = "ktest: warm reset to check the log ring";
 extern "C" fn kmain(info: &'static BootInfo) -> ! {
     arch::init_traps();
     arch::mmu::init_cpu();
+    arch::protect::init_cpu();
     cpu::init_boot();
     if info.validate().is_err() {
         // No console yet; nothing useful to say.
@@ -48,6 +49,7 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
         EntryLevel::El1 => println!("cpu: entered at EL1"),
         EntryLevel::NotApplicable => {}
     }
+    arch::protect::report();
     match source {
         ConsoleSource::Spcr(k) => println!("console: {k:?} from SPCR"),
         ConsoleSource::Dbg2(k) => println!("console: {k:?} from DBG2"),

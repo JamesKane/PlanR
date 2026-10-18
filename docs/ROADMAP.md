@@ -111,9 +111,23 @@ screen and the ring; the `log-ring` boot test resets warm (FADT reset
 register on amd64, PSCI `SYSTEM_RESET` on arm64) and checks that the next
 boot recovered the log.
 
+**Sixth slice done:** CPU protections, each turned on per CPU where the
+CPU reports it: SMEP, SMAP and UMIP on amd64 (NX and `CR0.WP` were already
+on from 9boot), PAN on arm64 with `SCTLR_EL1.SPAN` cleared so every
+exception entry sets it (PXN/UXN were already on every kernel mapping).
+`stac`/`clac` and the PAN writes fault on CPUs without the feature, so
+they sit behind a runtime flag; the amd64 trap entry runs `clac` and a
+fixup resume closes the window. `probe_user_read` is the one path through
+which the kernel touches user memory. In-kernel tests read each feature
+back on every CPU (reporting `skipped` where the CPU lacks it) and check
+that a plain kernel read of a lower-half user page faults while the
+user-access read works. **BTI is deferred:** it needs `bti` landing pads,
+which the stable toolchain cannot emit (`-Z branch-protection` is nightly
+only), and the prebuilt `core` has none.
+
 **Remaining:** MCFG, PPTT and
-IORT parsing; PIT fallback for TSC calibration without an HPET; CPU
-security features (SMEP/SMAP/UMIP, PAN/BTI); backtrace symbolization;
+IORT parsing; PIT fallback for TSC calibration without an HPET;
+BTI once the toolchain can emit landing pads; backtrace symbolization;
 overflow reporting on arm64 (the guard page faults, but with no IST
 equivalent the fault handler recurses on the same stack) and a guard for
 the boot CPU's stack; ACPI dump corpus; checking SMP on the reference

@@ -277,7 +277,11 @@ planr_trap_vectors:
     // aligned for the call.
     movq %rsp, %rdi
     cld
-    call {trap}
+    // Close any user-access window the trap interrupted; iretq reopens it.
+    cmpb $0, {smap}(%rip)
+    je 1f
+    clac
+1:  call {trap}
     popq %r15
     popq %r14
     popq %r13
@@ -297,6 +301,7 @@ planr_trap_vectors:
     iretq
     "#,
     trap = sym trap,
+    smap = sym super::protect::SMAP,
     options(att_syntax),
 );
 
@@ -529,8 +534,36 @@ global_asm!(
     ".popsection",
 );
 
+// The same for a word in a user page, inside a `stac`/`clac` window when
+// SMAP is on. The `cmp` sets ZF for "no SMAP" and nothing after it changes
+// the flags; a fault resumes at 4 with the flags (and AC) it saved.
+global_asm!(
+    ".section .text.probe, \"ax\"",
+    ".global planr_probe_user_read",
+    "planr_probe_user_read:",
+    "    cmp byte ptr [rip + {smap}], 0",
+    "    je 2f",
+    "    stac",
+    "2:  mov rdx, [rdi]",
+    "    je 3f",
+    "    clac",
+    "3:  mov [rsi], rdx",
+    "    mov eax, 1",
+    "    ret",
+    "4:  je 5f",
+    "    clac",
+    "5:  mov eax, 0",
+    "    ret",
+    ".pushsection .fixup, \"a\"",
+    ".balign 8",
+    ".quad 2b, 4b",
+    ".popsection",
+    smap = sym super::protect::SMAP,
+);
+
 unsafe extern "C" {
     fn planr_probe_read(addr: u64, out: *mut u64) -> bool;
+    fn planr_probe_user_read(addr: u64, out: *mut u64) -> bool;
 }
 
 /// Reads the word at `addr`, or `None` if the read faults.
@@ -539,6 +572,14 @@ pub(crate) fn probe_read(addr: u64) -> Option<u64> {
     // SAFETY: the only memory written is `v`; a fault at `addr` is fixed
     // up and reported as failure.
     unsafe { planr_probe_read(addr, &raw mut v) }.then_some(v)
+}
+
+/// Reads the word at `addr`, a user address, or `None` if the read faults.
+/// The one path through which the kernel may touch user memory.
+pub(crate) fn probe_user_read(addr: u64) -> Option<u64> {
+    let mut v = 0;
+    // SAFETY: as for `probe_read`; the window is closed on both exits.
+    unsafe { planr_probe_user_read(addr, &raw mut v) }.then_some(v)
 }
 
 pub(crate) fn breakpoint() {

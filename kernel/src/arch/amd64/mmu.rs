@@ -8,6 +8,7 @@ use crate::port::mm::{self, MapKind};
 
 const PRESENT: u64 = 1 << 0;
 const WRITABLE: u64 = 1 << 1;
+const USER: u64 = 1 << 2;
 const WRITE_THROUGH: u64 = 1 << 3;
 const CACHE_DISABLE: u64 = 1 << 4;
 const HUGE: u64 = 1 << 7;
@@ -31,8 +32,13 @@ fn table(phys: u64) -> *mut u64 {
     phys_to_virt(phys) as *mut u64
 }
 
-/// Maps one 4 KiB page in the current address space.
+/// Maps one 4 KiB page in the current address space. User pages go in
+/// the lower half only.
 pub(crate) fn map_page(va: u64, pa: u64, kind: MapKind) -> Option<()> {
+    let user = kind == MapKind::UserReadWrite;
+    if user && va >> 63 != 0 {
+        return None;
+    }
     let cr3: u64;
     // SAFETY: reading CR3 has no side effects.
     unsafe { asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack)) };
@@ -46,6 +52,10 @@ pub(crate) fn map_page(va: u64, pa: u64, kind: MapKind) -> Option<()> {
         } else if *e & HUGE != 0 {
             return None; // already covered by a large page
         }
+        // A page is reachable from user mode only if every level allows it.
+        if user {
+            *e |= USER;
+        }
         t = table(*e & ADDR);
     }
     let leaf = match kind {
@@ -53,6 +63,7 @@ pub(crate) fn map_page(va: u64, pa: u64, kind: MapKind) -> Option<()> {
         MapKind::NormalReadOnly => PRESENT | NO_EXECUTE,
         MapKind::NormalReadWrite => PRESENT | WRITABLE | NO_EXECUTE,
         MapKind::WriteCombining => PRESENT | WRITABLE | WRITE_THROUGH | NO_EXECUTE,
+        MapKind::UserReadWrite => PRESENT | WRITABLE | USER | NO_EXECUTE,
     };
     // SAFETY: as above; a not-present entry is never cached in the TLB, so
     // no invalidation is needed for a fresh mapping.

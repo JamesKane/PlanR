@@ -37,6 +37,10 @@ pub(crate) enum MapKind {
     /// device promptly (framebuffers, the log ring): uncached, but writes
     /// may be combined. Writable, never executable.
     WriteCombining,
+    /// Ordinary memory in the lower half that user mode may read and write:
+    /// cacheable, never executable. With SMAP or PAN on, the kernel reaches
+    /// it only through [`arch::probe_user_read`].
+    UserReadWrite,
 }
 
 #[derive(Debug)]
@@ -173,9 +177,34 @@ pub(crate) fn map_phys(phys: u64, len: u64, kind: MapKind) -> Option<u64> {
 
 /// Tests run by [`crate::port::ktest`].
 pub(crate) mod ktests {
-    use super::{PAGE, alloc_stack};
+    use bootinfo::phys_to_virt;
+
+    use super::{MAP, MapKind, PAGE, alloc_frame, alloc_stack};
     use crate::arch;
     use crate::port::ktest::TestResult;
+    use crate::port::lock::SpinLock;
+
+    /// Where [`user_page`] maps its page: near the top of the lower half,
+    /// far above any RAM the identity map covers.
+    const USER_PAGE: u64 = 0x0000_7fff_fff0_0000;
+    /// The word at the start of the user page.
+    pub(crate) const USER_WORD: u64 = 0x05e7_da7a_0000_beef;
+
+    /// The address of a user page holding [`USER_WORD`], mapped on first
+    /// use and kept: remapping it would need a TLB invalidation.
+    pub(crate) fn user_page() -> Result<u64, &'static str> {
+        static MAPPED: SpinLock<bool> = SpinLock::new(false);
+        let mut mapped = MAPPED.lock();
+        if !*mapped {
+            let frame = alloc_frame().ok_or("no memory for a user page")?;
+            // SAFETY: the frame is new, in the direct map and ours.
+            unsafe { (phys_to_virt(frame) as *mut u64).write(USER_WORD) };
+            let _map = MAP.lock();
+            arch::mmu::map_page(USER_PAGE, frame, MapKind::UserReadWrite).ok_or("cannot map a user page")?;
+            *mapped = true;
+        }
+        Ok(USER_PAGE)
+    }
 
     /// A new stack is mapped and writable, and the page below it faults.
     pub(crate) fn stack_has_guard() -> TestResult {

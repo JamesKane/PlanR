@@ -1,4 +1,4 @@
-//! amd64 instructions without a better home: CPUID, MSRs, the TSC.
+//! amd64 instructions without a better home: CPUID, MSRs, CR4, the TSC.
 
 use core::arch::asm;
 use core::arch::x86_64::{__cpuid_count, CpuidResult};
@@ -27,6 +27,22 @@ pub(crate) fn rdmsr(msr: u32) -> u64 {
 pub(crate) unsafe fn wrmsr(msr: u32, v: u64) {
     // SAFETY: the caller's.
     unsafe { asm!("wrmsr", in("ecx") msr, in("eax") v as u32, in("edx") (v >> 32) as u32, options(nostack)) };
+}
+
+pub(crate) fn read_cr4() -> u64 {
+    let v: u64;
+    // SAFETY: reads a control register.
+    unsafe { asm!("mov {}, cr4", out(reg) v, options(nomem, nostack)) };
+    v
+}
+
+/// # Safety
+///
+/// The new value must be valid for this CPU and must not break the
+/// kernel's assumptions (paging, user-memory access).
+pub(crate) unsafe fn write_cr4(v: u64) {
+    // SAFETY: the caller's.
+    unsafe { asm!("mov cr4, {}", in(reg) v, options(nostack)) };
 }
 
 /// The time-stamp counter. `lfence` keeps it from being read before
