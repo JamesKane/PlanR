@@ -12,6 +12,7 @@
 pub mod raw;
 
 mod console;
+mod fs;
 mod gop;
 mod memory;
 
@@ -21,6 +22,7 @@ use core::marker::PhantomData;
 use core::ptr::{self, NonNull};
 
 pub use console::Console;
+pub use fs::{File, LoadedImage, SimpleFileSystem};
 pub use gop::{GraphicsOutput, ModeInfo, PixelFormat};
 pub use memory::{MapKey, MemoryAttribute, MemoryDescriptor, MemoryMap, MemoryType};
 
@@ -344,7 +346,48 @@ impl SystemTable<Boot> {
 #[derive(Debug, Clone, Copy)]
 pub struct BootServices<'a>(&'a raw::BootServices);
 
+/// `EFI_ALLOCATE_TYPE::AllocateAnyPages`.
+const ALLOCATE_ANY_PAGES: u32 = 0;
+
 impl BootServices<'_> {
+    /// The raw table, for code (such as a global allocator) that must reach
+    /// boot services without a borrow of the system table.
+    #[must_use]
+    pub fn as_raw(&self) -> *const raw::BootServices {
+        self.0
+    }
+
+    /// Rebuilds a `BootServices` from [`as_raw`](Self::as_raw).
+    ///
+    /// # Safety
+    ///
+    /// `p` must come from `as_raw`, and boot services must still be active
+    /// for the returned lifetime.
+    #[must_use]
+    pub unsafe fn from_raw<'a>(p: *const raw::BootServices) -> BootServices<'a> {
+        // SAFETY: caller contract.
+        BootServices(unsafe { &*p })
+    }
+
+    /// Allocates `pages` contiguous 4 KiB pages anywhere, tagged as `ty`.
+    /// Returns the physical (= identity-mapped) address.
+    pub fn allocate_pages(&self, ty: MemoryType, pages: usize) -> Result<u64> {
+        let mut addr = 0u64;
+        // SAFETY: valid out-pointer.
+        unsafe { (self.0.allocate_pages)(ALLOCATE_ANY_PAGES, ty.to_raw(), pages, &raw mut addr) }.to_result()?;
+        Ok(addr)
+    }
+
+    /// Finds protocol `P` on a specific handle.
+    pub fn handle_protocol<P: Protocol>(&self, handle: Handle) -> Result<&P> {
+        let guid = P::GUID;
+        let mut iface = ptr::null_mut();
+        // SAFETY: valid GUID and out-pointer.
+        unsafe { (self.0.handle_protocol)(handle, &raw const guid, &raw mut iface) }.to_result()?;
+        // SAFETY: as in `locate_protocol`.
+        unsafe { iface.cast::<P>().as_ref() }.ok_or(Status::NOT_FOUND)
+    }
+
     /// Allocates `size` bytes from the firmware pool, tagged as `ty`.
     pub fn allocate_pool(&self, ty: MemoryType, size: usize) -> Result<NonNull<u8>> {
         let mut p = ptr::null_mut();

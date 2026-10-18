@@ -11,10 +11,21 @@ const DISK_BYTES: u64 = 64 << 20;
 /// First partition at 1 MiB, the usual alignment.
 const ESP_FIRST_LBA: u64 = 2048;
 
-pub(crate) fn write(arch: Arch, loader: &Path, out: &Path) -> Result<(), String> {
-    let efi = std::fs::read(loader).map_err(|e| format!("{}: {e}", loader.display()))?;
+/// What goes on the ESP.
+#[derive(Debug)]
+pub(crate) struct Contents<'a> {
+    pub(crate) loader: &'a Path,
+    pub(crate) kernel: &'a Path,
+    /// `\planr\plan9.ini`.
+    pub(crate) config: &'a str,
+}
+
+pub(crate) fn write(arch: Arch, c: &Contents<'_>, out: &Path) -> Result<(), String> {
+    let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut root = Dir::default();
-    root.insert(&format!("EFI/BOOT/{}", arch.boot_file()), efi)?;
+    root.insert(&format!("EFI/BOOT/{}", arch.boot_file()), read(c.loader)?)?;
+    root.insert("PLANR/KERNEL", read(c.kernel)?)?;
+    root.insert("PLANR/PLAN9.INI", c.config.as_bytes().to_vec())?;
 
     let sectors = DISK_BYTES / SECTOR;
     let (_, last) = gpt::usable(sectors);

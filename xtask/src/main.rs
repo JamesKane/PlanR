@@ -21,7 +21,7 @@ const USAGE: &str = "\
 usage: cargo xtask <command> [options]
 
 commands:
-  build    build 9boot (and later the kernel) for the target arch(es)
+  build    build 9boot and the kernel for the target arch(es)
   image    build, then write the bootable GPT disk image
   qemu     build, write the image, and boot it interactively in QEMU
   test     host unit tests, then headless QEMU boot tests
@@ -33,6 +33,7 @@ options:
   --release                optimized build
   --gui                    qemu: show a display window
   --timeout SECS           test: per-boot timeout (default 120)
+  --all-profiles           test: boot every QEMU profile (ci does this)
 ";
 
 #[derive(Debug, Clone)]
@@ -41,6 +42,8 @@ struct Opts {
     release: bool,
     gui: bool,
     timeout: u64,
+    /// Boot every QEMU profile, not just each arch's first.
+    all_profiles: bool,
 }
 
 fn main() -> ExitCode {
@@ -62,16 +65,16 @@ fn run(args: &[String]) -> Result<(), String> {
     let opts = parse_opts(rest, cmd == "qemu")?;
     match cmd.as_str() {
         "build" => build(&opts).map(drop),
-        "image" => images(&opts).map(drop),
+        "image" => images(&opts, false).map(drop),
         "qemu" => {
             let [arch] = opts.arches[..] else {
                 return Err("qemu boots one arch at a time; pass --arch amd64 or --arch arm64".into());
             };
-            let img = images(&Opts {
+            let single = Opts {
                 arches: vec![arch],
                 ..opts.clone()
-            })?
-            .remove(0);
+            };
+            let img = images(&single, false)?.remove(0);
             qemu::run_interactive(arch, &img, opts.gui)
         }
         "test" => test(&opts),
@@ -95,6 +98,7 @@ fn parse_opts(args: &[String], single_default: bool) -> Result<Opts, String> {
         release: false,
         gui: false,
         timeout: 120,
+        all_profiles: false,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -109,6 +113,7 @@ fn parse_opts(args: &[String], single_default: bool) -> Result<Opts, String> {
             }
             "--release" => opts.release = true,
             "--gui" => opts.gui = true,
+            "--all-profiles" => opts.all_profiles = true,
             "--timeout" => {
                 let v = it.next().ok_or("--timeout needs a value")?;
                 opts.timeout = v.parse().map_err(|_| format!("bad --timeout {v:?}"))?;
@@ -154,57 +159,93 @@ fn sh(mut cmd: Command) -> Result<(), String> {
 struct Built {
     arch: Arch,
     loader: PathBuf,
+    kernel: PathBuf,
 }
 
 fn build(opts: &Opts) -> Result<Vec<Built>, String> {
+    let profile = if opts.release { "release" } else { "debug" };
+    let one = |package: &str, target: &str, file: &str| -> Result<PathBuf, String> {
+        let mut c = cargo();
+        c.args(["build", "-p", package, "--target", target]);
+        if opts.release {
+            c.arg("--release");
+        }
+        sh(c)?;
+        Ok(root().join("target").join(target).join(profile).join(file))
+    };
     opts.arches
         .iter()
         .map(|&arch| {
-            let mut c = cargo();
-            c.args(["build", "-p", "nineboot", "--target", arch.uefi_target()]);
-            if opts.release {
-                c.arg("--release");
-            }
-            sh(c)?;
-            let profile = if opts.release { "release" } else { "debug" };
-            let loader = root()
-                .join("target")
-                .join(arch.uefi_target())
-                .join(profile)
-                .join("9boot.efi");
-            Ok(Built { arch, loader })
+            Ok(Built {
+                arch,
+                loader: one("nineboot", arch.uefi_target(), "9boot.efi")?,
+                kernel: one("kernel", arch.kernel_target(), "kernel")?,
+            })
         })
         .collect()
 }
 
-fn images(opts: &Opts) -> Result<Vec<PathBuf>, String> {
+/// Default boot configuration for interactive images.
+const CONFIG: &str = "# Plan R boot configuration (see kernel/src/port/config.rs)\n";
+/// Test images: the kernel runs its checks and powers off.
+const TEST_CONFIG: &str = "# Plan R test image\ntest=1\n";
+
+fn images(opts: &Opts, test: bool) -> Result<Vec<PathBuf>, String> {
+    let (name, config) = if test {
+        ("planr-test.img", TEST_CONFIG)
+    } else {
+        ("planr.img", CONFIG)
+    };
     build(opts)?
         .into_iter()
         .map(|b| {
-            let out = build_dir(b.arch).join("planr.img");
-            image::write(b.arch, &b.loader, &out)?;
+            let out = build_dir(b.arch).join(name);
+            let contents = image::Contents {
+                loader: &b.loader,
+                kernel: &b.kernel,
+                config,
+            };
+            image::write(b.arch, &contents, &out)?;
             println!("xtask: wrote {}", out.display());
             Ok(out)
         })
         .collect()
 }
 
+/// Crates with host unit tests (everything except the bare-metal binaries).
+const HOST_TESTED: &[&str] = &["acpi", "bootinfo", "elf", "uefi", "xtask"];
+
+fn with_packages(c: &mut Command, packages: &[&str]) {
+    for p in packages {
+        c.args(["-p", p]);
+    }
+}
+
 fn host_tests() -> Result<(), String> {
     let mut c = cargo();
-    c.args(["test", "-q", "-p", "uefi", "-p", "xtask"]);
+    c.args(["test", "-q"]);
+    with_packages(&mut c, HOST_TESTED);
     sh(c)
 }
 
 fn test(opts: &Opts) -> Result<(), String> {
     host_tests()?;
-    let imgs = images(opts)?;
+    let imgs = images(opts, true)?;
     let mut failed = Vec::new();
     for (&arch, img) in opts.arches.iter().zip(&imgs) {
-        match qemu::run_test(arch, img, opts.timeout) {
-            Ok(()) => println!("xtask: {} boot test: PASS", arch.name()),
-            Err(e) => {
-                println!("xtask: {} boot test: FAIL: {e}", arch.name());
-                failed.push(arch.name());
+        let profiles = if opts.all_profiles {
+            arch.profiles()
+        } else {
+            &arch.profiles()[..1]
+        };
+        for profile in profiles {
+            let name = format!("{arch}/{}", profile.name);
+            match qemu::run_test(arch, profile, img, opts.timeout) {
+                Ok(()) => println!("xtask: {name} boot test: PASS"),
+                Err(e) => {
+                    println!("xtask: {name} boot test: FAIL: {e}");
+                    failed.push(name);
+                }
             }
         }
     }
@@ -221,35 +262,23 @@ fn ci(opts: &Opts) -> Result<(), String> {
     sh(fmt)?;
 
     let mut host = cargo();
-    host.args([
-        "clippy",
-        "-q",
-        "-p",
-        "uefi",
-        "-p",
-        "xtask",
-        "--all-targets",
-        "--",
-        "-D",
-        "warnings",
-    ]);
+    host.args(["clippy", "-q", "--all-targets"]);
+    with_packages(&mut host, HOST_TESTED);
+    host.args(["--", "-D", "warnings"]);
     sh(host)?;
     for arch in &opts.arches {
-        let mut c = cargo();
-        c.args([
-            "clippy",
-            "-q",
-            "-p",
-            "nineboot",
-            "--target",
-            arch.uefi_target(),
-            "--",
-            "-D",
-            "warnings",
-        ]);
-        sh(c)?;
+        for (package, target) in [("nineboot", arch.uefi_target()), ("kernel", arch.kernel_target())] {
+            let mut c = cargo();
+            c.args([
+                "clippy", "-q", "-p", package, "--target", target, "--", "-D", "warnings",
+            ]);
+            sh(c)?;
+        }
     }
 
     deps::check(&root())?;
-    test(opts)
+    test(&Opts {
+        all_profiles: true,
+        ..opts.clone()
+    })
 }

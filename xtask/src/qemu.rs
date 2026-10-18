@@ -6,21 +6,31 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::arch::Arch;
+use crate::arch::{Arch, Profile};
 
-/// Must match the markers in `boot/9boot/src/main.rs`.
-const OK_MARKER: &str = "9boot: ok";
-const PANIC_MARKER: &str = "9boot: PANIC";
+/// Must match the markers in `boot/9boot/src/main.rs` and `kernel/src/main.rs`.
+const OK_MARKER: &str = "kernel: ok";
+const FAIL_MARKERS: &[&str] = &["9boot: PANIC", "9boot: error", "kernel: PANIC"];
 const BANNER: &str = "Plan R 9boot";
 
-fn command(arch: Arch, img: &Path) -> Result<Command, String> {
+fn command(arch: Arch, profile: &Profile, img: &Path) -> Result<Command, String> {
     let fw = arch.firmware()?;
     let dir = crate::build_dir(arch);
     let vars = dir.join("vars.fd");
     std::fs::copy(&fw.vars, &vars).map_err(|e| format!("copying {}: {e}", fw.vars.display()))?;
 
     let mut c = Command::new(arch.qemu());
-    c.args(arch.machine_args()).args(arch.accel_args());
+    c.args([
+        "-machine",
+        profile.machine,
+        "-cpu",
+        profile.cpu,
+        "-smp",
+        "4",
+        "-m",
+        "2G",
+    ]);
+    c.args(arch.device_args()).args(arch.accel_args());
     c.arg("-drive")
         .arg(format!("if=pflash,format=raw,readonly=on,file={}", fw.code.display()));
     c.arg("-drive")
@@ -32,7 +42,7 @@ fn command(arch: Arch, img: &Path) -> Result<Command, String> {
 }
 
 pub(crate) fn run_interactive(arch: Arch, img: &Path, gui: bool) -> Result<(), String> {
-    let mut c = command(arch, img)?;
+    let mut c = command(arch, &arch.profiles()[0], img)?;
     // mon:stdio multiplexes the monitor onto the console: Ctrl-A X quits.
     c.args(["-serial", "mon:stdio"]);
     if !gui {
@@ -72,8 +82,8 @@ fn strip_escapes(s: &str) -> String {
 
 /// Boots `img` headless and passes if the loader prints the OK marker and
 /// QEMU exits cleanly within `timeout_secs`.
-pub(crate) fn run_test(arch: Arch, img: &Path, timeout_secs: u64) -> Result<(), String> {
-    let mut c = command(arch, img)?;
+pub(crate) fn run_test(arch: Arch, profile: &Profile, img: &Path, timeout_secs: u64) -> Result<(), String> {
+    let mut c = command(arch, profile, img)?;
     c.args(["-display", "none", "-serial", "stdio", "-monitor", "none"]);
     c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit());
     let mut child = c.spawn().map_err(|e| format!("{}: {e}", arch.qemu()))?;
@@ -89,10 +99,10 @@ pub(crate) fn run_test(arch: Arch, img: &Path, timeout_secs: u64) -> Result<(), 
         }
     });
 
-    let log_path = crate::build_dir(arch).join("serial.log");
+    let log_path = crate::build_dir(arch).join(format!("serial-{}.log", profile.name));
     let mut log = std::fs::File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    let (mut ok, mut panicked, mut echo) = (false, false, false);
+    let (mut ok, mut failed, mut echo) = (false, None, false);
     let outcome = loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left) {
@@ -104,7 +114,9 @@ pub(crate) fn run_test(arch: Arch, img: &Path, timeout_secs: u64) -> Result<(), 
                     println!("[{arch}] {line}");
                 }
                 ok |= line.contains(OK_MARKER);
-                panicked |= line.contains(PANIC_MARKER);
+                if failed.is_none() && FAIL_MARKERS.iter().any(|m| line.contains(m)) {
+                    failed = Some(line.trim().to_string());
+                }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break None,
             Err(mpsc::RecvTimeoutError::Timeout) => break Some(format!("timed out after {timeout_secs}s")),
@@ -117,9 +129,11 @@ pub(crate) fn run_test(arch: Arch, img: &Path, timeout_secs: u64) -> Result<(), 
     let fail = |why: String| Err(format!("{why} (serial log: {})", log_path.display()));
     match outcome {
         Some(why) => fail(why),
-        None if panicked => fail("loader panicked".into()),
+        None if failed.is_some() => fail(failed.unwrap_or_default()),
         None if !ok => fail(format!("QEMU exited ({status}) without {OK_MARKER:?}")),
-        None if !status.success() => fail(format!("QEMU exited with {status}")),
+        None if status.code() != Some(arch.success_status()) => {
+            fail(format!("QEMU exited with {status}, expected {}", arch.success_status()))
+        }
         None => Ok(()),
     }
 }

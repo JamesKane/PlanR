@@ -3,9 +3,31 @@
 version = 4
 
 [[package]]
+name = "acpi"
+version = "0.1.0"
+
+[[package]]
+name = "bootinfo"
+version = "0.1.0"
+
+[[package]]
+name = "elf"
+version = "0.1.0"
+
+[[package]]
+name = "kernel"
+version = "0.1.0"
+dependencies = [
+ "acpi",
+ "bootinfo",
+]
+
+[[package]]
 name = "nineboot"
 version = "0.1.0"
 dependencies = [
+ "bootinfo",
+ "elf",
  "uefi",
 ]
 

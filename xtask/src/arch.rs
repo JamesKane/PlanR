@@ -10,6 +10,14 @@ pub(crate) enum Arch {
     Arm64,
 }
 
+/// One QEMU machine configuration.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Profile {
+    pub(crate) name: &'static str,
+    pub(crate) machine: &'static str,
+    pub(crate) cpu: &'static str,
+}
+
 /// Firmware images: read-only code, plus a template copied for each run so
 /// every boot starts from the same NVRAM state.
 #[derive(Debug)]
@@ -35,6 +43,24 @@ impl Arch {
         }
     }
 
+    /// Target triple for the kernel.
+    pub(crate) fn kernel_target(self) -> &'static str {
+        match self {
+            Arch::Amd64 => "x86_64-unknown-none",
+            Arch::Arm64 => "aarch64-unknown-none",
+        }
+    }
+
+    /// QEMU's exit status when a test-mode kernel powers off successfully:
+    /// amd64 reports through `isa-debug-exit` (`(0x31 << 1) | 1`), arm64
+    /// through PSCI `SYSTEM_OFF` (always 0).
+    pub(crate) fn success_status(self) -> i32 {
+        match self {
+            Arch::Amd64 => 99,
+            Arch::Arm64 => 0,
+        }
+    }
+
     /// The removable-media boot path's file name, `\EFI\BOOT\<this>`.
     pub(crate) fn boot_file(self) -> &'static str {
         match self {
@@ -50,24 +76,48 @@ impl Arch {
         }
     }
 
-    /// Machine arguments shared by interactive and test runs.
-    pub(crate) fn machine_args(self) -> &'static [&'static str] {
+    /// QEMU machine profiles. The first is the default for interactive
+    /// runs and `cargo xtask test`; `cargo xtask ci` boots all of them.
+    pub(crate) fn profiles(self) -> &'static [Profile] {
         match self {
-            Arch::Amd64 => &["-machine", "q35", "-cpu", "max", "-smp", "4", "-m", "2G"],
+            Arch::Amd64 => &[Profile {
+                name: "q35",
+                machine: "q35",
+                cpu: "max",
+            }],
             Arch::Arm64 => &[
-                "-machine",
-                "virt,acpi=on,gic-version=3",
-                "-cpu",
-                "max",
-                "-smp",
-                "4",
-                "-m",
-                "2G",
-                // `virt` has no display by default. ramfb gives the firmware a GOP with a
-                // linear framebuffer; virtio-gpu-pci would only offer BltOnly.
-                "-device",
-                "ramfb",
+                // Firmware at EL2 with VHE (E2H=1); 9boot drops to EL1. This is
+                // the Orange Pi 6 Plus path.
+                Profile {
+                    name: "el2-vhe",
+                    machine: "virt,acpi=on,gic-version=3,virtualization=on",
+                    cpu: "max",
+                },
+                // EL2 without VHE: Cortex-A57 lacks it. (Below the Armv8.1
+                // baseline; used only to cover the E2H=0 handoff.)
+                Profile {
+                    name: "el2-nvhe",
+                    machine: "virt,acpi=on,gic-version=3,virtualization=on",
+                    cpu: "cortex-a57",
+                },
+                // Firmware at EL1.
+                Profile {
+                    name: "el1",
+                    machine: "virt,acpi=on,gic-version=3",
+                    cpu: "max",
+                },
             ],
+        }
+    }
+
+    /// Devices every profile of this arch gets.
+    pub(crate) fn device_args(self) -> &'static [&'static str] {
+        match self {
+            // Lets a test-mode kernel set QEMU's exit status.
+            Arch::Amd64 => &["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"],
+            // `virt` has no display by default. ramfb gives the firmware a GOP
+            // with a linear framebuffer; virtio-gpu-pci would only offer BltOnly.
+            Arch::Arm64 => &["-device", "ramfb"],
         }
     }
 

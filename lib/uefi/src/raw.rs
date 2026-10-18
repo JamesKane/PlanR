@@ -70,7 +70,7 @@ pub struct BootServices {
     pub raise_tpl: Unused,
     pub restore_tpl: Unused,
     // Memory
-    pub allocate_pages: Unused,
+    pub allocate_pages: unsafe extern "efiapi" fn(u32, u32, usize, *mut u64) -> Status,
     pub free_pages: Unused,
     pub get_memory_map: unsafe extern "efiapi" fn(
         map_size: *mut usize,
@@ -92,7 +92,7 @@ pub struct BootServices {
     pub install_protocol_interface: Unused,
     pub reinstall_protocol_interface: Unused,
     pub uninstall_protocol_interface: Unused,
-    pub handle_protocol: Unused,
+    pub handle_protocol: unsafe extern "efiapi" fn(Handle, *const Guid, *mut *mut c_void) -> Status,
     pub reserved: Unused,
     pub register_protocol_notify: Unused,
     pub locate_handle: Unused,
@@ -168,6 +168,50 @@ pub struct MemoryDescriptor {
     pub virtual_start: u64,
     pub number_of_pages: u64,
     pub attribute: u64,
+}
+
+/// `EFI_FILE_PROTOCOL` (revision 1 prefix; revision 2 appends async calls).
+#[repr(C)]
+#[derive(Debug)]
+pub struct FileProtocol {
+    pub revision: u64,
+    pub open: unsafe extern "efiapi" fn(*mut FileProtocol, *mut *mut FileProtocol, *const u16, u64, u64) -> Status,
+    pub close: unsafe extern "efiapi" fn(*mut FileProtocol) -> Status,
+    pub delete: Unused,
+    pub read: unsafe extern "efiapi" fn(*mut FileProtocol, *mut usize, *mut c_void) -> Status,
+    pub write: Unused,
+    pub get_position: Unused,
+    pub set_position: Unused,
+    pub get_info: unsafe extern "efiapi" fn(*mut FileProtocol, *const Guid, *mut usize, *mut c_void) -> Status,
+    pub set_info: Unused,
+    pub flush: Unused,
+}
+
+/// `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`.
+#[repr(C)]
+#[derive(Debug)]
+pub struct SimpleFileSystem {
+    pub revision: u64,
+    pub open_volume: unsafe extern "efiapi" fn(*mut SimpleFileSystem, *mut *mut FileProtocol) -> Status,
+}
+
+/// `EFI_LOADED_IMAGE_PROTOCOL`.
+#[repr(C)]
+#[derive(Debug)]
+pub struct LoadedImage {
+    pub revision: u32,
+    pub parent_handle: Handle,
+    pub system_table: *mut SystemTable,
+    pub device_handle: Handle,
+    pub file_path: *const c_void,
+    pub reserved: *const c_void,
+    pub load_options_size: u32,
+    pub load_options: *const c_void,
+    pub image_base: *const c_void,
+    pub image_size: u64,
+    pub image_code_type: u32,
+    pub image_data_type: u32,
+    pub unload: Unused,
 }
 
 /// `EFI_GRAPHICS_OUTPUT_PROTOCOL`.

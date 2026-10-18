@@ -45,6 +45,7 @@ PlanR/
 │  ├─ abi/              planr-abi: syscall numbers, typed args, error codes
 │  ├─ 9p/               9P2000 codec + client/server framework
 │  ├─ acpi/             table parser + AML interpreter
+│  ├─ bootinfo/         9boot → kernel handoff types (ADR 0010)
 │  ├─ uefi/             UEFI type definitions (loader only)
 │  ├─ elf/              ELF64 parser/loader
 │  ├─ sec/              crypto primitives, TLS 1.3, PAKE (libsec successor)

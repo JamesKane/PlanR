@@ -50,7 +50,22 @@ images are reproducible byte for byte. Still open: a hosted CI service
 loader that prints to the UEFI console, and CI runs it headless on every
 commit.
 
-## P1: Boot & bring-up
+## P1: Boot & bring-up (in progress)
+
+**Status (2026-10-18), first slice done:** 9boot loads the kernel ELF, builds
+the boot page tables (identity, direct map, W^X kernel), exits boot services
+and enters the kernel per [ADR 0010](adr/0010-boot-protocol.md), including
+the arm64 EL2→EL1 drop with and without VHE. The kernel validates
+`BootInfo`, parses ACPI (RSDP/XSDT, MADT, FADT, SPCR, DBG2; `lib/acpi`,
+host-tested), picks its console from SPCR → DBG2 → COM1 (16550 or PL011,
+MMIO-mapped through its own page-table code), and in test mode reports and
+powers off (isa-debug-exit / PSCI). CI boots amd64 plus three arm64
+profiles (EL2+VHE, EL2 without VHE, EL1).
+
+**Remaining:** GDT/IDT and arm64 exception vectors; xAPIC/x2APIC + IOAPIC and
+GICv3; timers; SMP; framebuffer console and persistent log ring; HPET, MCFG,
+GTDT, PPTT and IORT parsing; CPU security features (SMEP/SMAP/UMIP,
+PAN/BTI); backtraces; in-kernel test runner.
 
 - **`9boot` (UEFI loader, ours):** our own UEFI bindings (protocol
   GUIDs, Boot/Runtime Services tables, GOP, Simple File System, Loaded Image).
@@ -278,13 +293,12 @@ kernel can run them. That is the main way the schedule gets shorter.
 1. ~~License and workspace skeleton~~ (done in P0).
 2. ~~`xtask`: build, GPT/FAT32 image, QEMU with OVMF/AAVMF, test verdicts~~
    (done in P0; extend it to the kernel).
-3. `lib/uefi`: add Simple File System, File, Loaded Image and Device Path
-   (memory map, GOP, config tables and the boot/runtime typestate exist).
-4. `9boot`: load `/planr/kernel` ELF and `/planr/boot.arc`, build
-   `BootInfo`, exit boot services, jump.
-5. `kernel` stub for each architecture: serial `print!`, panic, page tables,
-   heap.
-6. `acpi` (ours): RSDP→XSDT walk, MADT and SPCR parsing, with host tests on
-   table dumps from QEMU (`-acpitable` / `acpidump` captures).
+3. ~~`lib/uefi`: Simple File System, File, Loaded Image~~ (done).
+4. ~~`9boot`: load the kernel, build `BootInfo`, exit boot services, jump~~
+   (done; the boot archive comes with P2's `init`).
+5. ~~`kernel` stub: console `print!`, panic, MMIO mapping~~ (done; heap
+   with P2's allocator).
+6. ~~`acpi`: RSDP→XSDT, MADT, FADT, SPCR, DBG2~~ (done, synthetic-table
+   tests; add captured QEMU/board dumps to `oracle/acpi-corpus`).
 7. Interrupts and timer on both architectures; SMP bring-up.
 8. A kernel test runner (`#[test_case]`-style, ours) wired to CI.

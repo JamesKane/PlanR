@@ -1,0 +1,10 @@
+[package]
+name = "acpi"
+description = "ACPI table parsing (AML comes later)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
