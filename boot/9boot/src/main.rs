@@ -146,7 +146,7 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     let reset_test = bootnext::config_is(&config, "test", "reset");
     let pending = if reset_test { bootnext::pending(&root) } else { None };
     // What the old ring's memory holds, read before `setup` can reuse it.
-    let before = pending.map(|at| (at, bootnext::describe(st, at)));
+    let before = pending.map(|p| (p.ring, bootnext::survey(st, &p)));
     let log_ring = logring::setup(st, &root);
     if reset_test {
         match (log_ring, before) {

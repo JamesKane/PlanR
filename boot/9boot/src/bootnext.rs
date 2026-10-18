@@ -14,8 +14,10 @@
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt::Write;
 
+use bootinfo::uefi_type;
 use logring::MAGIC;
 use uefi::{Boot, File, MemoryType, Result, Status, SystemTable, guid, ucs2, var};
 
@@ -39,22 +41,109 @@ pub(crate) fn config_is(config: &[u8], key: &str, value: &str) -> bool {
         == Some(value)
 }
 
-/// Where the first boot of a reset test put its ring, if `last.log` holds
-/// its marker.
-pub(crate) fn pending(root: &File<'_>) -> Option<u64> {
-    let saved = crate::read_file(root, SAVED_PATH).ok()?;
-    let rest = core::str::from_utf8(&saved).ok()?.strip_prefix(MARKER)?;
-    u64::from_str_radix(rest.trim().trim_start_matches("0x"), 16).ok()
+/// What the first boot of a reset test recorded in its marker.
+pub(crate) struct Pending {
+    pub(crate) ring: u64,
+    /// Pages holding [`canary`] patterns, spread over RAM.
+    pub(crate) canaries: Vec<u64>,
 }
 
-/// Marks the test pending with the ring at `ring`, then sets `BootNext`
-/// to `BootCurrent`. Returns the entry. If `BootNext` cannot be set, the
-/// marker is cleared again.
+/// The first boot's marker, if `last.log` holds one.
+pub(crate) fn pending(root: &File<'_>) -> Option<Pending> {
+    let saved = crate::read_file(root, SAVED_PATH).ok()?;
+    let rest = core::str::from_utf8(&saved).ok()?.strip_prefix(MARKER)?;
+    let hex = |s: &str| u64::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok();
+    let mut parts = rest.trim().split("; canaries ");
+    let ring = hex(parts.next()?)?;
+    let canaries = parts
+        .next()
+        .map_or(Vec::new(), |c| c.split(',').filter_map(hex).collect());
+    Some(Pending { ring, canaries })
+}
+
+/// The 64 bytes a canary page starts with: a tag, then its own address.
+fn canary(at: u64) -> [u8; 64] {
+    let mut c = [0u8; 64];
+    for (i, w) in c.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+        let v = if i % 2 == 0 {
+            u64::from_le_bytes(*b"PLANRCAN")
+        } else {
+            at
+        };
+        w.copy_from_slice(&v.to_le_bytes());
+    }
+    c
+}
+
+/// Reserves a page near the bottom, middle and top of each large free
+/// range and writes a [`canary`] in it, flushed to RAM. The second boot
+/// checks which survived, mapping what a reset preserves.
+fn plant_canaries(st: &SystemTable<Boot>) -> Vec<u64> {
+    const STEP: u64 = 2 << 20;
+    const MAX: usize = 12;
+    let bs = st.boot_services();
+    let mut buf = alloc::vec![0u8; bs.memory_map_size() * 2 + 4096];
+    let Ok(map) = bs.memory_map(&mut buf) else {
+        return Vec::new();
+    };
+    let free: Vec<(u64, u64)> = map
+        .iter()
+        .filter(|d| d.ty == MemoryType::Conventional && d.bytes() >= 4 * STEP)
+        .map(|d| (d.phys_start, d.phys_start + d.bytes()))
+        .collect();
+    let mut planted = Vec::new();
+    for (start, end) in free {
+        let lo = start.next_multiple_of(STEP) + STEP;
+        let hi = (end - STEP) / STEP * STEP;
+        let mid = lo.midpoint(hi) / STEP * STEP;
+        for at in [lo, mid, hi] {
+            if planted.len() == MAX || planted.contains(&at) {
+                continue;
+            }
+            if bs.allocate_pages_at(MemoryType::Other(uefi_type::LOG), 1, at).is_ok() {
+                // SAFETY: a page just allocated to us, identity-mapped.
+                unsafe { core::ptr::copy_nonoverlapping(canary(at).as_ptr(), at as *mut u8, 64) };
+                crate::handoff::flush_to_memory(at, 64);
+                planted.push(at);
+            }
+        }
+    }
+    planted
+}
+
+/// Marks the test pending with the ring at `ring` and freshly planted
+/// canaries, then sets `BootNext` to `BootCurrent`. Returns the entry. If
+/// `BootNext` cannot be set, the marker is cleared again.
 pub(crate) fn arrange(st: &SystemTable<Boot>, root: &File<'_>, ring: u64) -> Result<u16> {
-    rewrite(root, &format!("{MARKER}{ring:#x}\n"))?;
+    let canaries = plant_canaries(st);
+    let list: Vec<String> = canaries.iter().map(|a| format!("{a:#x}")).collect();
+    rewrite(root, &format!("{MARKER}{ring:#x}; canaries {}\n", list.join(",")))?;
     repeat(st).inspect_err(|_| {
         let _ = rewrite(root, "");
     })
+}
+
+/// What the old ring's memory and each canary hold now; read before
+/// `logring::setup` can reuse any of it.
+pub(crate) fn survey(st: &SystemTable<Boot>, p: &Pending) -> String {
+    let mut s = format!("the ring's memory was {}\n", describe(st, p.ring));
+    let (mut kept, mut total) = (0, 0);
+    for &at in &p.canaries {
+        total += 1;
+        // SAFETY: as in `describe`, RAM by the first boot's memory map.
+        let now = unsafe { core::slice::from_raw_parts(at as *const u8, 64) };
+        let state = if now == canary(at) {
+            kept += 1;
+            "kept"
+        } else if now.iter().all(|&b| b == 0) {
+            "zeroed"
+        } else {
+            "changed"
+        };
+        let _ = writeln!(s, "  canary {at:#x}: {state}");
+    }
+    let _ = writeln!(s, "{kept} of {total} canaries survived the reset");
+    s
 }
 
 fn repeat(st: &SystemTable<Boot>) -> Result<u16> {
@@ -79,7 +168,9 @@ fn rewrite(root: &File<'_>, text: &str) -> Result<()> {
 /// the report over the marker, and stops.
 pub(crate) fn lost(st: &SystemTable<Boot>, root: &File<'_>, at: u64, what: &str) -> ! {
     let mut report = format!("9boot: reset test FAILED: the log ring at {at:#x} did not survive the reset.\n");
-    let _ = writeln!(report, "9boot: that memory was {what}");
+    for line in what.lines() {
+        let _ = writeln!(report, "9boot: {line}");
+    }
     let _ = rewrite(root, &report);
     let mut out = st.stdout();
     let _ = write!(out, "{report}");
@@ -93,7 +184,7 @@ pub(crate) fn lost(st: &SystemTable<Boot>, root: &File<'_>, at: u64, what: &str)
 }
 
 /// What the memory map says `at` is now, and what its first bytes hold.
-pub(crate) fn describe(st: &SystemTable<Boot>, at: u64) -> String {
+fn describe(st: &SystemTable<Boot>, at: u64) -> String {
     let bs = st.boot_services();
     let mut buf = alloc::vec![0u8; bs.memory_map_size() * 2 + 4096];
     let ty = bs.memory_map(&mut buf).ok().and_then(|m| {
