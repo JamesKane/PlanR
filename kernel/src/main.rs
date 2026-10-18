@@ -15,7 +15,7 @@ mod port;
 
 use bootinfo::{BootInfo, EntryLevel, RegionKind};
 
-use port::config::{Config, TestMode};
+use port::config::{self, Config, TestMode};
 use port::console::{self, ConsoleSource};
 use port::{acpi, clock, cpu, intr, ktest, mm, trap};
 
@@ -130,6 +130,12 @@ extern "C" fn boot_main(info: usize) -> ! {
         Some(TestMode::Reset) => match ring_boot {
             Some(1) => {
                 println!("ktest: resetting through {}", arch::reset_method(acpi.as_ref().ok()));
+                // On a board (exit=halt: the screen is the console), leave
+                // time to read how it resets.
+                if config::halt_on_exit() {
+                    println!("ktest: resetting in 10 s");
+                    clock::spin_until(|| false, 10_000_000_000);
+                }
                 println!("{RESET_LINE}");
                 arch::reset(acpi.as_ref().ok());
             }
