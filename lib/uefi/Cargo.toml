@@ -1,0 +1,10 @@
+[package]
+name = "uefi"
+description = "UEFI type definitions and a thin safe layer, for 9boot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

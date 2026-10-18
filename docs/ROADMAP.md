@@ -21,9 +21,17 @@ P0 Foundations
 
 ---
 
-## P0: Foundations
+## P0: Foundations ✅ (2026-10-17)
 
 Set up the repository and the habits the whole project depends on.
+
+**Status:** exit criterion met. `cargo xtask ci` runs fmt, pedantic clippy,
+the dependency-rule check, host unit tests (UEFI layouts, GPT, FAT32, JSON,
+CRC-32) and headless QEMU boot tests on amd64 and arm64. 9boot reports
+firmware, memory map, ACPI RSDP and GOP on both architectures, from a
+GPT/FAT32 image our own code writes (checked with `fsck.vfat`). Release
+images are reproducible byte for byte. Still open: a hosted CI service
+(there is no remote yet) and a contribution guide.
 
 - Cargo workspace layout (see [ARCHITECTURE.md § Source tree](ARCHITECTURE.md#source-tree)).
 - Enforce the dependency rule: a CI check (`xtask deps`) fails if any shipped
@@ -36,7 +44,7 @@ Set up the repository and the habits the whole project depends on.
 - QEMU runners: `q35` + OVMF, `virt` + edk2 (ACPI mode, `-machine virt,acpi=on`).
 - Lints: `#![deny(unsafe_op_in_unsafe_fn, missing_docs)]` on public items,
   clippy pedantic in CI, and `rustfmt`.
-- Process: ADRs (`docs/adr/`), a project license (Q3), a contribution guide.
+- Process: ADRs (`docs/adr/`), MIT license (ADR 0008), a contribution guide.
 
 **Exit:** `cargo xtask qemu --arch {amd64,arm64}` builds and boots a stub
 loader that prints to the UEFI console, and CI runs it headless on every
@@ -49,12 +57,17 @@ commit.
   It loads the kernel ELF and a boot archive from the ESP, reads `plan9.ini`
   style config, gets the memory map, RSDP and GOP framebuffer, calls
   `ExitBootServices` and hands over a typed `BootInfo`.
-- Kernel entry on both architectures: higher-half mapping, early serial
-  (16550 on amd64; PL011 or the SPCR-described UART on arm64), early frame
-  allocator and kernel heap (`alloc` global allocator, ours).
+- Kernel entry on both architectures: higher-half mapping, early console,
+  early frame allocator and kernel heap (`alloc` global allocator, ours).
+  arm64 entry handles **EL2** (as on the Orange Pi): minimal EL2 stub, then
+  drop to EL1.
+- Early console from the SPCR UART, else **DBG2** (neither reference
+  board has SPCR), else COM1 on amd64; plus a **GOP framebuffer console**
+  (the Ryzen has no serial port) and a **persistent log ring** that 9boot
+  saves to the ESP after a warm reset.
 - **ACPI tables (ours):** RSDP/XSDT, MADT, FADT, MCFG, HPET, SPCR, GTDT,
   IORT, DMAR/IVRS, SRAT/SLIT, PPTT. Table parsing only. AML comes in P4.
-- Interrupts: x2APIC/IOAPIC; GICv3 (redistributors, ITS later). Exceptions,
+- Interrupts: xAPIC **and** x2APIC (the X870E firmware leaves xAPIC on), IOAPIC; GICv3 (redistributors, ITS later). Exceptions,
   a panic handler, and symbolized backtraces from frame pointers.
 - Timers: TSC (calibrated via HPET/ACPI PM timer), local APIC timer; ARM
   generic timer.
@@ -178,11 +191,14 @@ plumber routing; screenshots in CI compared against reference images.
 Hardware order: **AMD Ryzen board first** (more mature UEFI/ACPI, closer to
 QEMU), then **Orange Pi 6 Plus**. Details in [HARDWARE.md](HARDWARE.md).
 
-- Ryzen: real ACPI quirks, x2APIC, HPET/TSC, NVMe, xHCI, an onboard NIC
-  (Realtek/Intel, Q8), AMD GOP framebuffer, AMD-Vi IOMMU.
-- Orange Pi 6 Plus: CIX P1 UEFI/ACPI firmware, GICv3, generic timer,
-  SBSA/vendor UART, PCIe, NVMe, USB, RTL8126 5GbE, SMMUv3; big/mid/little
-  CPU topology from PPTT.
+- Ryzen 9 7900X / X870E: 15 SSDTs of AMI AML, xAPIC, HPET/TSC (no
+  TSC-deadline), NVMe, xHCI, **RTL8125**, GOP on the RTX 4070, FCH
+  watchdog (WDRT), AMD-Vi. No serial, so framebuffer and log ring only.
+  Writes go only to the designated Plan R NVMe (HARDWARE.md §5).
+- Orange Pi 6 Plus: EL2 entry, DBG2 console, GICv3 + ITS (erratum
+  2941627), generic timer, ECAM PCIe, NVMe, **ACPI-attached xHCI**,
+  **RTL8126**, SBSA watchdog via `WOR`, three-class CPU topology from PPTT.
+- One RTL8125/8126 driver serves both boards.
 - Netboot from a development machine (UEFI HTTP/PXE, or `9boot` fetching
   over TFTP/HTTP) to keep the edit-test loop fast.
 
@@ -259,11 +275,11 @@ kernel can run them. That is the main way the schedule gets shorter.
 
 ## Near-term work: P0 and P1 backlog
 
-1. Choose a license (Q3) and commit an initial workspace skeleton.
-2. `xtask`: build loader and kernel, write a FAT32 ESP image, launch QEMU
-   with OVMF/AAVMF, map the exit status to a test result.
-3. `uefi-raw` (ours): minimal UEFI types (System Table, Boot Services,
-   GOP, SFS, File, memory map).
+1. ~~License and workspace skeleton~~ (done in P0).
+2. ~~`xtask`: build, GPT/FAT32 image, QEMU with OVMF/AAVMF, test verdicts~~
+   (done in P0; extend it to the kernel).
+3. `lib/uefi`: add Simple File System, File, Loaded Image and Device Path
+   (memory map, GOP, config tables and the boot/runtime typestate exist).
 4. `9boot`: load `/planr/kernel` ELF and `/planr/boot.arc`, build
    `BootInfo`, exit boot services, jump.
 5. `kernel` stub for each architecture: serial `print!`, panic, page tables,

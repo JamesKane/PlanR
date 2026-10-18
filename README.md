@@ -10,10 +10,28 @@ compatibility, the 32-bit and dead architectures, and the custom C dialects.
 | | |
 |---|---|
 | Language | Rust, using only `core` and `alloc`; everything else is ours |
+| License | MIT |
 | Targets | AMD64 and ARM64, UEFI + ACPI only (others may follow) |
 | First platform | QEMU (`q35` + OVMF, `virt` + edk2/AAVMF) |
-| Hardware | Orange Pi 6 Plus (CIX P1, ARM64), AMD Ryzen board (AMD64) |
+| Hardware | Orange Pi 6 Plus (CIX P1, ARM64), Ryzen 9 7900X / X870E (AMD64), shared with AbyssBSD |
 | Reference | Bell Labs 4th edition, last release: `../plan9` |
+
+## Building
+
+Prerequisites (host zone, [ADR 0006](docs/adr/0006-host-zone-tools.md)):
+rustup, `qemu-system-x86_64`, `qemu-system-aarch64`, and edk2 firmware
+(OVMF and AAVMF). On Fedora: `dnf install qemu-system-x86 qemu-system-aarch64
+edk2-ovmf edk2-aarch64`. Firmware is found automatically or through
+`PLANR_{AMD64,ARM64}_{CODE,VARS}`.
+
+```
+cargo xtask build              # 9boot for amd64 and arm64
+cargo xtask qemu --arch arm64  # boot interactively (Ctrl-A X quits)
+cargo xtask test               # host unit tests + headless QEMU boot tests
+cargo xtask ci                 # fmt, clippy, dependency rule, tests
+```
+
+Artifacts go in `build/<arch>/` (disk image, NVRAM copy, serial log).
 
 ## Planning documents
 

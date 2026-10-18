@@ -15,6 +15,9 @@
 - `cargo xtask` drives everything: builds, image creation (GPT + FAT ESP +
   root fs, written by our own code), QEMU, tests, and the `deps` check for
   the [dependency rule](adr/0001-core-alloc-only.md).
+- Release builds are reproducible today (verified: identical image hashes
+  across clean builds; PE images are linked with `/Brepro`). Debug builds
+  are not yet: rust-lld's PDB output varies, which needs looking into.
 - Builds must be reproducible: fixed paths (`--remap-path-prefix`), no
   timestamps, deterministic archive and filesystem image writers.
 

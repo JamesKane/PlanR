@@ -1,0 +1,19 @@
+[package]
+name = "nineboot"
+description = "9boot: the Plan R UEFI loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "9boot"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+uefi = { path = "../../lib/uefi" }
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[alias]
+xtask = "run --quiet --package xtask --"
+
+# AMD64 baseline ISA: x86-64-v2 (docs/adr/0007-amd64-baseline-x86-64-v2.md).
+# /Brepro: deterministic PE timestamp and debug GUID (reproducible images).
+[target.x86_64-unknown-uefi]
+rustflags = ["-C", "target-cpu=x86-64-v2", "-C", "link-arg=/Brepro"]
+
+[target.aarch64-unknown-uefi]
+rustflags = ["-C", "link-arg=/Brepro"]
+
+[target.x86_64-unknown-none]
+rustflags = ["-C", "target-cpu=x86-64-v2"]
