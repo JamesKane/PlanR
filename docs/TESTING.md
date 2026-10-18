@@ -52,9 +52,11 @@ the 2002 Plan 9 `libsec`:
 ### Firmware/ACPI corpus
 
 ACPI dumps from QEMU (both architectures), the Ryzen board and the Orange
-Pi go into `oracle/acpi-corpus`. The AML interpreter must parse them all
-without errors. iASL disassembly (host tool) is the oracle for the
-namespace structure.
+Pi go into `oracle/acpi-corpus` (see its README: `cargo xtask acpidump`
+for QEMU, `capture.sh` for the boards). `lib/acpi`'s corpus test parses
+every set and compares the result with the set's `summary.txt`. The AML
+interpreter must parse them all without errors. iASL disassembly (host
+tool) is the oracle for the namespace structure.
 
 ## CI
 

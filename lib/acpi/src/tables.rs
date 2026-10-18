@@ -142,14 +142,15 @@ pub fn dbg2_devices(t: Sdt<'_>) -> impl Iterator<Item = Dbg2Device<'_>> {
         let nregs = d[3];
         let ns_len = usize::from(u16_at(d, 4)?);
         let ns_off = usize::from(u16_at(d, 6)?);
-        let bar_off = usize::from(u16_at(d, 16)?);
+        // Bytes 8-11 are the OEM data length and offset.
+        let bar_off = usize::from(u16_at(d, 18)?);
         let namespace = d
             .get(ns_off..ns_off + ns_len)
             .and_then(|s| core::str::from_utf8(s).ok())
             .map_or("", |s| s.trim_end_matches('\0'));
         Some(Dbg2Device {
-            port_type: u16_at(d, 10)?,
-            port_subtype: u16_at(d, 12)?,
+            port_type: u16_at(d, 12)?,
+            port_subtype: u16_at(d, 14)?,
             base: if nregs > 0 { Gas::parse(d, bar_off) } else { None },
             namespace,
         })
@@ -193,6 +194,28 @@ impl<'a> Fadt<'a> {
             return None;
         }
         Some((Gas::parse(b, 116)?, *b.get(128)?))
+    }
+
+    /// The DSDT's physical address: `X_DSDT`, else `DSDT`.
+    #[must_use]
+    pub fn dsdt(&self) -> Option<u64> {
+        self.pointer(140, 40)
+    }
+
+    /// The FACS's physical address: `X_FIRMWARE_CTRL`, else
+    /// `FIRMWARE_CTRL`. Hardware-reduced systems have none.
+    #[must_use]
+    pub fn facs(&self) -> Option<u64> {
+        self.pointer(132, 36)
+    }
+
+    /// The 64-bit field at `wide` if present and nonzero, else the 32-bit
+    /// one at `narrow` if nonzero.
+    fn pointer(&self, wide: usize, narrow: usize) -> Option<u64> {
+        let b = self.0.bytes();
+        u64_at(b, wide)
+            .filter(|&p| p != 0)
+            .or_else(|| u32_at(b, narrow).map(u64::from).filter(|&p| p != 0))
     }
 
     /// `FADT Minor Version` (the major version is the header revision).
@@ -492,10 +515,10 @@ mod tests {
         dev[1..3].copy_from_slice(&len.to_le_bytes());
         dev[4..6].copy_from_slice(&(ns.len() as u16).to_le_bytes());
         dev[6..8].copy_from_slice(&ns_off.to_le_bytes());
-        dev[10..12].copy_from_slice(&0x8000u16.to_le_bytes());
-        dev[12..14].copy_from_slice(&0x000eu16.to_le_bytes());
-        dev[16..18].copy_from_slice(&gas_off.to_le_bytes());
-        dev[18..20].copy_from_slice(&size_off.to_le_bytes());
+        dev[12..14].copy_from_slice(&0x8000u16.to_le_bytes());
+        dev[14..16].copy_from_slice(&0x000eu16.to_le_bytes());
+        dev[18..20].copy_from_slice(&gas_off.to_le_bytes());
+        dev[20..22].copy_from_slice(&size_off.to_le_bytes());
         dev.extend(gas(0, 3, 0x040d_0000));
         dev.extend(0x1000u32.to_le_bytes());
         dev.extend_from_slice(ns);
@@ -661,6 +684,26 @@ mod tests {
         let acpi = Acpi::new(&m, 0x1000).unwrap();
         assert_eq!(acpi.fadt().unwrap().psci(), Some(PsciConduit::Smc));
         assert!(acpi.find(Signature::FADT).is_some());
+    }
+
+    #[test]
+    fn fadt_dsdt_and_facs() {
+        let mut body = vec![0u8; 240];
+        let m = system(&[sdt(*b"FACP", 6, &body)]);
+        let fadt = Acpi::new(&m, 0x1000).unwrap().fadt().unwrap();
+        assert_eq!((fadt.dsdt(), fadt.facs()), (None, None));
+        // 32-bit fields only, then X_DSDT overriding DSDT.
+        body[36 - 36..40 - 36].copy_from_slice(&0x7ffe_0000u32.to_le_bytes());
+        body[40 - 36..44 - 36].copy_from_slice(&0x7ffd_0000u32.to_le_bytes());
+        let m = system(&[sdt(*b"FACP", 6, &body)]);
+        let fadt = Acpi::new(&m, 0x1000).unwrap().fadt().unwrap();
+        assert_eq!((fadt.dsdt(), fadt.facs()), (Some(0x7ffd_0000), Some(0x7ffe_0000)));
+        body[140 - 36..148 - 36].copy_from_slice(&0x1_2345_0000u64.to_le_bytes());
+        let m = system(&[sdt(*b"FACP", 6, &body)]);
+        assert_eq!(
+            Acpi::new(&m, 0x1000).unwrap().fadt().unwrap().dsdt(),
+            Some(0x1_2345_0000)
+        );
     }
 
     /// QEMU q35: the ICH9 reset control register, I/O port 0xcf9, value 6.

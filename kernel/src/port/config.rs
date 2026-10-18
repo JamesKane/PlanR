@@ -28,6 +28,9 @@ pub(crate) enum TestMode {
     /// `test=overflow`: overflow a kernel stack, on another CPU if one is
     /// online, so the harness can check the overflow report.
     Overflow,
+    /// `test=acpidump`: print every ACPI table in hex and power off, for
+    /// `xtask acpidump`.
+    AcpiDump,
     /// `test=reset`: on the first boot of a fresh log ring, print a line
     /// and reset warm; on the next, power off. The harness checks that
     /// 9boot reported saving the first boot's log, ending with that line.
@@ -62,6 +65,7 @@ impl<'a> Config<'a> {
             "1" => Some(TestMode::Run),
             "trap" => Some(TestMode::Trap),
             "overflow" => Some(TestMode::Overflow),
+            "acpidump" => Some(TestMode::AcpiDump),
             "reset" => Some(TestMode::Reset),
             _ => None,
         }

@@ -1,11 +1,11 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-18, after slice 10.
+2026-10-18, after slice 11.
 
 ## State
 
-- **Phase:** P1 (boot and kernel bring-up). Slices 1–10 are done and
+- **Phase:** P1 (boot and kernel bring-up). Slices 1–11 are done and
   committed, one commit per slice:
   1. `5905e4d` 9boot loads the kernel; it boots on amd64 and arm64.
   2. `a2cb1f7` trap vectors, fault fixups, backtraces, in-kernel tests.
@@ -21,9 +21,11 @@ Where work stands, for picking it up in a new session. Last updated
   9. `faacfe1` Symbolized backtraces: `xtask` writes a demangled symbol table
      (`lib/ksyms`, `xtask/src/demangle.rs`) into a block `link.ld`
      reserves.
-  10. Stack-overflow reports on both arches (arm64 vectors test bit 16 of
+  10. `7e61597` Stack-overflow reports on both arches (arm64 vectors test bit 16 of
       the frame address and switch to an overflow stack); the boot CPU
       moves to a guarded kernel stack.
+  11. ACPI corpus: `oracle/acpi-corpus` holds the QEMU q35 and virt
+      tables (`cargo xtask acpidump`), checked by `lib/acpi`'s corpus test.
 - **Tree:** clean. `cargo xtask ci` is green: fmt, pedantic clippy with
   `-D warnings`, the dependency check, host tests, and every QEMU boot
   test on every profile.
@@ -34,8 +36,11 @@ Where work stands, for picking it up in a new session. Last updated
 
 In the suggested order:
 
-1. **ACPI dump corpus** in `oracle/acpi-corpus`: QEMU on both arches now,
-   then the boards.
+1. **Board ACPI sets:** the user runs `oracle/acpi-corpus/capture.sh` as
+   root on the Orange Pi (`opi6p`) and the Ryzen (`ryzen-x870e`). It only
+   reads sysfs. Then unpack the tarballs into the corpus, run
+   `UPDATE_CORPUS=1 cargo test -p acpi --test corpus`, and review the
+   summaries. Expect parser fixes: the QEMU tables already found one.
 2. **Reference boards:** check SMP, the CPU protections, the framebuffer
    console and log-ring survival on the Orange Pi 6 Plus and the Ryzen.
 

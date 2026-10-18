@@ -3,6 +3,7 @@
 //! Host zone (ADR 0006): may use `std` and host programs (cargo, QEMU, the
 //! firmware images), but no crates.io dependencies, and nothing here ships.
 
+mod acpidump;
 mod arch;
 mod crc32;
 mod demangle;
@@ -30,6 +31,7 @@ commands:
   qemu     build, write the image, and boot it interactively in QEMU
   test     host unit tests, then headless QEMU boot tests
   deps     check the dependency rule (ADR 0001)
+  acpidump boot QEMU and write its ACPI tables to oracle/acpi-corpus
   ci       everything CI runs: fmt, clippy, deps, test
 
 options:
@@ -83,6 +85,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         "test" => test(&opts),
         "deps" => deps::check(&root()),
+        "acpidump" => acpidump::run(&opts),
         "ci" => ci(&opts),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
@@ -294,6 +297,15 @@ const BOOT_TESTS: &[BootTest] = &[
         every_profile: false,
         only: None,
         machine: qemu::Machine { cpus: 1, reboot: false },
+    },
+    // The table dump `cargo xtask acpidump` captures the corpus with.
+    BootTest {
+        name: "acpidump",
+        config: "# Plan R ACPI dump test image\ntest=acpidump\n",
+        expect: Expect::Ok(&["acpidump: table XSDT", "acpidump: table DSDT", "acpidump: end"]),
+        every_profile: false,
+        only: None,
+        machine: FOUR_CPUS,
     },
     // The kernel resets warm; 9boot must find the log ring the first boot
     // wrote, save it to the boot volume, and show how it ended.

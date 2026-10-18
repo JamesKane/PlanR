@@ -48,14 +48,40 @@ impl core::fmt::Display for Unavailable {
 #[derive(Debug)]
 pub(crate) struct System {
     pub(crate) tables: Acpi<'static, KernelMem>,
+    rsdp: u64,
 }
+
+/// Starts every line of a table dump; `xtask acpidump` parses them.
+const DUMP: &str = "acpidump:";
+/// The longest table dumped. QEMU's and the boards' DSDTs are well under.
+const DUMP_MAX: usize = 4 << 20;
 
 impl System {
     pub(crate) fn new(rsdp: Option<u64>) -> Result<System, Unavailable> {
         let rsdp = rsdp.ok_or(Unavailable::NoRsdp)?;
         Acpi::new(&MEM, rsdp)
-            .map(|tables| System { tables })
+            .map(|tables| System { tables, rsdp })
             .map_err(Unavailable::Bad)
+    }
+
+    /// Prints the RSDP, the root table, every table it lists, and the DSDT
+    /// and FACS, in hex, for `xtask acpidump` to capture into
+    /// `oracle/acpi-corpus`. Tables are dumped as found, bad checksums and
+    /// all.
+    pub(crate) fn dump(&self) {
+        println!("{DUMP} begin");
+        let r = &self.tables.rsdp;
+        dump_bytes(&"RSDP", self.rsdp, if r.revision >= 2 { 36 } else { 20 });
+        dump_table(if r.xsdt != 0 { r.xsdt } else { u64::from(r.rsdt) });
+        for phys in self.tables.table_addresses() {
+            dump_table(phys);
+        }
+        if let Some(fadt) = self.tables.fadt() {
+            for phys in [fadt.dsdt(), fadt.facs()].into_iter().flatten() {
+                dump_table(phys);
+            }
+        }
+        println!("{DUMP} end");
     }
 
     pub(crate) fn report(&self) {
@@ -99,6 +125,39 @@ impl System {
         if let Some(t) = self.tables.iort() {
             report_iort(t);
         }
+    }
+}
+
+/// Dumps the table at `phys`, its length taken from its header.
+fn dump_table(phys: u64) {
+    let Some(hdr) = MEM.read(phys, 8) else {
+        println!("{DUMP} unreadable {phys:#x}");
+        return;
+    };
+    let sig = Signature([hdr[0], hdr[1], hdr[2], hdr[3]]);
+    let len = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
+    dump_bytes(&format_args!("{sig}"), phys, len);
+}
+
+/// Prints a `table` line, then the bytes in hex, 64 to a line, each line
+/// starting `acpidump: =`.
+fn dump_bytes(name: &dyn core::fmt::Display, phys: u64, len: usize) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let Some(bytes) = MEM.read(phys, len).filter(|_| len <= DUMP_MAX) else {
+        println!("{DUMP} unreadable {name} {phys:#x} {len}");
+        return;
+    };
+    println!("{DUMP} table {name} {phys:#x} {len}");
+    for chunk in bytes.chunks(64) {
+        let mut line = [0u8; 128];
+        for (i, b) in chunk.iter().enumerate() {
+            line[2 * i] = HEX[usize::from(b >> 4)];
+            line[2 * i + 1] = HEX[usize::from(b & 0xf)];
+        }
+        println!(
+            "{DUMP} = {}",
+            core::str::from_utf8(&line[..2 * chunk.len()]).unwrap_or("")
+        );
     }
 }
 

@@ -1,7 +1,7 @@
 //! Running images under QEMU, interactively or as a headless boot test.
 
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -110,6 +110,14 @@ fn strip_escapes(s: &str) -> String {
     out
 }
 
+/// Where [`run_test`] keeps the serial log of `test` on `profile`.
+pub(crate) fn log_path(arch: Arch, test: &str, profile: &Profile) -> PathBuf {
+    crate::build_dir(arch).join(format!("serial-{test}-{}.log", profile.name))
+}
+
+/// Lines not echoed to the terminal: table dump bytes.
+const QUIET: &str = "acpidump: = ";
+
 /// Boots `img` headless and checks the console and QEMU's exit status
 /// against `expect`, within `timeout_secs`.
 pub(crate) fn run_test(
@@ -137,7 +145,7 @@ pub(crate) fn run_test(
         }
     });
 
-    let log_path = crate::build_dir(arch).join(format!("serial-{test}-{}.log", profile.name));
+    let log_path = log_path(arch, test, profile);
     let mut log = std::fs::File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let (mut ok, mut failed, mut panicked, mut echo) = (false, None, false, false);
@@ -152,7 +160,7 @@ pub(crate) fn run_test(
                 let line = strip_escapes(&raw);
                 let _ = writeln!(log, "{line}");
                 echo |= line.contains(BANNER);
-                if echo && !line.trim().is_empty() {
+                if echo && !line.trim().is_empty() && !line.contains(QUIET) {
                     println!("[{arch}] {line}");
                 }
                 ok |= line.contains(OK_MARKER);

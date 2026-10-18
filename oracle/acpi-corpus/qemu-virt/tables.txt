@@ -1,0 +1,14 @@
+# Captured by `cargo xtask acpidump` from QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44) -machine virt,acpi=on,gic-version=3,virtualization=on -cpu max -smp 4, firmware /usr/share/AAVMF/AAVMF_CODE.fd.
+# name address length
+RSDP 0x47ff3018 36
+XSDT 0x47ff3f18 108
+FACP 0x47ff3b18 276
+APIC 0x47ff3c98 424
+PPTT 0x47ff3098 156
+GTDT 0x47ff3818 104
+MCFG 0x47ff3a98 60
+SPCR 0x47ff3918 80
+DBG2 0x47ff3998 87
+IORT 0x47ff3198 128
+BGRT 0x47ff3a18 56
+DSDT 0x47ff1018 5440

@@ -118,6 +118,14 @@ extern "C" fn boot_main(info: usize) -> ! {
             panic!("read of unmapped {:#x} returned {v:#x}", trap::UNMAPPED);
         }
         Some(TestMode::Overflow) => overflow_test(),
+        Some(TestMode::AcpiDump) => {
+            match &acpi {
+                Ok(sys) => sys.dump(),
+                Err(e) => panic!("no ACPI tables to dump: {e}"),
+            }
+            println!("{OK_MARKER}");
+            arch::exit(arch::ExitCode::Success);
+        }
         Some(TestMode::Reset) => match ring_boot {
             Some(1) => {
                 println!("{RESET_LINE}");

@@ -167,8 +167,19 @@ right after `mm::init`, continuing in `boot_main`. `test=overflow`
 recurses until the stack runs out; the `overflow` and `overflow-boot-cpu`
 boot tests run it on an application processor and on the boot CPU.
 
+**Eleventh slice done:** the ACPI corpus. `test=acpidump` prints the
+RSDP, the XSDT, every listed table and the DSDT and FACS in hex.
+`cargo xtask acpidump` boots QEMU with it and writes the tables to
+`oracle/acpi-corpus/qemu-q35` and `qemu-virt`, named as Linux's sysfs
+names them, with each table's physical address. `capture.sh` copies a
+board's tables from sysfs into the same layout. A host test in `lib/acpi`
+replays every set (placing tables itself when there are no addresses) and
+compares the parse with a checked-in `summary.txt`. Its first run found
+DBG2 device fields read two bytes early, a bug the synthetic unit test
+shared. The `acpidump` boot test keeps the dump path working.
+
 **Remaining:**
-BTI once the toolchain can emit landing pads; ACPI dump corpus; checking SMP on the reference
+BTI once the toolchain can emit landing pads; board ACPI sets; checking SMP on the reference
 boards.
 
 - **`9boot` (UEFI loader, ours):** our own UEFI bindings (protocol

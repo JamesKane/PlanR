@@ -1,0 +1,12 @@
+# Captured by `cargo xtask acpidump` from QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44) -machine q35 -cpu max -smp 4, firmware /usr/share/OVMF/OVMF_CODE.fd.
+# name address length
+RSDP 0x7feb1014 36
+XSDT 0x7feb00e8 84
+FACP 0x7feac000 244
+APIC 0x7feab000 144
+HPET 0x7feaa000 56
+MCFG 0x7fea9000 60
+WAET 0x7fea8000 40
+BGRT 0x7fea7000 56
+DSDT 0x7fead000 8729
+FACS 0x7ff10000 64

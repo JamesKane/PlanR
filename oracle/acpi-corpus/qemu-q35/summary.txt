@@ -1,0 +1,25 @@
+rsdp: revision 2, OEM "BOCHS"
+table: FACP rev 3 OEM "BOCHS" "BXPC"
+table: APIC rev 3 OEM "BOCHS" "BXPC"
+table: HPET rev 1 OEM "BOCHS" "BXPC"
+table: MCFG rev 1 OEM "BOCHS" "BXPC"
+table: WAET rev 1 OEM "BOCHS" "BXPC"
+table: BGRT rev 1 OEM "INTEL" "EDK2"
+madt: 4 usable cpus
+madt: LocalApic { uid: 0, apic_id: 0, enabled: true, online_capable: false }
+madt: LocalApic { uid: 1, apic_id: 1, enabled: true, online_capable: false }
+madt: LocalApic { uid: 2, apic_id: 2, enabled: true, online_capable: false }
+madt: LocalApic { uid: 3, apic_id: 3, enabled: true, online_capable: false }
+madt: IoApic { id: 0, address: 4273995776, gsi_base: 0 }
+madt: InterruptOverride { bus: 0, source: 0, gsi: 2, flags: MpsFlags(0) }
+madt: InterruptOverride { bus: 0, source: 5, gsi: 5, flags: MpsFlags(13) }
+madt: InterruptOverride { bus: 0, source: 9, gsi: 9, flags: MpsFlags(13) }
+madt: InterruptOverride { bus: 0, source: 10, gsi: 10, flags: MpsFlags(13) }
+madt: InterruptOverride { bus: 0, source: 11, gsi: 11, flags: MpsFlags(13) }
+madt: LocalApicNmi { uid: 255, flags: MpsFlags(0), lint: 1 }
+fadt: revision 3.0
+fadt: dsdt present, facs present
+fadt: boot flags 0x2, psci None
+fadt: reset Some((Gas { space: SystemIo, bit_width: 8, bit_offset: 0, access_size: 0, address: 3321 }, 15))
+hpet: Hpet { block_id: 2156306945, base: Gas { space: SystemMemory, bit_width: 0, bit_offset: 0, access_size: 0, address: 4275044352 }, number: 0, min_tick: 0 }
+mcfg: McfgEntry { base: 3758096384, segment: 0, bus_start: 0, bus_end: 255 }

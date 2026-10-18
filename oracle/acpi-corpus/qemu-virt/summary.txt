@@ -1,0 +1,39 @@
+rsdp: revision 2, OEM "BOCHS"
+table: FACP rev 6 OEM "BOCHS" "BXPC"
+table: APIC rev 4 OEM "BOCHS" "BXPC"
+table: PPTT rev 2 OEM "BOCHS" "BXPC"
+table: GTDT rev 3 OEM "BOCHS" "BXPC"
+table: MCFG rev 1 OEM "BOCHS" "BXPC"
+table: SPCR rev 2 OEM "BOCHS" "BXPC"
+table: DBG2 rev 0 OEM "BOCHS" "BXPC"
+table: IORT rev 3 OEM "BOCHS" "BXPC"
+table: BGRT rev 1 OEM "INTEL" "EDK2"
+madt: 4 usable cpus
+madt: Gicd { id: 0, base: 134217728, version: 3 }
+madt: Gicc { uid: 0, mpidr: 0, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 1, mpidr: 1, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 2, mpidr: 2, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicc { uid: 3, mpidr: 3, enabled: true, online_capable: false, gicr_base: 0 }
+madt: Gicr { base: 134873088, length: 16121856 }
+madt: GicIts { id: 0, base: 134742016 }
+fadt: revision 6.3
+fadt: dsdt present, facs absent
+fadt: boot flags 0x0, psci Some(Smc)
+fadt: reset None
+spcr: Spcr { kind: Pl011, base: Gas { space: SystemMemory, bit_width: 32, bit_offset: 0, access_size: 3, address: 150994944 } }
+gtdt: Gtdt { secure_el1: TimerIrq { gsiv: 29, edge: false, active_low: false, always_on: false }, nonsecure_el1: TimerIrq { gsiv: 30, edge: false, active_low: false, always_on: true }, virtual_el1: TimerIrq { gsiv: 27, edge: false, active_low: false, always_on: false }, nonsecure_el2: TimerIrq { gsiv: 26, edge: false, active_low: false, always_on: false }, virtual_el2: Some(TimerIrq { gsiv: 28, edge: false, active_low: false, always_on: false }) }
+dbg2: Dbg2Device { port_type: 32768, port_subtype: 3, base: Some(Gas { space: SystemMemory, bit_width: 32, bit_offset: 0, access_size: 3, address: 150994944 }), namespace: "COM0" }
+mcfg: McfgEntry { base: 275146342400, segment: 0, bus_start: 0, bus_end: 255 }
+pptt: Processor(ProcessorNode { offset: 36, flags: ProcessorFlags(17), parent: None, acpi_id: 0, resources: [] })
+pptt: Processor(ProcessorNode { offset: 56, flags: ProcessorFlags(17), parent: Some(36), acpi_id: 0, resources: [] })
+pptt: Processor(ProcessorNode { offset: 76, flags: ProcessorFlags(10), parent: Some(56), acpi_id: 0, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 96, flags: ProcessorFlags(10), parent: Some(56), acpi_id: 1, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 116, flags: ProcessorFlags(10), parent: Some(56), acpi_id: 2, resources: [] })
+pptt:   caches []
+pptt: Processor(ProcessorNode { offset: 136, flags: ProcessorFlags(10), parent: Some(56), acpi_id: 3, resources: [] })
+pptt:   caches []
+iort: node 48 rev 1 id 0: ItsGroup(ItsIds([0, 0, 0, 0]))
+iort: node 72 rev 3 id 1: RootComplex { segment: 0, coherent: true, ats: false, address_bits: 64 }
+iort:   IdMapping { input_base: 0, count: 65536, output_base: 0, output: 48, single: false }
