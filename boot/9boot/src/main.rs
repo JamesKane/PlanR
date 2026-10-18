@@ -113,6 +113,9 @@ struct Prepared {
     regions: *mut Region,
     capacity: usize,
     map_buf: Vec<u8>,
+    /// `bootdebug=exittest`: reset as soon as boot services are exited,
+    /// so a machine whose display stops then still shows it got that far.
+    exit_test: bool,
 }
 
 fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepared, Error> {
@@ -144,6 +147,7 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     // memory until it is reserved.
     // A reset test: read its marker before `setup` saves over it.
     let reset_test = bootnext::config_is(&config, "test", "reset");
+    let exit_test = bootnext::config_is(&config, "bootdebug", "exittest");
     let pending = if reset_test { bootnext::pending(&root) } else { None };
     // What the old ring's memory holds, read before `setup` can reuse it.
     let before = pending.map(|p| (p.ring, bootnext::survey(st, &p)));
@@ -230,6 +234,7 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
         regions: (block + regions_off as u64) as *mut Region,
         capacity,
         map_buf,
+        exit_test,
     })
 }
 
@@ -342,8 +347,11 @@ fn exit_and_jump(mut st: SystemTable<Boot>, image: Handle, mut p: Prepared) -> !
         unsafe { (*p.info).memory = Slice::new(phys_to_virt(p.regions as u64) as *const Region, n) };
         mark(1, true);
         match st.exit_boot_services(image, key) {
-            Ok(_runtime) => {
+            Ok(runtime) => {
                 mark(2, true);
+                if p.exit_test {
+                    runtime.runtime_services().reset(ResetType::Cold, Status::SUCCESS);
+                }
                 // SAFETY: boot services are gone; the handoff was built for this.
                 unsafe { handoff::jump(&p.handoff) }
             }
