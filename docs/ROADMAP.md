@@ -154,11 +154,21 @@ without `xtask` prints bare addresses. The demangler's host tests compare
 every symbol of the built kernels against `nm -C` when binutils is
 installed; the trap boot test now expects `kernel::kmain+0x`.
 
+**Tenth slice done:** stack-overflow reports. Kernel stacks now sit in
+128 KiB slots of their own, ending at the midpoint, so at least 64 KiB of
+unmapped guard lies below each, and on arm64 a stack pointer within a stack
+has bit 16 clear. arm64 has no IST, so each vector tests that bit before
+saving anything (stashing x0 in sp to do it without memory) and, if it is
+set, moves to the CPU's overflow stack: a static one for the boot CPU,
+allocated for the others before they start. amd64's double fault, already
+on an IST stack, now names an overflow when the saved stack pointer is
+unmapped. The boot CPU leaves 9boot's unguarded stack for a kernel stack
+right after `mm::init`, continuing in `boot_main`. `test=overflow`
+recurses until the stack runs out; the `overflow` and `overflow-boot-cpu`
+boot tests run it on an application processor and on the boot CPU.
+
 **Remaining:**
-BTI once the toolchain can emit landing pads;
-overflow reporting on arm64 (the guard page faults, but with no IST
-equivalent the fault handler recurses on the same stack) and a guard for
-the boot CPU's stack; ACPI dump corpus; checking SMP on the reference
+BTI once the toolchain can emit landing pads; ACPI dump corpus; checking SMP on the reference
 boards.
 
 - **`9boot` (UEFI loader, ours):** our own UEFI bindings (protocol

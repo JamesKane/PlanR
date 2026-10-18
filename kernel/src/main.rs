@@ -36,6 +36,17 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
         arch::halt();
     }
     mm::init(info);
+    // Leave 9boot's stack, which has no guard below it, for a kernel stack.
+    let Some(stack) = mm::alloc_stack(mm::STACK_PAGES) else {
+        arch::halt();
+    };
+    arch::run_on_stack(stack, boot_main, core::ptr::from_ref(info) as usize)
+}
+
+/// The rest of the boot CPU's start-up, on a kernel stack.
+extern "C" fn boot_main(info: usize) -> ! {
+    // SAFETY: `kmain` passed the address of its `&'static BootInfo`.
+    let info: &'static BootInfo = unsafe { &*(info as *const BootInfo) };
     let acpi = acpi::System::new(info.rsdp());
     let source = console::init(acpi.as_ref());
     let screen = info.framebuffer().map(|fb| (fb, console::attach_screen(fb)));
@@ -106,6 +117,7 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
             let v = unsafe { core::ptr::read_volatile(trap::UNMAPPED as *const u64) };
             panic!("read of unmapped {:#x} returned {v:#x}", trap::UNMAPPED);
         }
+        Some(TestMode::Overflow) => overflow_test(),
         Some(TestMode::Reset) => match ring_boot {
             Some(1) => {
                 println!("{RESET_LINE}");
@@ -122,6 +134,31 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
     report_interrupts();
     println!("P1 bring-up complete; halting");
     arch::halt()
+}
+
+/// `test=overflow`: overflows another CPU's stack if one is online, else
+/// the boot CPU's. The overflow report powers the machine off.
+fn overflow_test() -> ! {
+    let me = cpu::current().index();
+    if let Some(i) = cpu::online().map(cpu::Cpu::index).filter(|&i| i != me).last() {
+        println!("ktest: overflowing CPU {i}'s stack");
+        let called = cpu::call(i, overflow_stack);
+        assert!(called.is_ok(), "CPU {i} refused the call");
+    } else {
+        println!("ktest: overflowing the boot CPU's stack");
+        overflow_stack();
+    }
+    arch::halt()
+}
+
+/// Recurses until the stack overflows.
+fn overflow_stack() {
+    #[allow(unconditional_recursion)]
+    fn recurse(depth: u64) -> u64 {
+        let frame = core::hint::black_box([depth; 32]);
+        recurse(depth + 1) + frame[0]
+    }
+    core::hint::black_box(recurse(0));
 }
 
 fn report_interrupts() {

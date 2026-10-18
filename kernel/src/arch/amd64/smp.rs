@@ -22,8 +22,6 @@ use crate::port::cpu::{self, Census, Cpu};
 use crate::port::mm::{self, PAGE};
 use crate::println;
 
-/// Kernel stack size for an application processor.
-const STACK_PAGES: u64 = 16;
 const PAGE_BYTES: usize = 4096;
 
 // Real mode at `page:0` → protected mode → long mode on the copied page
@@ -255,7 +253,7 @@ pub(crate) fn start_cpus(acpi: Option<&System>) -> Result<Census, &'static str> 
 fn start(t: Trampoline, id: u32) -> Result<(), &'static str> {
     let cpu = cpu::claim(u64::from(id)).ok_or("too many CPUs")?;
     let index = cpu.index();
-    let stack = mm::alloc_stack(STACK_PAGES).ok_or("no memory for a stack")?;
+    let stack = mm::alloc_stack(mm::STACK_PAGES).ok_or("no memory for a stack")?;
     let ist_pages = (trap::IST_BYTES as u64).div_ceil(PAGE);
     let mut ist = [0; 3];
     for top in &mut ist {

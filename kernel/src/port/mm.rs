@@ -1,6 +1,6 @@
 //! Early memory management: direct-map translation, a bump frame
 //! allocator over the boot memory map, an MMIO mapping window, and kernel
-//! stacks with guard pages.
+//! stacks with guard space below them.
 //!
 //! This is bring-up scaffolding. P2 replaces the frame allocator with the
 //! real one and the boot page tables with the kernel's own.
@@ -18,9 +18,19 @@ const PAGE_BYTES: usize = 4096;
 /// Where MMIO and non-RAM mappings are placed.
 const MMIO_BASE: u64 = 0xffff_c000_0000_0000;
 const MMIO_LIMIT: u64 = 0xffff_c100_0000_0000;
-/// Where kernel stacks are placed, each above an unmapped guard page.
+/// Where kernel stacks are placed, one per [`STACK_SLOT`].
 const STACK_BASE: u64 = 0xffff_c100_0000_0000;
 const STACK_LIMIT: u64 = 0xffff_c200_0000_0000;
+/// Each kernel stack has a slot of its own, aligned to its size. The stack
+/// ends at the slot's midpoint and the rest of the slot is unmapped, so
+/// at least 64 KiB of guard lies below every stack. On arm64, a stack
+/// pointer inside a stack also has bit 16 clear, and one that has run off
+/// the bottom into the slot below has it set. The trap entry tests that bit
+/// without touching memory (see `arch/arm64/trap.rs`).
+pub(crate) const STACK_SLOT: u64 = 128 * 1024;
+/// The size of a kernel stack, and the most a slot holds. arm64 stacks
+/// must be this size, so the bit-16 test catches any overflow.
+pub(crate) const STACK_PAGES: u64 = STACK_SLOT / 2 / PAGE;
 
 /// How a mapping should behave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,19 +135,22 @@ pub(crate) fn low_pages(n: u64) -> Option<u64> {
         })
 }
 
-/// Allocates a kernel stack of `pages` pages with an unmapped guard page
-/// below it, and returns the address of its top.
+/// Allocates a kernel stack of `pages` pages (at most [`STACK_PAGES`]) in
+/// a [`STACK_SLOT`] of its own, and returns the address of its top.
 pub(crate) fn alloc_stack(pages: u64) -> Option<u64> {
-    let span = (pages + 1) * PAGE;
-    let base = STACK_NEXT.fetch_add(span, Ordering::Relaxed);
-    if base + span > STACK_LIMIT {
+    if pages > STACK_PAGES {
         return None;
     }
+    let slot = STACK_NEXT.fetch_add(STACK_SLOT, Ordering::Relaxed);
+    if slot + STACK_SLOT > STACK_LIMIT {
+        return None;
+    }
+    let top = slot + STACK_SLOT / 2;
     let _map = MAP.lock();
     for i in 1..=pages {
-        arch::mmu::map_page(base + i * PAGE, alloc_frame()?, MapKind::NormalReadWrite)?;
+        arch::mmu::map_page(top - i * PAGE, alloc_frame()?, MapKind::NormalReadWrite)?;
     }
-    Some(base + span)
+    Some(top)
 }
 
 /// True if `[phys, phys+len)` is RAM covered by the direct map.

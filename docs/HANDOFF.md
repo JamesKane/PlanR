@@ -1,11 +1,11 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-18, after slice 9.
+2026-10-18, after slice 10.
 
 ## State
 
-- **Phase:** P1 (boot and kernel bring-up). Slices 1–9 are done and
+- **Phase:** P1 (boot and kernel bring-up). Slices 1–10 are done and
   committed, one commit per slice:
   1. `5905e4d` 9boot loads the kernel; it boots on amd64 and arm64.
   2. `a2cb1f7` trap vectors, fault fixups, backtraces, in-kernel tests.
@@ -18,9 +18,12 @@ Where work stands, for picking it up in a new session. Last updated
      `iort.rs`), with host tests and a boot-report summary.
   8. `b80bb23` PIT fallback for TSC calibration (`drivers/pit.rs`);
      `tsc=pit` forces it.
-  9. Symbolized backtraces: `xtask` writes a demangled symbol table
+  9. `faacfe1` Symbolized backtraces: `xtask` writes a demangled symbol table
      (`lib/ksyms`, `xtask/src/demangle.rs`) into a block `link.ld`
      reserves.
+  10. Stack-overflow reports on both arches (arm64 vectors test bit 16 of
+      the frame address and switch to an overflow stack); the boot CPU
+      moves to a guarded kernel stack.
 - **Tree:** clean. `cargo xtask ci` is green: fmt, pedantic clippy with
   `-D warnings`, the dependency check, host tests, and every QEMU boot
   test on every profile.
@@ -31,12 +34,9 @@ Where work stands, for picking it up in a new session. Last updated
 
 In the suggested order:
 
-1. **arm64 stack-overflow reporting:** the guard page faults, but with no
-   IST equivalent the handler recurses on the same stack. Also add a guard
-   page below the boot CPU's stack.
-2. **ACPI dump corpus** in `oracle/acpi-corpus`: QEMU on both arches now,
+1. **ACPI dump corpus** in `oracle/acpi-corpus`: QEMU on both arches now,
    then the boards.
-3. **Reference boards:** check SMP, the CPU protections, the framebuffer
+2. **Reference boards:** check SMP, the CPU protections, the framebuffer
    console and log-ring survival on the Orange Pi 6 Plus and the Ryzen.
 
 ## Things to know
@@ -54,6 +54,12 @@ In the suggested order:
   `xtask` copies the linked kernel there with the symbol table written in.
   The block is 512 KiB (debug kernels use about 200 KiB); `xtask` prints
   the usage and fails with a clear error if it overflows.
+- **Kernel stacks** come only from `mm::alloc_stack`, in 128 KiB slots.
+  arm64's overflow check relies on every stack an exception can arrive on
+  following that layout and being `mm::STACK_PAGES` long. A future thread
+  stack must too. The overflow path clobbers `TPIDR_EL0` and
+  `TPIDRRO_EL0`. That is harmless while it is fatal, but P2 must keep it
+  fatal or save them first.
 - **Workflow:** run `cargo xtask ci` before every commit. Boot tests are
   listed in `BOOT_TESTS` in `xtask/src/main.rs`, and the in-kernel tests
   are registered in `kernel/src/port/ktest.rs`. `cargo xtask qemu --arch

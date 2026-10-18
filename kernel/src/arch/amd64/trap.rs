@@ -502,6 +502,14 @@ fn cr2() -> u64 {
 extern "C" fn trap(f: &mut TrapFrame) {
     let ex = Exception::decode(f);
     match ex {
+        // A fault the CPU could not push a frame for, from a stack pointer
+        // in unmapped memory: the stack ran into its guard.
+        Exception::DoubleFault if probe_read(f.rsp.wrapping_sub(8)).is_none() => trap::fatal(
+            &format_args!("kernel stack overflow: double fault, sp {:#x}", f.rsp),
+            f,
+            f.rip,
+            f.rbp,
+        ),
         // int3 leaves rip after itself, so returning resumes.
         Exception::Breakpoint => trap::count_breakpoint(),
         Exception::Interrupt(v) => {

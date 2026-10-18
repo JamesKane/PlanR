@@ -5,11 +5,21 @@
 //! calls [`trap`]. The index tells the handler where the exception came
 //! from (current EL on `SP_EL0` or `SP_EL1`, lower EL in `AArch64` or `AArch32`)
 //! and what it is (synchronous, IRQ, FIQ, `SError`).
+//!
+//! The kernel runs on `SP_EL1`, so an exception taken because the stack ran
+//! into its guard would fault again saving the frame, and again, forever.
+//! There is no IST to switch stacks for us, so each vector checks first,
+//! without touching memory: kernel stacks are laid out so that a stack
+//! pointer within one has bit 16 clear (see `port/mm.rs`). If the frame's
+//! address has it set, the vector switches to this CPU's overflow stack
+//! before saving anything, and the handler reports the overflow.
 
 use core::arch::{asm, global_asm};
 use core::fmt;
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::port::trap;
+use crate::port::cpu::MAXCPU;
+use crate::port::{mm, trap};
 
 /// The saved state of the interrupted code, as the entry path builds it.
 #[repr(C)]
@@ -29,6 +39,40 @@ pub(crate) struct TrapFrame {
 const FRAME_BYTES: usize = 304;
 const _: () = assert!(size_of::<TrapFrame>() == FRAME_BYTES);
 
+/// The `vector` a frame built on the overflow stack carries: which vector
+/// was taken is lost, but an overflow is a synchronous abort.
+const OVERFLOW_VECTOR: u64 = 16;
+/// The bit the vectors test; see `port/mm.rs`.
+const STACK_BIT: u32 = mm::STACK_SLOT.trailing_zeros() - 1;
+const _: () = assert!(mm::STACK_PAGES * mm::PAGE == 1 << STACK_BIT);
+
+/// A stack for reporting an overflow, placed like a kernel stack: the lower
+/// half of a slot of its own, so that a stack pointer within it has bit 16
+/// clear and a fault taken while reporting is handled normally.
+#[repr(C, align(131072))]
+struct OverflowStack([u8; OVERFLOW_BYTES]);
+const OVERFLOW_BYTES: usize = 64 * 1024;
+const _: () = assert!(align_of::<OverflowStack>() as u64 == mm::STACK_SLOT);
+const _: () = assert!(OVERFLOW_BYTES as u64 == mm::STACK_SLOT / 2);
+
+/// The boot CPU's overflow stack, ready before anything can trap.
+static mut BOOT_OVERFLOW_STACK: OverflowStack = OverflowStack([0; OVERFLOW_BYTES]);
+
+/// The top of each other CPU's overflow stack, set before it starts.
+static OVERFLOW_STACKS: [AtomicU64; MAXCPU] = [const { AtomicU64::new(0) }; MAXCPU];
+
+/// Gives CPU `index` an overflow stack; called before it starts.
+pub(super) fn prepare(index: usize) -> Result<(), &'static str> {
+    let top = mm::alloc_stack(mm::STACK_PAGES).ok_or("no memory for an overflow stack")?;
+    OVERFLOW_STACKS
+        .get(index)
+        .ok_or("CPU index out of range")?
+        .store(top, Ordering::Release);
+    Ok(())
+}
+
+// Each vector checks bit 16 of the frame address with only x0 to hand, by
+// stashing x0 in sp: sp + x0 - x0 recovers either.
 global_asm!(
     ".section .text.vectors, \"ax\"",
     ".balign 2048",
@@ -38,11 +82,45 @@ global_asm!(
     ".rept 16",
     ".balign 128",
     "    sub sp, sp, #{size}",
+    "    add sp, sp, x0",      // sp = frame + x0
+    "    sub x0, sp, x0",      // x0 = frame
+    "    tbnz x0, #{bit}, .Lstack_overflow",
+    "    sub x0, sp, x0",      // x0 = x0
+    "    sub sp, sp, x0",      // sp = frame
     "    stp x0, x1, [sp]",
     "    mov x1, #.Lvec",
     "    b .Ltrap_entry",
     ".set .Lvec, .Lvec + 1",
     ".endr",
+    "",
+    // x0 = the frame address, sp = frame + x0. The interrupted x0 and the
+    // frame address go to the EL0 thread registers, which nothing at EL1
+    // reads; the report is fatal, so their values do not matter after.
+    ".Lstack_overflow:",
+    "    msr tpidr_el0, x0",
+    "    sub x0, sp, x0",
+    "    msr tpidrro_el0, x0",
+    // sp = the overflow stack of CPU TPIDR_EL1, the boot CPU's static one
+    // for CPU 0, an index out of range (TPIDR_EL1 not yet set), or a CPU
+    // without one.
+    "    mrs x0, tpidr_el1",
+    "    cmp x0, #{maxcpu}",
+    "    b.hs 1f",
+    "    lsl x0, x0, #3",
+    "    mov sp, x0",
+    "    adrp x0, {stacks}",
+    "    add x0, x0, :lo12:{stacks}",
+    "    add x0, sp, x0",
+    "    ldr x0, [x0]",
+    "    cbnz x0, 2f",
+    "1:  adrp x0, {boot_stack}",
+    "    add x0, x0, :lo12:{boot_stack}",
+    "    add x0, x0, #{half_k}, lsl #12",
+    "2:  mov sp, x0",
+    "    sub sp, sp, #{size}",
+    "    mrs x0, tpidrro_el0",
+    "    stp x0, x1, [sp]",
+    "    mov x1, #{overflow}",
     "",
     ".Ltrap_entry:",
     "    stp x2, x3, [sp, #16]",
@@ -94,6 +172,12 @@ global_asm!(
     "    eret",
     size = const FRAME_BYTES,
     trap = sym trap,
+    bit = const STACK_BIT,
+    maxcpu = const MAXCPU,
+    stacks = sym OVERFLOW_STACKS,
+    boot_stack = sym BOOT_OVERFLOW_STACK,
+    half_k = const mm::STACK_SLOT / 2 / 4096,
+    overflow = const OVERFLOW_VECTOR,
 );
 
 unsafe extern "C" {
@@ -280,8 +364,40 @@ impl fmt::Display for TrapFrame {
     }
 }
 
+/// Reports a trap whose frame address failed the vectors' bit-16 check.
+/// The frame is on the overflow stack, and the interrupted stack pointer
+/// went to `TPIDR_EL0`.
+fn overflow(f: &mut TrapFrame) -> ! {
+    let frame: u64;
+    // SAFETY: reads the register the overflow path wrote.
+    unsafe { asm!("mrs {}, tpidr_el0", out(reg) frame, options(nomem, nostack)) };
+    f.sp = frame.wrapping_add(FRAME_BYTES as u64);
+    // The vector is lost; an overflow is a synchronous exception from EL1.
+    f.vector = 4;
+    let ex = Exception::decode(f);
+    // Bit 16 also fails on a stack not laid out like a kernel stack (9boot's,
+    // before the boot CPU leaves it); there the frame would have fit.
+    if probe_read(frame).is_some() {
+        trap::fatal(
+            &format_args!("{ex} (on a foreign stack, sp {:#x})", f.sp),
+            f,
+            f.elr,
+            f.x[29],
+        );
+    }
+    trap::fatal(
+        &format_args!("kernel stack overflow: {ex}, sp {:#x}", f.sp),
+        f,
+        f.elr,
+        f.x[29],
+    )
+}
+
 /// Called from the entry path with the saved frame; returning resumes it.
 extern "C" fn trap(f: &mut TrapFrame) {
+    if f.vector == OVERFLOW_VECTOR {
+        overflow(f);
+    }
     let ex = Exception::decode(f);
     let origin = match f.vector >> 2 {
         0 => Origin::KernelSp0,

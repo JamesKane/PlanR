@@ -259,13 +259,41 @@ const BOOT_TESTS: &[BootTest] = &[
             "kernel: PANIC: trap:",
             "address 0xffff9000dead0000",
             "backtrace:",
-            // Symbolized: #0 is the faulting read in kmain.
-            "kernel::kmain+0x",
+            // Symbolized: #0 is the faulting read in boot_main.
+            "kernel::boot_main+0x",
             "#1 0x",
         ]),
         every_profile: false,
         only: None,
         machine: FOUR_CPUS,
+    },
+    // Overflowing a kernel stack must produce a report, not a hang or a
+    // reset: on an application processor, then on the boot CPU, whose
+    // overflow stacks are found differently on arm64.
+    BootTest {
+        name: "overflow",
+        config: "# Plan R stack overflow test image\ntest=overflow\n",
+        expect: Expect::Panic(&[
+            "ktest: overflowing CPU",
+            "kernel stack overflow",
+            "backtrace:",
+            "overflow_stack::recurse+0x",
+        ]),
+        every_profile: false,
+        only: None,
+        machine: FOUR_CPUS,
+    },
+    BootTest {
+        name: "overflow-boot-cpu",
+        config: "# Plan R stack overflow test image\ntest=overflow\n",
+        expect: Expect::Panic(&[
+            "ktest: overflowing the boot CPU",
+            "kernel stack overflow",
+            "overflow_stack::recurse+0x",
+        ]),
+        every_profile: false,
+        only: None,
+        machine: qemu::Machine { cpus: 1, reboot: false },
     },
     // The kernel resets warm; 9boot must find the log ring the first boot
     // wrote, save it to the boot volume, and show how it ended.

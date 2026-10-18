@@ -25,6 +25,9 @@ pub(crate) enum TestMode {
     /// `test=trap`: take a deliberate fatal page fault, so the harness can
     /// check the trap report.
     Trap,
+    /// `test=overflow`: overflow a kernel stack, on another CPU if one is
+    /// online, so the harness can check the overflow report.
+    Overflow,
     /// `test=reset`: on the first boot of a fresh log ring, print a line
     /// and reset warm; on the next, power off. The harness checks that
     /// 9boot reported saving the first boot's log, ending with that line.
@@ -58,6 +61,7 @@ impl<'a> Config<'a> {
         match self.get("test")? {
             "1" => Some(TestMode::Run),
             "trap" => Some(TestMode::Trap),
+            "overflow" => Some(TestMode::Overflow),
             "reset" => Some(TestMode::Reset),
             _ => None,
         }

@@ -66,6 +66,26 @@ global_asm!(
     kmain = sym crate::kmain,
 );
 
+/// Abandons the current stack for the one ending at `top` and calls
+/// `f(arg)` there, as the first frame of the backtrace.
+pub(crate) fn run_on_stack(top: u64, f: extern "C" fn(usize) -> !, arg: usize) -> ! {
+    // SAFETY: `top` is the 16-byte-aligned top of a mapped stack nothing
+    // else uses, and `f` never returns, so nothing on the old stack is
+    // needed again.
+    unsafe {
+        asm!(
+            "mov rsp, {top}",
+            "xor ebp, ebp",
+            "call {f}",
+            "ud2",
+            top = in(reg) top,
+            f = in(reg) f,
+            in("rdi") arg,
+            options(noreturn),
+        );
+    }
+}
+
 pub(crate) fn init(_acpi: Option<&System>) {}
 
 /// Takes over interrupt delivery from the firmware: masks the 8259s,

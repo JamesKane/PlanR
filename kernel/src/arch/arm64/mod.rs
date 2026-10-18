@@ -42,6 +42,25 @@ pub(crate) fn init_traps() {
 
 pub(crate) const NAME: &str = "arm64";
 
+/// Abandons the current stack for the one ending at `top` and calls
+/// `f(arg)` there, as the first frame of the backtrace.
+pub(crate) fn run_on_stack(top: u64, f: extern "C" fn(usize) -> !, arg: usize) -> ! {
+    // SAFETY: `top` is the top of a mapped stack nothing else uses, and
+    // `f` never returns, so nothing on the old stack is needed again.
+    unsafe {
+        asm!(
+            "mov sp, {top}",
+            "mov x29, xzr",
+            "blr {f}",
+            "brk #1",
+            top = in(reg) top,
+            f = in(reg) f,
+            in("x0") arg,
+            options(noreturn),
+        );
+    }
+}
+
 // Entry from 9boot: x0 = &BootInfo, sp = top of the boot stack, EL1 with the
 // boot page tables live, DAIF masked (ADR 0010).
 global_asm!(

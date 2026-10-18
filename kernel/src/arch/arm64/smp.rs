@@ -14,14 +14,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use acpi::MadtEntry;
 use bootinfo::phys_to_virt;
 
-use super::{gic, psci};
+use super::{gic, psci, trap};
 use crate::port::acpi::System;
 use crate::port::cpu::{self, Census, Cpu};
 use crate::port::mm;
 use crate::println;
-
-/// Kernel stack size for an application processor.
-const STACK_PAGES: u64 = 16;
 
 const PSCI_CPU_ON: u64 = 0xc400_0003;
 const PSCI_ALREADY_ON: i64 = -4;
@@ -236,7 +233,8 @@ const AFFINITY: u64 = 0xff_00ff_ffff;
 /// timeout still finds its own stack and index.
 fn start(target: u64, entry: u64) -> Result<(), &'static str> {
     let cpu = cpu::claim(target).ok_or("too many CPUs")?;
-    let stack = mm::alloc_stack(STACK_PAGES).ok_or("no memory for a stack")?;
+    let stack = mm::alloc_stack(mm::STACK_PAGES).ok_or("no memory for a stack")?;
+    trap::prepare(cpu.index())?;
     let block = mm::alloc_frame().ok_or("no memory for the parameter block")?;
     let (mair, tcr, ttbr0, ttbr1, sctlr) = sysreg_values();
     let p = Params {
@@ -278,12 +276,13 @@ fn start(target: u64, entry: u64) -> Result<(), &'static str> {
 /// Where the entry code lands, at EL1 with the kernel's translation
 /// regime, on the CPU's own stack.
 extern "C" fn ap_entry(index: usize) -> ! {
-    super::init_traps();
-    super::protect::init_cpu();
     let Some(cpu) = cpu::get(index) else {
         super::halt();
     };
+    // First: a stack overflow finds this CPU's overflow stack by its index.
     super::set_cpu_local(cpu);
+    super::init_traps();
+    super::protect::init_cpu();
     if let Err(e) = gic::init_cpu() {
         println!("smp: CPU {index}: {e}");
         super::halt();
