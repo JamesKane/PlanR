@@ -144,8 +144,18 @@ test checks that the frequency in use is within 1% of a fresh HPET
 measurement. The HPET now starts counting when it is found, not only when
 it calibrates the TSC.
 
+**Ninth slice done:** symbolized backtraces. Each linker script reserves a
+512 KiB zero-filled block in rodata; after the link, `xtask` reads the ELF
+symbol table (`lib/elf`), demangles the names with its own v0 demangler,
+and writes a sorted address-to-name table (`lib/ksyms`) into a copy of the
+image, so no address moves. Frames print as `name+offset`, looked up at
+`ret - 1` so a call ending a function names the caller. An image built
+without `xtask` prints bare addresses. The demangler's host tests compare
+every symbol of the built kernels against `nm -C` when binutils is
+installed; the trap boot test now expects `kernel::kmain+0x`.
+
 **Remaining:**
-BTI once the toolchain can emit landing pads; backtrace symbolization;
+BTI once the toolchain can emit landing pads;
 overflow reporting on arm64 (the guard page faults, but with no IST
 equivalent the fault handler recurses on the same stack) and a guard for
 the boot CPU's stack; ACPI dump corpus; checking SMP on the reference

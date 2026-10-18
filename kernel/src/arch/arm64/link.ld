@@ -27,6 +27,12 @@ SECTIONS
         __fixup_start = .;
         KEEP(*(.fixup))
         __fixup_end = .;
+        /* Backtrace symbols (lib/ksyms): zeros here, filled in after the
+         * link by xtask, which says how much it used. */
+        . = ALIGN(8);
+        __ksyms_start = .;
+        . += 0x80000;
+        __ksyms_end = .;
     } :rodata
 
     . = ALIGN(4096);

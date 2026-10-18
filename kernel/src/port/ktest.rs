@@ -27,6 +27,10 @@ pub(crate) type TestFn = fn() -> TestResult;
 
 const TESTS: &[(&str, TestFn)] = &[
     ("trap: breakpoint resumes", trap::ktests::breakpoint_resumes),
+    (
+        "trap: backtrace symbols name functions",
+        trap::ktests::symbols_name_functions,
+    ),
     ("trap: probe reads mapped memory", trap::ktests::probe_reads_mapped),
     (
         "trap: fixup recovers unmapped read",

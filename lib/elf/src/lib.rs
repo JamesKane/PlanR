@@ -1,4 +1,6 @@
-//! ELF64 parsing: just what 9boot needs to load a static kernel.
+//! ELF64 parsing: just what 9boot needs to load a static kernel, plus the
+//! symbol table, which `xtask` reads to build the kernel's backtrace
+//! symbols.
 //!
 //! Everything is read with explicit little-endian decoding from a byte
 //! slice, so malformed input yields an [`Error`], never a misaligned read or
@@ -89,9 +91,47 @@ pub struct Elf<'a> {
     phnum: usize,
 }
 
+/// A section header. Loading ignores sections; they matter only for the
+/// symbol table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Section {
+    pub kind: u32,
+    pub flags: u64,
+    pub addr: u64,
+    pub offset: u64,
+    pub size: u64,
+    pub link: u32,
+    pub entsize: u64,
+}
+
+/// `st_info`'s type field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolKind {
+    NoType,
+    Object,
+    Func,
+    Section,
+    File,
+    Other(u8),
+}
+
+/// An entry in the `SHT_SYMTAB` section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Symbol<'a> {
+    pub name: &'a [u8],
+    pub value: u64,
+    pub size: u64,
+    pub kind: SymbolKind,
+    /// `st_shndx`: the section the symbol is defined in; 0 is undefined.
+    pub section: u16,
+}
+
 const PT_LOAD: u32 = 1;
 const ET_EXEC: u16 = 2;
 const PHDR_SIZE: usize = 56;
+pub const SHT_SYMTAB: u32 = 2;
+const SHDR_SIZE: usize = 64;
+const SYM_SIZE: usize = 24;
 
 fn u16_at(d: &[u8], o: usize) -> Option<u16> {
     Some(u16::from_le_bytes(d.get(o..o + 2)?.try_into().ok()?))
@@ -196,6 +236,74 @@ impl<'a> Elf<'a> {
         &self.data[o..o + n]
     }
 
+    /// The section headers, or none if the table is missing or malformed.
+    pub fn sections(&self) -> impl Iterator<Item = Section> + '_ {
+        let d = self.data;
+        let table = (|| {
+            let off = usize::try_from(u64_at(d, 40)?).ok()?;
+            let entsize = usize::from(u16_at(d, 58)?);
+            let num = usize::from(u16_at(d, 60)?);
+            let end = num.checked_mul(entsize)?.checked_add(off)?;
+            (entsize >= SHDR_SIZE && end <= d.len()).then_some((off, entsize, num))
+        })();
+        let (off, entsize, num) = table.unwrap_or((0, 0, 0));
+        (0..num).filter_map(move |i| {
+            let o = off + i * entsize;
+            Some(Section {
+                kind: u32_at(d, o + 4)?,
+                flags: u64_at(d, o + 8)?,
+                addr: u64_at(d, o + 16)?,
+                offset: u64_at(d, o + 24)?,
+                size: u64_at(d, o + 32)?,
+                link: u32_at(d, o + 40)?,
+                entsize: u64_at(d, o + 56)?,
+            })
+        })
+    }
+
+    /// The file bytes of a section, if they lie within the file.
+    #[must_use]
+    pub fn section_data(&self, s: &Section) -> Option<&'a [u8]> {
+        let start = usize::try_from(s.offset).ok()?;
+        let end = start.checked_add(usize::try_from(s.size).ok()?)?;
+        self.data.get(start..end)
+    }
+
+    /// The entries of the first `SHT_SYMTAB` section, or none if there is
+    /// no symbol table. Names are cut at their NUL; a name outside the
+    /// string table reads as empty.
+    pub fn symbols(&self) -> impl Iterator<Item = Symbol<'a>> + '_ {
+        let tables = self.sections().find(|s| s.kind == SHT_SYMTAB).and_then(|symtab| {
+            let strtab = self.sections().nth(usize::try_from(symtab.link).ok()?)?;
+            let syms = self.section_data(&symtab)?;
+            let entsize = usize::try_from(symtab.entsize).ok().filter(|&n| n >= SYM_SIZE)?;
+            Some((syms, self.section_data(&strtab)?, entsize))
+        });
+        let (syms, strs, entsize) = tables.unwrap_or((&[], &[], SYM_SIZE));
+        (0..syms.len() / entsize).filter_map(move |i| {
+            let o = i * entsize;
+            let name = usize::try_from(u32_at(syms, o)?)
+                .ok()
+                .and_then(|n| strs.get(n..))
+                .unwrap_or(&[]);
+            let name = &name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())];
+            Some(Symbol {
+                name,
+                kind: match syms[o + 4] & 0xf {
+                    0 => SymbolKind::NoType,
+                    1 => SymbolKind::Object,
+                    2 => SymbolKind::Func,
+                    3 => SymbolKind::Section,
+                    4 => SymbolKind::File,
+                    t => SymbolKind::Other(t),
+                },
+                section: u16_at(syms, o + 6)?,
+                value: u64_at(syms, o + 8)?,
+                size: u64_at(syms, o + 16)?,
+            })
+        })
+    }
+
     /// The virtual address span `[lo, hi)` covered by all segments.
     #[must_use]
     pub fn span(&self) -> (u64, u64) {
@@ -291,11 +399,95 @@ mod tests {
         );
     }
 
+    /// Appends a symbol table of `(name, value, size, kind)` entries, its
+    /// string table and a section header table to `f`.
+    fn with_symbols(mut f: Vec<u8>, syms: &[(&str, u64, u64, u8)]) -> Vec<u8> {
+        let mut strs = vec![0u8];
+        let mut table = vec![0u8; SYM_SIZE]; // the null symbol
+        for &(name, value, size, kind) in syms {
+            let mut e = [0u8; SYM_SIZE];
+            e[..4].copy_from_slice(&(strs.len() as u32).to_le_bytes());
+            e[4] = 0x10 | kind; // global
+            e[6..8].copy_from_slice(&1u16.to_le_bytes());
+            e[8..16].copy_from_slice(&value.to_le_bytes());
+            e[16..24].copy_from_slice(&size.to_le_bytes());
+            table.extend_from_slice(&e);
+            strs.extend_from_slice(name.as_bytes());
+            strs.push(0);
+        }
+        let symoff = f.len() as u64;
+        f.extend_from_slice(&table);
+        let stroff = f.len() as u64;
+        f.extend_from_slice(&strs);
+        let shoff = f.len() as u64;
+        // Null, .symtab (linked to section 2), .strtab.
+        let headers = [
+            (0u32, 0u64, 0u64, 0u32, 0u64),
+            (SHT_SYMTAB, symoff, table.len() as u64, 2, SYM_SIZE as u64),
+            (3, stroff, strs.len() as u64, 0, 0),
+        ];
+        for (kind, offset, size, link, entsize) in headers {
+            let mut h = [0u8; SHDR_SIZE];
+            h[4..8].copy_from_slice(&kind.to_le_bytes());
+            h[24..32].copy_from_slice(&offset.to_le_bytes());
+            h[32..40].copy_from_slice(&size.to_le_bytes());
+            h[40..44].copy_from_slice(&link.to_le_bytes());
+            h[56..64].copy_from_slice(&entsize.to_le_bytes());
+            f.extend_from_slice(&h);
+        }
+        f[40..48].copy_from_slice(&shoff.to_le_bytes());
+        f[58..60].copy_from_slice(&(SHDR_SIZE as u16).to_le_bytes());
+        f[60..62].copy_from_slice(&3u16.to_le_bytes());
+        f
+    }
+
+    #[test]
+    fn reads_symbols() {
+        let f = with_symbols(
+            build(62, ET_EXEC, &[(0x1000, b"code", 4, 5)]),
+            &[("kmain", 0x1000, 3, 2), ("__kernel_start", 0x1000, 0, 0)],
+        );
+        let e = Elf::parse(&f, Machine::X86_64).unwrap();
+        assert_eq!(e.sections().count(), 3);
+        let syms: Vec<_> = e.symbols().collect();
+        assert_eq!(syms.len(), 3);
+        assert_eq!(syms[0].name, b"");
+        assert_eq!(
+            syms[1],
+            Symbol {
+                name: b"kmain",
+                value: 0x1000,
+                size: 3,
+                kind: SymbolKind::Func,
+                section: 1,
+            }
+        );
+        assert_eq!(syms[2].name, b"__kernel_start");
+        assert_eq!(syms[2].kind, SymbolKind::NoType);
+    }
+
+    #[test]
+    fn no_section_headers_means_no_symbols() {
+        let f = build(62, ET_EXEC, &[(0x1000, b"code", 4, 5)]);
+        let e = Elf::parse(&f, Machine::X86_64).unwrap();
+        assert_eq!(e.sections().count(), 0);
+        assert_eq!(e.symbols().count(), 0);
+    }
+
     #[test]
     fn never_panics_on_truncation() {
         let f = build(62, ET_EXEC, &[(0x1000, b"abcdefgh", 8, 5), (0x3000, b"ij", 2, 6)]);
         for n in 0..f.len() {
             let _ = Elf::parse(&f[..n], Machine::X86_64);
+        }
+        // Section and symbol tables cut short read as fewer entries.
+        let f = with_symbols(f, &[("a", 0x1000, 1, 2), ("b", 0x1001, 1, 2)]);
+        for n in 0..f.len() {
+            let mut g = f[..n].to_vec();
+            g.resize(f.len(), 0xff);
+            if let Ok(e) = Elf::parse(&g, Machine::X86_64) {
+                let _ = e.symbols().count();
+            }
         }
     }
 }

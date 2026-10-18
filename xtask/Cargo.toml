@@ -8,3 +8,7 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+elf = { path = "../lib/elf" }
+ksyms = { path = "../lib/ksyms" }

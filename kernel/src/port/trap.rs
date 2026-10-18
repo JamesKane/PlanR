@@ -1,6 +1,6 @@
 //! Portable trap support: the fault-fixup table, fatal-trap reports and
-//! frame-pointer backtraces. The architecture code decodes the trap and
-//! calls in here.
+//! symbolized frame-pointer backtraces. The architecture code decodes the
+//! trap and calls in here.
 
 use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -28,6 +28,20 @@ struct Fixup {
 unsafe extern "C" {
     static __fixup_start: Fixup;
     static __fixup_end: Fixup;
+    static __ksyms_start: u8;
+    static __ksyms_end: u8;
+}
+
+/// The symbol table `xtask` wrote into the image after the link, or `None`
+/// for an image built without it (the block is then zeros).
+pub(crate) fn symbols() -> Option<ksyms::Table<'static>> {
+    let start = &raw const __ksyms_start;
+    let end = &raw const __ksyms_end;
+    // SAFETY: the linker script reserves the bytes between the two symbols
+    // in rodata. They are extern, so the compiler cannot assume their
+    // contents are the zeros the linker put there.
+    let block = unsafe { core::slice::from_raw_parts(start, end as usize - start as usize) };
+    ksyms::Table::parse(block)
 }
 
 /// Where to resume if the instruction at `pc` faulted, if it has a fixup.
@@ -61,8 +75,13 @@ const MAX_FRAMES: usize = 32;
 /// faulting again.
 pub(crate) fn backtrace(pc: Option<u64>, mut fp: u64) {
     println!("backtrace:");
+    let symbols = symbols();
+    let frame = |i: usize, addr: u64, within: u64| match symbols.and_then(|t| t.lookup(within)) {
+        Some(s) => println!("  #{i} {addr:#018x} {}+{:#x}", s.name, addr - s.addr),
+        None => println!("  #{i} {addr:#018x}"),
+    };
     if let Some(pc) = pc {
-        println!("  #0 {pc:#018x}");
+        frame(0, pc, pc);
     }
     for i in 1..=MAX_FRAMES {
         if fp == 0 || !fp.is_multiple_of(8) {
@@ -75,7 +94,9 @@ pub(crate) fn backtrace(pc: Option<u64>, mut fp: u64) {
         if ret == 0 {
             break;
         }
-        println!("  #{i} {ret:#018x}");
+        // A call can be a function's last instruction, so its return
+        // address may lie past the end; the call itself is just before.
+        frame(i, ret, ret - 1);
         // The stack grows down, so each caller's record is higher.
         if next <= fp {
             break;
@@ -99,6 +120,18 @@ pub(crate) mod ktests {
             Ok(())
         } else {
             Err("breakpoint not counted".into())
+        }
+    }
+
+    /// The symbol table names this function: xtask wrote it, and the
+    /// lookup finds functions.
+    pub(crate) fn symbols_name_functions() -> TestResult {
+        let table = super::symbols().ok_or("no symbol table: image not built by xtask")?;
+        let f = symbols_name_functions as fn() -> TestResult as usize as u64;
+        match table.lookup(f + 1) {
+            Some(s) if s.addr == f && s.name == "kernel::port::trap::ktests::symbols_name_functions" => Ok(()),
+            Some(_) => Err("wrong symbol".into()),
+            None => Err("no symbol".into()),
         }
     }
 

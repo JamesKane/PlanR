@@ -51,6 +51,14 @@ impl Arch {
         }
     }
 
+    /// The kernel's ELF `e_machine`.
+    pub(crate) fn machine(self) -> elf::Machine {
+        match self {
+            Arch::Amd64 => elf::Machine::X86_64,
+            Arch::Arm64 => elf::Machine::Aarch64,
+        }
+    }
+
     /// QEMU's exit status when a test-mode kernel powers off successfully:
     /// amd64 reports through `isa-debug-exit` (`(0x31 << 1) | 1`), arm64
     /// through PSCI `SYSTEM_OFF` (always 0).

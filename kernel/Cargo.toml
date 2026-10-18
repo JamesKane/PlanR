@@ -16,6 +16,7 @@ bench = false
 acpi = { path = "../lib/acpi" }
 bootinfo = { path = "../lib/bootinfo" }
 fbtext = { path = "../lib/fbtext" }
+ksyms = { path = "../lib/ksyms" }
 logring = { path = "../lib/logring" }
 
 [lints]

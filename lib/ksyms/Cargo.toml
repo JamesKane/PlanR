@@ -1,0 +1,10 @@
+[package]
+name = "ksyms"
+description = "The kernel symbol table that backtraces are symbolized from"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

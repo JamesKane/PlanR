@@ -5,13 +5,16 @@
 
 mod arch;
 mod crc32;
+mod demangle;
 mod deps;
 mod fat;
 mod gpt;
 mod image;
 mod json;
+mod ksyms;
 mod qemu;
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -177,11 +180,12 @@ fn build(opts: &Opts) -> Result<Vec<Built>, String> {
     opts.arches
         .iter()
         .map(|&arch| {
-            Ok(Built {
-                arch,
-                loader: one("nineboot", arch.uefi_target(), "9boot.efi")?,
-                kernel: one("kernel", arch.kernel_target(), "kernel")?,
-            })
+            let loader = one("nineboot", arch.uefi_target(), "9boot.efi")?;
+            let linked = one("kernel", arch.kernel_target(), "kernel")?;
+            let kernel = build_dir(arch).join("kernel");
+            fs::create_dir_all(build_dir(arch)).map_err(|e| e.to_string())?;
+            ksyms::embed(arch, &linked, &kernel)?;
+            Ok(Built { arch, loader, kernel })
         })
         .collect()
 }
@@ -255,6 +259,8 @@ const BOOT_TESTS: &[BootTest] = &[
             "kernel: PANIC: trap:",
             "address 0xffff9000dead0000",
             "backtrace:",
+            // Symbolized: #0 is the faulting read in kmain.
+            "kernel::kmain+0x",
             "#1 0x",
         ]),
         every_profile: false,
@@ -299,7 +305,7 @@ fn write_images(built: &[Built], name: &str, config: &str) -> Result<Vec<PathBuf
 }
 
 /// Crates with host unit tests (everything except the bare-metal binaries).
-const HOST_TESTED: &[&str] = &["acpi", "bootinfo", "elf", "fbtext", "logring", "uefi", "xtask"];
+const HOST_TESTED: &[&str] = &["acpi", "bootinfo", "elf", "fbtext", "ksyms", "logring", "uefi", "xtask"];
 
 fn with_packages(c: &mut Command, packages: &[&str]) {
     for p in packages {
