@@ -9,6 +9,8 @@
 //!   CPU has x2APIC.
 //! - `apictimer=oneshot` (amd64) uses the local APIC timer's one-shot count
 //!   mode even if the CPU has TSC-deadline mode.
+//! - `tsc=hpet` or `tsc=pit` (amd64) calibrates the TSC against that timer
+//!   only, even if CPUID reports the frequency or an HPET is present.
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Config<'a> {

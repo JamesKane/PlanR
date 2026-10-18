@@ -11,6 +11,7 @@ use acpi::{Madt, MadtEntry};
 
 use super::cpu::{self, rdtsc};
 use super::{ERROR_VECTOR, SPURIOUS_VECTOR, TIMER_VECTOR};
+use crate::drivers::pit;
 use crate::port::mm::{self, MapKind};
 use crate::port::{clock, intr};
 use crate::println;
@@ -221,21 +222,36 @@ fn nmi_lvt(madt: &Madt<'_>) -> Option<u32> {
     })
 }
 
-/// Where the TSC frequency came from.
-#[derive(Debug, Clone, Copy)]
+/// Where the TSC frequency came from, in order of preference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TscSource {
     Cpuid,
     Hpet,
+    Pit,
 }
 
 /// Measures the TSC (and, without TSC-deadline mode, the APIC timer),
 /// routes the timer interrupt to the clock, and returns the TSC frequency.
-pub(crate) fn init_timer(hpet: Option<crate::drivers::hpet::Hpet>) -> Result<u64, &'static str> {
-    let (tsc_hz, source) = match (cpu::tsc_hz_from_cpuid(), hpet) {
-        (Some(hz), _) => (hz, TscSource::Cpuid),
-        (None, Some(h)) => (calibrate_tsc(h), TscSource::Hpet),
-        (None, None) => return Err("no HPET or CPUID frequency to calibrate the TSC against"),
-    };
+/// The frequency comes from the first source available, or only from
+/// `force` if given.
+pub(crate) fn init_timer(
+    hpet: Option<crate::drivers::hpet::Hpet>,
+    force: Option<TscSource>,
+) -> Result<u64, &'static str> {
+    let want = |s| force.is_none_or(|f| f == s);
+    let found = want(TscSource::Cpuid)
+        .then(cpu::tsc_hz_from_cpuid)
+        .flatten()
+        .map(|hz| (hz, TscSource::Cpuid))
+        .or_else(|| {
+            let h = hpet.filter(|_| want(TscSource::Hpet))?;
+            Some((calibrate_tsc(h), TscSource::Hpet))
+        })
+        .or_else(|| {
+            let hz = want(TscSource::Pit).then(|| pit::frequency_of(rdtsc)).flatten()?;
+            Some((hz, TscSource::Pit))
+        });
+    let (tsc_hz, source) = found.ok_or("no CPUID frequency, HPET or PIT to calibrate the TSC against")?;
     if tsc_hz == 0 {
         return Err("TSC calibration failed");
     }
@@ -278,9 +294,9 @@ pub(crate) fn init_local_timer() {
     }
 }
 
-/// Counts TSC ticks over 20 ms of HPET time.
-fn calibrate_tsc(h: crate::drivers::hpet::Hpet) -> u64 {
-    h.enable();
+/// Counts TSC ticks over 20 ms of HPET time. The HPET is counting from
+/// discovery ([`super::init_interrupts`]).
+pub(super) fn calibrate_tsc(h: crate::drivers::hpet::Hpet) -> u64 {
     let want = h.ticks(20_000_000);
     let (c0, t0) = (h.counter(), rdtsc());
     let mut c1 = c0;

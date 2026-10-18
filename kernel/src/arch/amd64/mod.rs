@@ -83,6 +83,9 @@ pub(crate) fn init_interrupts(acpi: Option<&System>, config: &Config<'_>) -> Res
     let hpet = acpi.and_then(|s| s.tables.hpet()).and_then(|t| {
         let va = mm::map_phys(t.base.address, mm::PAGE, MapKind::Device)?;
         let h = Hpet::new(va)?;
+        // Started here, not only by TSC calibration: the TSC may come from
+        // CPUID or the PIT, and the HPET's other users need it counting.
+        h.enable();
         println!(
             "hpet: at {:#x}, {} MHz, {} comparators",
             t.base.address,
@@ -92,7 +95,12 @@ pub(crate) fn init_interrupts(acpi: Option<&System>, config: &Config<'_>) -> Res
         Some(h)
     });
     *HPET.lock() = hpet;
-    apic::init_timer(hpet)
+    let force = match config.get("tsc") {
+        Some("hpet") => Some(apic::TscSource::Hpet),
+        Some("pit") => Some(apic::TscSource::Pit),
+        _ => None,
+    };
+    apic::init_timer(hpet, force)
 }
 
 /// Remaps the 8259s clear of the exception vectors and masks every input.
@@ -206,7 +214,27 @@ pub(crate) const KTESTS: &[(&str, TestFn)] = &[
     ("cpu: SMAP on every CPU", protect::ktests::smap),
     ("cpu: UMIP on every CPU", protect::ktests::umip),
     ("ioapic: HPET interrupt delivered", hpet_through_ioapic),
+    ("clock: TSC frequency agrees with the HPET", tsc_matches_hpet),
 ];
+
+/// The TSC frequency the clock runs on is within 1% of a fresh measurement
+/// against the HPET. With `tsc=pit` this checks the PIT calibration.
+fn tsc_matches_hpet() -> crate::port::ktest::TestResult {
+    use crate::port::ktest::Fail;
+
+    let h = (*HPET.lock()).ok_or(Fail::Skipped("no HPET"))?;
+    let (used, measured) = (apic::tsc_hz(), apic::calibrate_tsc(h));
+    println!(
+        "ktest: TSC {} kHz in use, {} kHz against the HPET",
+        used / 1000,
+        measured / 1000
+    );
+    if used.abs_diff(measured) * 100 <= measured {
+        Ok(())
+    } else {
+        Err("more than 1% apart".into())
+    }
+}
 
 /// An HPET comparator raises an edge on an I/O APIC input, which must
 /// arrive at the GSI's vector: the external interrupt path end to end.

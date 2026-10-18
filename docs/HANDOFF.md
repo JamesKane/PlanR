@@ -1,11 +1,11 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-18, after slice 7.
+2026-10-18, after slice 8.
 
 ## State
 
-- **Phase:** P1 (boot and kernel bring-up). Slices 1–7 are done and
+- **Phase:** P1 (boot and kernel bring-up). Slices 1–8 are done and
   committed, one commit per slice:
   1. `5905e4d` 9boot loads the kernel; it boots on amd64 and arm64.
   2. `a2cb1f7` trap vectors, fault fixups, backtraces, in-kernel tests.
@@ -14,8 +14,10 @@ Where work stands, for picking it up in a new session. Last updated
   5. `142373e` framebuffer console and persistent log ring.
   6. `a4ee281` CPU protections: SMEP/SMAP/UMIP on amd64, PAN on arm64.
      BTI is deferred; see below.
-  7. MCFG, PPTT and IORT parsing in `lib/acpi` (`tables.rs`, `pptt.rs`,
+  7. `ef81e22` MCFG, PPTT and IORT parsing in `lib/acpi` (`tables.rs`, `pptt.rs`,
      `iort.rs`), with host tests and a boot-report summary.
+  8. PIT fallback for TSC calibration (`drivers/pit.rs`); `tsc=pit`
+     forces it.
 - **Tree:** clean. `cargo xtask ci` is green: fmt, pedantic clippy with
   `-D warnings`, the dependency check, host tests, and every QEMU boot
   test on every profile.
@@ -26,15 +28,13 @@ Where work stands, for picking it up in a new session. Last updated
 
 In the suggested order:
 
-1. **PIT fallback** for TSC calibration when there is no HPET (the Ryzen
-   may not expose one).
-2. **Backtrace symbolization:** backtraces currently print bare addresses.
-3. **arm64 stack-overflow reporting:** the guard page faults, but with no
+1. **Backtrace symbolization:** backtraces currently print bare addresses.
+2. **arm64 stack-overflow reporting:** the guard page faults, but with no
    IST equivalent the handler recurses on the same stack. Also add a guard
    page below the boot CPU's stack.
-4. **ACPI dump corpus** in `oracle/acpi-corpus`: QEMU on both arches now,
+3. **ACPI dump corpus** in `oracle/acpi-corpus`: QEMU on both arches now,
    then the boards.
-5. **Reference boards:** check SMP, the CPU protections, the framebuffer
+4. **Reference boards:** check SMP, the CPU protections, the framebuffer
    console and log-ring survival on the Orange Pi 6 Plus and the Ryzen.
 
 ## Things to know
@@ -71,6 +71,11 @@ In the suggested order:
 - **Shell quirk:** `ls` is aliased to eza; use `command ls` in scripts.
 
 ## Open caveats
+
+- TSC calibration falls back to the PIT, but some recent Intel platforms
+  clock-gate the 8254 by default. If a board has neither an HPET nor a
+  working PIT, add the ACPI PM timer (FADT `X_PM_TMR_BLK`) as a further
+  source; the kernel reports the failure rather than guessing.
 
 - Whether the log ring survives a warm reset on real hardware is untested.
   The Ryzen may retrain its memory and clear it, and either firmware may

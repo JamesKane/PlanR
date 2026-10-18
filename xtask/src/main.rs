@@ -237,6 +237,16 @@ const BOOT_TESTS: &[BootTest] = &[
         only: Some(Arch::Amd64),
         machine: FOUR_CPUS,
     },
+    // TSC calibration against the PIT, the fallback for machines with no
+    // HPET (the in-kernel tests cross-check it against the HPET).
+    BootTest {
+        name: "pit-calibration",
+        config: "# Plan R test image: TSC calibrated by the PIT\ntest=1\ntsc=pit\n",
+        expect: Expect::Ok(&["clock: TSC", "(Pit)"]),
+        every_profile: false,
+        only: Some(Arch::Amd64),
+        machine: FOUR_CPUS,
+    },
     // A deliberate fatal page fault must produce a full trap report.
     BootTest {
         name: "trap",

@@ -135,7 +135,16 @@ its ITS device ID. Walks over both graph tables are bounded, so a cyclic
 table ends them. Host tests cover each table, including cycles and bad
 references; the kernel's boot report summarizes all three.
 
-**Remaining:** PIT fallback for TSC calibration without an HPET;
+**Eighth slice done:** a PIT fallback for TSC calibration. The TSC
+frequency comes from CPUID, else the HPET, else a 50 ms one-shot count on
+PIT channel 2 (whose gate and output sit on port 0x61); a PIT that does
+not count is reported, not trusted. `tsc=hpet` or `tsc=pit` forces a
+source, and the `pit-calibration` boot test uses the latter. An in-kernel
+test checks that the frequency in use is within 1% of a fresh HPET
+measurement. The HPET now starts counting when it is found, not only when
+it calibrates the TSC.
+
+**Remaining:**
 BTI once the toolchain can emit landing pads; backtrace symbolization;
 overflow reporting on arm64 (the guard page faults, but with no IST
 equivalent the fault handler recurses on the same stack) and a guard for
