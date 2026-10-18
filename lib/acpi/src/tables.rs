@@ -622,6 +622,29 @@ mod tests {
         assert_eq!(g.virtual_el2.unwrap().gsiv, 28);
     }
 
+    /// QEMU q35: one window, segment 0, buses 0-255 at `0xb000_0000`; plus
+    /// a second segment whose window starts at bus 0x80.
+    #[test]
+    fn mcfg_windows() {
+        let mut body = vec![0u8; 8];
+        for (base, seg, start, end) in [(0xb000_0000u64, 0u16, 0u8, 0xffu8), (0x40_0000_0000, 1, 0x80, 0x8f)] {
+            body.extend(base.to_le_bytes());
+            body.extend(seg.to_le_bytes());
+            body.extend([start, end, 0, 0, 0, 0]);
+        }
+        let m = system(&[sdt(*b"MCFG", 1, &body)]);
+        let e: Vec<_> = Acpi::new(&m, 0x1000).unwrap().mcfg().collect();
+        assert_eq!(e.len(), 2);
+        assert_eq!(e[0].window(), (0xb000_0000, 256 << 20));
+        assert_eq!(e[0].config_address(0, 1, 0), Some(0xb000_8000));
+        assert_eq!(e[0].config_address(1, 0, 7), Some(0xb010_7000));
+        assert_eq!(e[0].config_address(0, 32, 0), None);
+        assert_eq!(e[1].segment, 1);
+        assert_eq!(e[1].window(), (0x40_0000_0000 + (0x80 << 20), 16 << 20));
+        assert_eq!(e[1].config_address(0x81, 0, 0), Some(0x40_0000_0000 + (0x81 << 20)));
+        assert_eq!(e[1].config_address(0x7f, 0, 0), None);
+    }
+
     #[test]
     fn madt_stops_on_zero_length_entry() {
         let mut body = vec![0u8; 8];
@@ -653,6 +676,50 @@ mod tests {
         let (reg, value) = Acpi::new(&m, 0x1000).unwrap().fadt().unwrap().reset().unwrap();
         assert_eq!((reg.space, reg.address, value), (AddressSpace::SystemIo, 0xcf9, 6));
     }
+}
+
+/// One PCI Express enhanced configuration (ECAM) window from the MCFG.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McfgEntry {
+    /// The ECAM base: where bus 0 of the segment would be, even when the
+    /// window starts at a later bus.
+    pub base: u64,
+    pub segment: u16,
+    pub bus_start: u8,
+    pub bus_end: u8,
+}
+
+impl McfgEntry {
+    /// The physical address and length of the window's buses.
+    #[must_use]
+    pub fn window(&self) -> (u64, u64) {
+        let buses = u64::from(self.bus_end.saturating_sub(self.bus_start)) + 1;
+        (self.base + (u64::from(self.bus_start) << 20), buses << 20)
+    }
+
+    /// The physical address of a function's 4 KiB configuration space, if
+    /// the window covers its bus.
+    #[must_use]
+    pub fn config_address(&self, bus: u8, device: u8, function: u8) -> Option<u64> {
+        if !(self.bus_start..=self.bus_end).contains(&bus) || device >= 32 || function >= 8 {
+            return None;
+        }
+        Some(self.base + (u64::from(bus) << 20 | u64::from(device) << 15 | u64::from(function) << 12))
+    }
+}
+
+/// The ECAM windows listed in an MCFG (PCI Firmware Specification 3.3
+/// §4.1.2): 8 reserved bytes after the header, then 16-byte entries.
+pub fn mcfg_entries(t: Sdt<'_>) -> impl Iterator<Item = McfgEntry> + '_ {
+    let body = t.bytes().get(44..).unwrap_or(&[]);
+    body.as_chunks::<16>().0.iter().filter_map(|e| {
+        Some(McfgEntry {
+            base: u64_at(e, 0)?,
+            segment: u16_at(e, 8)?,
+            bus_start: e[10],
+            bus_end: e[11],
+        })
+    })
 }
 
 /// HPET description table (IA-PC HPET specification §3.2.4).

@@ -125,8 +125,17 @@ user-access read works. **BTI is deferred:** it needs `bti` landing pads,
 which the stable toolchain cannot emit (`-Z branch-protection` is nightly
 only), and the prebuilt `core` has none.
 
-**Remaining:** MCFG, PPTT and
-IORT parsing; PIT fallback for TSC calibration without an HPET;
+**Seventh slice done:** MCFG, PPTT and IORT parsing in `lib/acpi`. MCFG
+gives the ECAM windows and each function's configuration-space address.
+PPTT gives each processor's path through cores, clusters and packages
+and the caches it can use, with levels counted outwards and shared caches
+listed once. IORT decodes ITS groups, SMMUs, root complexes and named
+components, and follows ID mappings to give a device's SMMU stream ID and
+its ITS device ID. Walks over both graph tables are bounded, so a cyclic
+table ends them. Host tests cover each table, including cycles and bad
+references; the kernel's boot report summarizes all three.
+
+**Remaining:** PIT fallback for TSC calibration without an HPET;
 BTI once the toolchain can emit landing pads; backtrace symbolization;
 overflow reporting on arm64 (the guard page faults, but with no IST
 equivalent the fault handler recurses on the same stack) and a guard for

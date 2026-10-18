@@ -7,13 +7,17 @@
 
 #![cfg_attr(not(test), no_std)]
 
+mod iort;
+mod pptt;
 mod tables;
 
 use core::fmt;
 
+pub use iort::{IdMapping, Iort, IortKind, IortNode, ItsIds};
+pub use pptt::{CacheKind, CacheNode, Pptt, PpttNode, ProcessorFlags, ProcessorNode};
 pub use tables::{
-    AddressSpace, Dbg2Device, Fadt, Gas, Gtdt, Hpet, Madt, MadtEntry, MpsFlags, Polarity, PsciConduit, Spcr, TimerIrq,
-    Trigger, UartKind, dbg2_devices,
+    AddressSpace, Dbg2Device, Fadt, Gas, Gtdt, Hpet, Madt, MadtEntry, McfgEntry, MpsFlags, Polarity, PsciConduit, Spcr,
+    TimerIrq, Trigger, UartKind, dbg2_devices, mcfg_entries,
 };
 
 /// Read access to physical memory.
@@ -57,6 +61,9 @@ impl Signature {
     pub const DBG2: Signature = Signature(*b"DBG2");
     pub const HPET: Signature = Signature(*b"HPET");
     pub const GTDT: Signature = Signature(*b"GTDT");
+    pub const MCFG: Signature = Signature(*b"MCFG");
+    pub const PPTT: Signature = Signature(*b"PPTT");
+    pub const IORT: Signature = Signature(*b"IORT");
 }
 
 impl fmt::Display for Signature {
@@ -279,6 +286,21 @@ impl<'m, M: PhysMem> Acpi<'m, M> {
 
     pub fn dbg2(&self) -> impl Iterator<Item = Dbg2Device<'m>> + 'm {
         self.find(Signature::DBG2).into_iter().flat_map(dbg2_devices)
+    }
+
+    /// The PCI Express ECAM windows.
+    pub fn mcfg(&self) -> impl Iterator<Item = McfgEntry> + 'm {
+        self.find(Signature::MCFG).into_iter().flat_map(mcfg_entries)
+    }
+
+    #[must_use]
+    pub fn pptt(&self) -> Option<Pptt<'m>> {
+        self.find(Signature::PPTT).map(Pptt::new)
+    }
+
+    #[must_use]
+    pub fn iort(&self) -> Option<Iort<'m>> {
+        self.find(Signature::IORT).map(Iort::new)
     }
 }
 
