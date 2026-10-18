@@ -73,6 +73,7 @@ Ground truth comes from AbyssBSD's board notes
 | Storage | NVMe behind SMMUv3 (firmware leaves bypass) | NVMe works before the IOMMU subsystem (P9) |
 | Network | 2× **RTL8126 5 GbE** | The only wired NIC, so an RTL8125/8126 driver is required for P7 |
 | USB | 10 xHCI hosts as ACPI `PNP0D10` (**not PCI**) | xHCI attaches via ACPI as well as PCI |
+| RAM across reset | **Cleared on every reset**, even PSCI `SYSTEM_RESET2` (warm): the log ring and 12 canary pages spread over 0x85200000–0x13fe00000 all came back zeroed (2026-10-18) | The persistent log ring cannot work here; the serial header is the post-mortem console |
 | Watchdog | SBSA generic watchdog; writes to the refresh frame **don't refresh**; use `WOR` | Bring it up early: hangs become resets |
 | Console | 10-pin 3.3 V debug header: UART2 pin 1 TX, pin 3 RX, pin 5 GND. GOP 1920×1080 | USB-TTL adapter is the bring-up console |
 | Accelerators | Immortalis-G720 GPU (Panthor/CSF), Linlon display, Zhouyi NPU, Mali-V codec, HDA | P9 targets (§6) |

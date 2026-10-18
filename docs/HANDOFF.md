@@ -45,13 +45,23 @@ In the suggested order:
      the DBG2 PL011 console chosen, and the 1920×1080 framebuffer at
      scale 1. The log ring attached and all 17 in-kernel tests passed.
      Serial output itself is unobserved (no USB-TTL adapter yet).
-   - **Still to do there:** log-ring survival across a warm reset. Plan R
-     has to boot twice in a row, but BootNext covers only one boot. One
-     way: 9boot sets BootNext to BootCurrent when `test=reset` asks for a
-     second boot.
+   - **Log ring on the Orange Pi: not possible.** RAM is cleared on every
+     reset, even PSCI `SYSTEM_RESET2` (warm). The `hwreset.ini` run found
+     the ring and all 12 canary pages zeroed, so this is a board
+     limitation (`docs/HARDWARE.md`). The serial header is that board's
+     post-mortem console. The test path built for it stays:
+     - 9boot's BootNext second boot, with a marker in `last.log` against
+       loops;
+     - the lost-ring and canary report;
+     - the warm PSCI reset;
+     - the ring cache flush.
    - **Ryzen:** not yet run. Write `build/amd64/planr.img` to the same
      stick, run `boot-once.sh` on Fedora, and reboot. The Ryzen has no
-     serial, so the screen is the console.
+     serial, so the screen is the console, and the log ring is the main
+     post-mortem path; check it with `hwreset.ini`. Its FADT reset
+     register is an SMI command (port 0xB2, value 0xBE), and the
+     fallback writes 6 (hard reset) to port 0xCF9. If RAM does not
+     survive, try 4 (soft reset) first.
 
 ## Things to know
 
