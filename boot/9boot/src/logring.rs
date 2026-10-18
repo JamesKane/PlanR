@@ -20,9 +20,10 @@ const PAGE: u64 = 4096;
 const ECHO_MAX: usize = 120;
 
 /// Saves the previous boot's ring, if one survived, and reserves a new one.
+/// Returns the ring and this boot's number in it (1 for a fresh ring).
 /// Problems are reported and leave the kernel without a ring; none stops
 /// the boot.
-pub(crate) fn setup(st: &SystemTable<Boot>, root: &File<'_>) -> Option<LogRing> {
+pub(crate) fn setup(st: &SystemTable<Boot>, root: &File<'_>) -> Option<(LogRing, u64)> {
     let bs = st.boot_services();
     let mut buf = vec![0u8; bs.memory_map_size() * 2 + 4096];
     let free: Vec<(u64, u64)> = bs
@@ -55,7 +56,7 @@ pub(crate) fn setup(st: &SystemTable<Boot>, root: &File<'_>) -> Option<LogRing> 
     let mut ring = open(phys)?;
     let boot = previous.map_or(1, |(_, f)| f.boot + 1);
     ring.reset(boot);
-    Some(LogRing { phys, size: RING_BYTES })
+    Some((LogRing { phys, size: RING_BYTES }, boot))
 }
 
 /// A ring view of the block at `phys`.

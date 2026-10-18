@@ -149,6 +149,32 @@ pub mod guid {
     pub const ACPI_20_TABLE: Guid = Guid::new(0x8868_e871, 0xe4f1, 0x11d3, 0xbc22, 0x0080_c73c_8881);
     pub const ACPI_10_TABLE: Guid = Guid::new(0xeb9d_2d30, 0x2d88, 0x11d3, 0x9a16, 0x0090_273f_c14d);
     pub const SMBIOS3_TABLE: Guid = Guid::new(0xf2fd_1544, 0x9794, 0x4a2c, 0x992e, 0xe5bb_cf20_e394);
+    /// `EFI_GLOBAL_VARIABLE`: the namespace of `BootNext`, `BootCurrent`
+    /// and the other boot manager variables.
+    pub const GLOBAL_VARIABLE: Guid = Guid::new(0x8be4_df61, 0x93ca, 0x11d2, 0xaa0d, 0x00e0_9803_2b8c);
+}
+
+/// Variable attributes for [`RuntimeServices::set_variable`].
+pub mod var {
+    pub const NON_VOLATILE: u32 = 1;
+    pub const BOOTSERVICE_ACCESS: u32 = 2;
+    pub const RUNTIME_ACCESS: u32 = 4;
+}
+
+/// `s`, which must be ASCII, as a NUL-terminated UCS-2 string of `N`
+/// units (its length plus one): a variable name known at compile time.
+#[must_use]
+pub const fn ucs2<const N: usize>(s: &str) -> [u16; N] {
+    let b = s.as_bytes();
+    assert!(b.len() + 1 == N, "N must be the length plus one");
+    let mut out = [0u16; N];
+    let mut i = 0;
+    while i < b.len() {
+        assert!(b[i].is_ascii(), "ASCII only");
+        out[i] = b[i] as u16;
+        i += 1;
+    }
+    out
 }
 
 /// A protocol interface that can be found with `LocateProtocol`.
@@ -492,6 +518,33 @@ pub enum ResetType {
 pub struct RuntimeServices<'a>(&'a raw::RuntimeServices);
 
 impl RuntimeServices<'_> {
+    /// Reads variable `name` (NUL-terminated, see [`ucs2`]) into `buf`, and
+    /// returns its attributes and length.
+    pub fn get_variable(&self, name: &[u16], vendor: &Guid, buf: &mut [u8]) -> Result<(u32, usize)> {
+        assert_eq!(name.last(), Some(&0), "variable names are NUL-terminated");
+        let (mut attrs, mut len) = (0, buf.len());
+        // SAFETY: `name` is NUL-terminated; `buf` has `len` writable bytes.
+        unsafe {
+            (self.0.get_variable)(
+                name.as_ptr(),
+                vendor,
+                &raw mut attrs,
+                &raw mut len,
+                buf.as_mut_ptr().cast(),
+            )
+        }
+        .to_result()?;
+        Ok((attrs, len))
+    }
+
+    /// Writes variable `name` (NUL-terminated) with attributes `attrs`
+    /// ([`var`]).
+    pub fn set_variable(&self, name: &[u16], vendor: &Guid, attrs: u32, data: &[u8]) -> Result<()> {
+        assert_eq!(name.last(), Some(&0), "variable names are NUL-terminated");
+        // SAFETY: `name` is NUL-terminated; `data` is readable.
+        unsafe { (self.0.set_variable)(name.as_ptr(), vendor, attrs, data.len(), data.as_ptr().cast()) }.to_result()
+    }
+
     /// Resets or powers off the machine.
     pub fn reset(&self, ty: ResetType, status: Status) -> ! {
         // SAFETY: ResetSystem does not return.
@@ -510,6 +563,12 @@ mod tests {
             guid::ACPI_20_TABLE.data4,
             [0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81]
         );
+    }
+
+    #[test]
+    fn ucs2_names() {
+        const NAME: [u16; 9] = ucs2("BootNext");
+        assert_eq!(&NAME[..], &"BootNext\0".encode_utf16().collect::<Vec<_>>()[..]);
     }
 
     #[test]

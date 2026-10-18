@@ -11,6 +11,7 @@
 
 extern crate alloc;
 
+mod bootnext;
 mod handoff;
 mod logring;
 mod memmap;
@@ -142,6 +143,13 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     // Before anything else allocates much: the previous ring is in free
     // memory until it is reserved.
     let log_ring = logring::setup(st, &root);
+    // The first boot of a reset test arranges the second.
+    if log_ring.is_some_and(|(_, boot)| boot == 1) && bootnext::config_is(&config, "test", "reset") {
+        match bootnext::repeat(st) {
+            Ok(n) => println!(st, "9boot: BootNext = {n:04X}, so Plan R starts again after the reset"),
+            Err(e) => println!(st, "9boot: cannot set BootNext ({e}); the reset may boot another OS"),
+        }
+    }
 
     let kernel = load_kernel(st, &kernel_file)?;
     let elf = &kernel.elf;
@@ -175,7 +183,7 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     info.rsdp = st.config_table(guid::ACPI_20_TABLE).map_or(0, |p| p as u64);
     info.uefi_system_table = st_phys;
     info.set_framebuffer(framebuffer(st));
-    info.set_log_ring(log_ring);
+    info.set_log_ring(log_ring.map(|(r, _)| r));
     info.kernel_phys = kernel.phys;
     info.kernel_size = kernel.size;
     info.config = Slice::new(phys_to_virt(config_phys) as *const u8, config.len());

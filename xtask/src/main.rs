@@ -319,6 +319,7 @@ const BOOT_TESTS: &[BootTest] = &[
         name: "log-ring",
         config: "# Plan R log ring test image\ntest=reset\n",
         expect: Expect::Ok(&[
+            "9boot: BootNext = ",
             "9boot: saved boot 1's log",
             "9boot: it ends: ktest: warm reset to check the log ring",
             "log: ring at",

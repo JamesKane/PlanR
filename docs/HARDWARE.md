@@ -127,6 +127,13 @@ failed boot falls back to Fedora on reset.
    `--create-only` (BootOrder untouched), and sets `BootNext`.
 4. Reboot. Plan R runs once; the next reset boots the usual OS.
 
+For log-ring survival use `scripts/hwreset.ini` instead. Its first boot
+resets warm, and 9boot, seeing `test=reset` on a fresh ring, has set
+`BootNext` to the entry it was started from, so Plan R boots a second
+time. That boot saves the first boot's log to `\planr\last.log` on the
+stick and halts showing `log: … boot 2`. Read the file back on brimstone
+with the stick mounted read-only.
+
 ### Storage safety rule
 
 Any `xtask` command that writes physical media (P7 `deploy`) must refuse
