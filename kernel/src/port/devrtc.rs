@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use abi::{DMDIR, OpenMode, QTDIR, QTFILE, Qid};
 
-use crate::port::chan::Chan;
+use crate::port::chan::{Chan, Walkqid};
 use crate::port::clock;
 use crate::port::dev::{self, Dev, Entry};
 use crate::port::error::{EBADARG, EBADSPEC, EPERM, Result};
@@ -82,8 +82,8 @@ impl Dev for Rtc {
         Ok(Chan::new(&RTC, 0, DIR, String::from("#r")))
     }
 
-    fn walk(&self, c: &Chan, name: &str) -> Result<Chan> {
-        dev::walk_gen(c, name, &dirgen)
+    fn walk(&self, c: &Chan, names: &[&str]) -> Result<Walkqid> {
+        dev::walk_gen(c, names, &dirgen, &dev::flat(DIR))
     }
 
     fn stat(&self, c: &Chan) -> Result<Vec<u8>> {

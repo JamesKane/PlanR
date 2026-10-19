@@ -278,11 +278,15 @@ fn srv() -> Check {
     // a posted srv refuses.
     fails(
         r::create(c"#s/tproc", WRITE, 0o600),
-        b"srv file already exists",
+        b"'#s/tproc' srv file already exists",
         "a second #s/tproc",
     )?;
     r::remove(c"#s/tproc").map_err(|_| "cannot remove #s/tproc")?;
-    fails(r::open(c"#s/tproc", RDWR), b"file does not exist", "a removed srv")?;
+    fails(
+        r::open(c"#s/tproc", RDWR),
+        b"'#s/tproc' file does not exist",
+        "a removed srv",
+    )?;
     close(opened)?;
     close(other)
 }
@@ -336,7 +340,11 @@ fn groups() -> Check {
         r::create(var, WRITE, 0o666).map(drop).map_err(|_| "create failed")
     })?;
     reap()?;
-    fails(r::open(var, READ), b"file does not exist", "an RFENVG child's variable")?;
+    fails(
+        r::open(var, READ),
+        b"'#e/tprocvar' file does not exist",
+        "an RFENVG child's variable",
+    )?;
     child(F::empty(), || {
         r::create(var, WRITE, 0o666).map(drop).map_err(|_| "create failed")
     })?;

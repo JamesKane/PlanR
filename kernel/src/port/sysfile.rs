@@ -13,25 +13,37 @@ use core::sync::atomic::Ordering;
 
 use abi::{Access, BindFlags, Dir, OpenFlags, OpenMode, Whence};
 
-use crate::port::chan::{self, Chan, Walked, last_elem};
+use crate::port::chan::{self, Amode, Chan};
 use crate::port::dev::Dev;
 use crate::port::devmnt;
 use crate::port::devpipe::PIPE;
 use crate::port::error::{
-    EBADARG, EBADCHAR, EBADSTAT, EBADUSEFD, EISDIR, EISSTREAM, ENOATTACH, ENOTDIR, ESHORTSTAT, Result,
+    EBADARG, EBADCHAR, EBADSTAT, EBADUSEFD, EGREG, EISDIR, EISMTPT, EISSTREAM, ENOATTACH, ESHORTSTAT, Error, Result,
 };
 use crate::port::pgrp::{self, NameSpace};
 use crate::port::uaccess;
 
 /// The most bytes a read returns, and the size of a write's pieces.
 pub(crate) const IO_MAX: usize = 128 * 1024;
-/// The longest file name a call takes.
-pub(crate) const NAME_MAX: usize = 1024;
+/// A file name a call takes is shorter than this, as in Plan 9, so it
+/// fits a 9P string.
+pub(crate) const NAME_MAX: usize = 1 << 16;
 
-/// A name argument: NUL-terminated UTF-8.
+/// A name argument: NUL-terminated UTF-8 (Plan 9 takes any bytes; Plan
+/// R's names are text).
 pub(crate) fn name_arg(p: u64) -> Result<String> {
     let b = uaccess::copy_in_str(p, NAME_MAX)?;
-    String::from_utf8(b).map_err(|_| EBADCHAR.into())
+    if b.len() >= NAME_MAX {
+        return Err("name too long".into());
+    }
+    String::from_utf8(b).map_err(|e| {
+        let mut s = alloc::format!(
+            "{EBADCHAR}: {}",
+            chan::quote(&String::from_utf8_lossy(e.as_bytes()), false)
+        );
+        chan::truncate(&mut s, 127);
+        s.into()
+    })
 }
 
 fn mode_arg(raw: u64) -> Result<OpenMode> {
@@ -131,13 +143,18 @@ pub(crate) fn write(fd: u64, buf: u64, n: u64, offset: Option<u64>) -> Result<u6
     Ok(done as u64)
 }
 
+/// Plan 9's `pathlast`: the last element of a name, empty for `/`.
+fn pathlast(name: &str) -> &str {
+    name.rfind('/').map_or(name, |i| &name[i + 1..])
+}
+
 /// The chan's stat, named by the last element of its name, as Plan 9's
-/// `dirsetname` does.
+/// `sysstat` has `dirsetname` do.
 fn stat_of(c: &Chan) -> Result<Vec<u8>> {
     let b = c.dev.stat(c)?;
     let (d, _) = Dir::decode(&b).ok_or(EBADSTAT)?;
     let d = Dir {
-        name: last_elem(&c.name),
+        name: pathlast(c.name()),
         ..d
     };
     let mut out = alloc::vec![0u8; d.size()];
@@ -162,15 +179,17 @@ pub(crate) fn stat(name: u64, buf: u64, n: u64) -> Result<u64> {
     let name = name_arg(name)?;
     let s = {
         let ns = NameSpace::current()?;
-        let w = chan::walk(&ns.names(), &name, true)?;
-        stat_of(&w.chan)?
+        let c = chan::namec(&ns.names(), &name, Amode::Access)?;
+        stat_of(&c)?
     };
     stat_out(&s, buf, n)
 }
 
-/// `fstat(fd, buf, n) -> n`
+/// `fstat(fd, buf, n) -> n`: the device's own stat, name and all, as
+/// Plan 9's.
 pub(crate) fn fstat(fd: u64, buf: u64, n: u64) -> Result<u64> {
-    let s = stat_of(&*chan_of(fd)?)?;
+    let c = chan_of(fd)?;
+    let s = c.dev.stat(&c)?;
     stat_out(&s, buf, n)
 }
 
@@ -188,8 +207,15 @@ fn stat_in(buf: u64, n: u64) -> Result<Vec<u8>> {
     }
 }
 
+/// Renaming a mount point is refused, as in Plan 9: which would it
+/// rename?
 fn wstat_chan(c: &Chan, b: &[u8]) -> Result<u64> {
     let (d, _) = Dir::decode(b).ok_or(EBADSTAT)?;
+    if c.ismtpt && !d.name.is_empty() {
+        let mut e = alloc::format!("{} {EISMTPT}", chan::quote(c.name(), true));
+        chan::truncate(&mut e, 127);
+        return Err(e.into());
+    }
     c.dev.wstat(c, &d)?;
     Ok(0)
 }
@@ -199,8 +225,8 @@ pub(crate) fn wstat(name: u64, buf: u64, n: u64) -> Result<u64> {
     let name = name_arg(name)?;
     let b = stat_in(buf, n)?;
     let ns = NameSpace::current()?;
-    let w = chan::walk(&ns.names(), &name, true)?;
-    wstat_chan(&w.chan, &b)
+    let c = chan::namec(&ns.names(), &name, Amode::Access)?;
+    wstat_chan(&c, &b)
 }
 
 /// `fwstat(fd, buf, n)`
@@ -240,12 +266,16 @@ pub(crate) fn seek(fd: u64, offset: u64, whence: u64) -> Result<u64> {
     Ok(new)
 }
 
-/// `remove(name)`
+/// `remove(name)`: not of a mount point, as in Plan 9 (which would it
+/// remove?).
 pub(crate) fn remove(name: u64) -> Result<u64> {
     let name = name_arg(name)?;
     let ns = NameSpace::current()?;
-    let w = chan::walk(&ns.names(), &name, true)?;
-    w.chan.dev.remove(&w.chan)?;
+    let c = chan::namec(&ns.names(), &name, Amode::Remove)?;
+    if c.ismtpt {
+        return Err(EISMTPT.into());
+    }
+    c.dev.remove(&c)?;
     Ok(0)
 }
 
@@ -257,7 +287,7 @@ pub(crate) fn fd2path(fd: u64, buf: u64, n: u64) -> Result<u64> {
     if n == 0 {
         return Err(EBADARG.into());
     }
-    let mut s = c.name.as_bytes().to_vec();
+    let mut s = c.name().as_bytes().to_vec();
     s.truncate(n - 1);
     s.push(0);
     uaccess::copy_out(buf, &s)?;
@@ -279,8 +309,9 @@ pub(crate) fn pipe(fds: u64) -> Result<u64> {
         flags: OpenFlags::empty(),
     };
     let dir = PIPE.attach("")?;
-    let a = PIPE.open(PIPE.walk(&dir, "data")?, rw)?;
-    let b = PIPE.open(PIPE.walk(&dir, "data1")?, rw)?;
+    let end = |name| PIPE.walk(&dir, &[name])?.clone.ok_or_else(|| Error::from(EGREG));
+    let a = PIPE.open(end("data")?, rw)?;
+    let b = PIPE.open(end("data1")?, rw)?;
     let fgrp = pgrp::fgrp()?;
     let fa = fgrp.add(a, false)?;
     let fb = match fgrp.add(b, false) {
@@ -305,11 +336,8 @@ pub(crate) fn chdir(name: u64) -> Result<u64> {
     let name = name_arg(name)?;
     let dot = {
         let ns = NameSpace::current()?;
-        chan::walk(&ns.names(), &name, false)?.chan
+        chan::namec(&ns.names(), &name, Amode::Todir)?
     };
-    if !dot.qid.is_dir() {
-        return Err(ENOTDIR.into());
-    }
     let old = pgrp::with_files(|f| core::mem::replace(&mut f.dot, dot))?;
     drop(old);
     Ok(0)
@@ -329,8 +357,8 @@ pub(crate) fn bind(name: u64, old: u64, flags: u64) -> Result<u64> {
     let flags = bind_flags(flags)?;
     let (name, old) = (name_arg(name)?, name_arg(old)?);
     let ns = NameSpace::current()?;
-    let new = chan::walk(&ns.names(), &name, true)?;
-    let old = chan::walk(&ns.names(), &old, false)?.chan;
+    let new = chan::namec(&ns.names(), &name, Amode::Bind)?;
+    let old = chan::namec(&ns.names(), &old, Amode::Mount)?;
     ns.pgrp().mount(&new, &old, flags, None)
 }
 
@@ -341,7 +369,7 @@ pub(crate) fn unmount(name: u64, old: u64) -> Result<u64> {
     let name = if name == 0 { None } else { Some(name_arg(name)?) };
     let old = name_arg(old)?;
     let ns = NameSpace::current()?;
-    let old = chan::walk(&ns.names(), &old, false)?.chan;
+    let old = chan::namec(&ns.names(), &old, Amode::Mount)?;
     let new = name.map(|n| chan::open(&ns.names(), &n, mode_read())).transpose()?;
     ns.pgrp().unmount(new.as_deref(), &old)?;
     drop(new);
@@ -359,26 +387,20 @@ fn mode_read() -> OpenMode {
 /// and mounts its tree `aname` (null for the default) on `old`, as `bind`
 /// would; `afd` is a file from `fauth`, or -1.
 pub(crate) fn mount(fd: u64, afd: u64, old: u64, flags: u64, aname: u64) -> Result<u64> {
-    let old = name_arg(old)?;
-    let aname = if aname == 0 { String::new() } else { name_arg(aname)? };
     let flags = bind_flags(flags)?;
+    let aname = if aname == 0 { String::new() } else { name_arg(aname)? };
+    chan::validname(&aname, true)?;
     let ns = NameSpace::current()?;
     if ns.pgrp().noattach() {
         return Err(ENOATTACH.into());
     }
     let c = chan_of(fd)?;
     let afile = if afd == u64::MAX { None } else { Some(chan_of(afd)?) };
-    let old = chan::walk(&ns.names(), &old, false)?.chan;
     let root = devmnt::attach(&c, afile.as_deref(), &aname)?;
-    let id = ns.pgrp().mount(
-        &Walked {
-            chan: root,
-            union: None,
-        },
-        &old,
-        flags,
-        Some(&aname),
-    )?;
+    drop(afile);
+    let old = name_arg(old)?;
+    let old = chan::namec(&ns.names(), &old, Amode::Mount)?;
+    let id = ns.pgrp().mount(&root, &old, flags, Some(&aname))?;
     // A mount closes the descriptor it was given, as Plan 9's does.
     drop(c);
     if let Ok(c) = pgrp::fgrp()?.close(fd) {

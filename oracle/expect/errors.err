@@ -1,17 +1,23 @@
-ls: nonesuch: file does not exist
-mkdir: can't create nonesuch/x: file does not exist
-rm: nonesuch: file does not exist
-rm: nonesuch: file does not exist
+ls: nonesuch: 'nonesuch' file does not exist
+mkdir: can't create nonesuch/x: 'nonesuch' file does not exist
+rm: nonesuch: 'nonesuch' file does not exist
+rm: nonesuch: 'nonesuch' file does not exist
 rm: full: directory not empty
-touch: nonesuch/x: cannot create: file does not exist
-touch: nonesuch: cannot wstat: file does not exist
-nonesuch: file does not exist
-nonesuch: file does not exist
-open: file does not exist
-du: nonesuch: file does not exist
-tail: nonesuch: file does not exist
-tee: cannot open nonesuch/x: file does not exist
-cp: can't stat nonesuch: file does not exist
-chmod: can't stat nonesuch: file does not exist
-mv: can't stat nonesuch: file does not exist
-cat: can't open nonesuch: file does not exist
+touch: nonesuch/x: cannot create: 'nonesuch' file does not exist
+touch: nonesuch: cannot wstat: 'nonesuch' file does not exist
+nonesuch: 'nonesuch' file does not exist
+nonesuch: 'nonesuch' file does not exist
+open: 'nonesuch' file does not exist
+du: nonesuch: 'nonesuch' file does not exist
+tail: nonesuch: 'nonesuch' file does not exist
+tee: cannot open nonesuch/x: 'nonesuch' file does not exist
+cp: can't stat nonesuch: 'nonesuch' file does not exist
+chmod: can't stat nonesuch: 'nonesuch' file does not exist
+mv: can't stat nonesuch: 'nonesuch' file does not exist
+cat: can't open nonesuch: 'nonesuch' file does not exist
+ls: full/nonesuch/x: 'full/nonesuch' does not exist
+ls: full/f/x: 'full/f' not a directory
+ls: /dev/cons/../null: '/dev/cons' not a directory
+touch: x/: cannot create: 'x/' create without DMDIR
+ls: #Z: unknown device in # filename
+/tmp: '/tmp' cannot exec directory

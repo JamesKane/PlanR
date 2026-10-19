@@ -20,7 +20,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use abi::{DMDIR, OpenMode, QTDIR, QTFILE, Qid};
 
-use crate::port::chan::Chan;
+use crate::port::chan::{Chan, Walkqid};
 use crate::port::dev::{self, Dev, EVE, Entry};
 use crate::port::error::{EBADCTL, EBADSPEC, ENONEXIST, EPERM, Result};
 use crate::port::lock::SpinLock;
@@ -143,8 +143,8 @@ impl Dev for Cons {
         Ok(Chan::new(&CONS, 0, qid(QDIR), String::from("#c")))
     }
 
-    fn walk(&self, c: &Chan, name: &str) -> Result<Chan> {
-        dev::walk_gen(c, name, &dirgen)
+    fn walk(&self, c: &Chan, names: &[&str]) -> Result<Walkqid> {
+        dev::walk_gen(c, names, &dirgen, &dev::flat(qid(QDIR)))
     }
 
     fn stat(&self, c: &Chan) -> Result<Vec<u8>> {

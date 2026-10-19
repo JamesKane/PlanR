@@ -15,11 +15,12 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use abi::{BindFlags, RforkFlags};
 
-use crate::port::chan::{Chan, Names, Walked};
+use crate::port::chan::{Chan, Names, Path};
+use crate::port::dev::Dev;
 use crate::port::devenv::Egrp;
 use crate::port::devmnt;
 use crate::port::devroot;
-use crate::port::error::{EBADFD, EMOUNT, ENOFD, ENONS, EUNMOUNT, Result};
+use crate::port::error::{EBADFD, EMOUNT, ENOFD, ENONS, EUNION, EUNMOUNT, Result};
 use crate::port::lock::SpinLock;
 use crate::port::proc::{self, Rgrp};
 
@@ -66,7 +67,7 @@ pub(crate) struct Entry {
 /// A mount point and the union mounted on it.
 #[derive(Debug)]
 struct Mhead {
-    from: Chan,
+    from: Arc<Chan>,
     members: Arc<[Mount]>,
 }
 
@@ -95,7 +96,7 @@ impl Pgrp {
             .lock()
             .iter()
             .map(|m| Mhead {
-                from: m.from.unopened(),
+                from: m.from.clone(),
                 members: m.members.clone(),
             })
             .collect();
@@ -110,21 +111,22 @@ impl Pgrp {
         self.noattach.load(Ordering::Relaxed)
     }
 
-    /// What is mounted on `c`, if it is a mount point.
-    pub(crate) fn lookup(&self, c: &Chan) -> Option<Arc<[Mount]>> {
+    /// Plan 9's `findmount`: if file `qid` of instance `devno` of `dev`
+    /// is a mount point, the mount point and what is mounted there.
+    pub(crate) fn findmount(&self, dev: &dyn Dev, devno: u32, qid: abi::Qid) -> Option<(Arc<Chan>, Arc<[Mount]>)> {
         self.mounts
             .lock()
             .iter()
-            .find(|m| m.from.same_file(c))
-            .map(|m| m.members.clone())
+            .find(|m| m.from.is(dev, devno, qid))
+            .map(|m| (m.from.clone(), m.members.clone()))
     }
 
     /// Mounts `new` on `old` as `flags` say, as Plan 9's `cmount`: in
     /// place of what is there, or before or after it in a union. `new` is
-    /// what walking its name gave, so a union there joins whole; `old` is
-    /// the mount point itself. Returns the mount's id.
-    pub(crate) fn mount(&self, new: &Walked, old: &Chan, flags: BindFlags, spec: Option<&str>) -> Result<u64> {
-        if new.chan.qid.is_dir() != old.qid.is_dir() {
+    /// what walking its name gave, so a union there (`new.union`) joins
+    /// whole; `old` is the mount point itself. Returns the mount's id.
+    pub(crate) fn mount(&self, new: &Chan, old: &Chan, flags: BindFlags, spec: Option<&str>) -> Result<u64> {
+        if new.qid.is_dir() != old.qid.is_dir() {
             return Err(EMOUNT.into());
         }
         let (before, after) = (flags.contains(BindFlags::BEFORE), flags.contains(BindFlags::AFTER));
@@ -150,7 +152,7 @@ impl Pgrp {
             None if union => Arc::from([Mount::new(Arc::new(old.unopened()), BindFlags::empty(), None)]),
             None => Arc::from([]),
         };
-        let first = Mount::new(Arc::new(new.chan.unopened()), flags, spec.map(Arc::from));
+        let first = Mount::new(Arc::new(new.unopened()), flags, spec.map(Arc::from));
         let id = first.id;
         // The rest of a union bound whole come after its first, in order.
         let order = if before { BindFlags::BEFORE } else { BindFlags::AFTER };
@@ -173,7 +175,7 @@ impl Pgrp {
             Some(core::mem::replace(&mut mounts[i].members, members))
         } else {
             mounts.push(Mhead {
-                from: old.unopened(),
+                from: Arc::new(old.unopened()),
                 members,
             });
             None
@@ -193,7 +195,7 @@ impl Pgrp {
             .filter(|(_, m)| m.id > last)
             .min_by_key(|(_, m)| m.id)
             .map(|(h, m)| Entry {
-                from: h.from.name.clone(),
+                from: String::from(h.from.name()),
                 mount: m.clone(),
             })
     }
@@ -211,7 +213,7 @@ impl Pgrp {
                 let at = members
                     .iter()
                     .position(|m| m.to.same_file(new) || devmnt::transport(&m.to).is_some_and(|t| t.same_file(new)))
-                    .ok_or(EUNMOUNT)?;
+                    .ok_or(EUNION)?;
                 let left: Arc<[Mount]> = members
                     .iter()
                     .enumerate()
@@ -370,13 +372,14 @@ impl Files {
     /// `/`, there as the current directory too, no descriptors and an
     /// empty environment.
     pub(crate) fn boot() -> Result<Files> {
-        let slash = devroot::attach_root()?.renamed("/");
+        let mut slash = devroot::attach_root()?;
+        slash.path = Path::new(String::from("/"));
         Ok(Files {
             pgrp: Pgrp::new(),
             fgrp: Fgrp::new(),
             egrp: Egrp::new(),
             rgrp: Arc::new(Rgrp::new()),
-            dot: slash.renamed("/"),
+            dot: slash.unopened(),
             slash,
         })
     }

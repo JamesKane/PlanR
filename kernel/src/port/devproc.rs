@@ -26,7 +26,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use abi::{Access, BindFlags, DMDIR, OpenMode, QTDIR, QTFILE, Qid};
 
-use crate::port::chan::Chan;
+use crate::port::chan::{Chan, Walkqid};
 use crate::port::clock;
 use crate::port::dev::{self, Dev, EVE, Entry};
 use crate::port::devmnt;
@@ -150,16 +150,27 @@ impl Dev for ProcDev {
         Ok(Chan::new(&PROC, 0, ROOT, String::from("#p")))
     }
 
-    fn walk(&self, c: &Chan, name: &str) -> Result<Chan> {
-        if c.qid.path == ROOT.path {
-            let pid: u64 = name.parse().map_err(|_| ENONEXIST)?;
-            if name != alloc::format!("{pid}") || proc::find(pid).is_none() {
-                return Err(ENONEXIST.into());
+    fn walk(&self, c: &Chan, names: &[&str]) -> Result<Walkqid> {
+        dev::devwalk(c, names, |c, name| {
+            if name == ".." {
+                return Ok(Some(c.child(ROOT, name)));
             }
-            return Ok(c.child(dir_qid(pid), name));
-        }
-        proc_of(c)?;
-        dev::walk_gen(c, name, &proc_gen)
+            if c.qid.path == ROOT.path {
+                // Only the pid as it is listed.
+                let Ok(pid) = name.parse::<u64>() else {
+                    return Ok(None);
+                };
+                if name != alloc::format!("{pid}") || proc::find(pid).is_none() {
+                    return Ok(None);
+                }
+                return Ok(Some(c.child(dir_qid(pid), name)));
+            }
+            proc_of(c)?;
+            Ok((0..)
+                .map_while(|i| proc_gen(c, i))
+                .find(|e| e.name == name)
+                .map(|e| c.child(e.qid, name)))
+        })
     }
 
     fn stat(&self, c: &Chan) -> Result<Vec<u8>> {
@@ -314,7 +325,7 @@ fn fds(p: &Proc) -> Result<Vec<u8>> {
     let (dot, fgrp) = {
         let f = p.files().lock();
         let f = f.as_ref().ok_or(EPROCDIED)?;
-        (f.dot.name.clone(), f.fgrp.clone())
+        (String::from(f.dot.name()), f.fgrp.clone())
     };
     let mut s = alloc::format!("{dot}\n");
     for (fd, c) in fgrp.list() {
@@ -333,7 +344,7 @@ fn fds(p: &Proc) -> Result<Vec<u8>> {
             c.qid.ty,
             0,
             c.offset.load(core::sync::atomic::Ordering::Relaxed),
-            c.name
+            c.name()
         );
     }
     Ok(s.into_bytes())
@@ -377,7 +388,7 @@ fn ns(p: &Proc, c: &Chan) -> Result<Vec<u8>> {
     let (pgrp, dot) = {
         let f = p.files().lock();
         let f = f.as_ref().ok_or(EPROCDIED)?;
-        (f.pgrp.clone(), f.dot.name.clone())
+        (f.pgrp.clone(), String::from(f.dot.name()))
     };
     let Some(entry) = pgrp.next_entry(walk.last.load(Ordering::Relaxed)) else {
         walk.cd_done.store(true, Ordering::Relaxed);
@@ -386,14 +397,14 @@ fn ns(p: &Proc, c: &Chan) -> Result<Vec<u8>> {
     let mount = &entry.mount;
     walk.last.store(mount.id, Ordering::Relaxed);
     let flag = flag_text(mount.flags);
-    let line = match devmnt::transport(&mount.to).filter(|_| mount.to.name == "#M") {
+    let line = match devmnt::transport(&mount.to).filter(|_| mount.to.name() == "#M") {
         Some(t) => alloc::format!(
             "mount {flag} {} {} {}\n",
-            devsrv::name_of(t).unwrap_or_else(|| t.name.clone()),
+            devsrv::name_of(t).unwrap_or_else(|| String::from(t.name())),
             entry.from,
             mount.spec.as_deref().unwrap_or("")
         ),
-        None => alloc::format!("bind {flag} {} {}\n", mount.to.name, entry.from),
+        None => alloc::format!("bind {flag} {} {}\n", mount.to.name(), entry.from),
     };
     Ok(line.into_bytes())
 }

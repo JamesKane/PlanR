@@ -2,8 +2,8 @@
 //! and the helpers simple devices share.
 //!
 //! A device serves a tree of files, reached by attaching to it (`#c`, or
-//! `#c` with a specifier after the letter) and walking from there one name
-//! at a time. Files are named by [`Chan`]s, and each operation gets the
+//! `#c` with a specifier after the letter) and walking from there, a run
+//! of names at a time, as Plan 9's `devwalk` does ([`devwalk`]). Files are named by [`Chan`]s, and each operation gets the
 //! chan it applies to. Most devices are a fixed table of files, or a
 //! table they make as they go; [`Entry`] and the `*_gen` helpers serve
 //! those from a function that lists a directory.
@@ -17,8 +17,8 @@ use alloc::vec::Vec;
 
 use abi::{Access, Dir, OpenFlags, OpenMode, Qid};
 
-use crate::port::chan::Chan;
-use crate::port::error::{EISDIR, ENONEXIST, EPERM, ESHORTSTAT, Result};
+use crate::port::chan::{Chan, Walkqid};
+use crate::port::error::{EISDIR, ENONEXIST, ENOTDIR, EPERM, ESHORTSTAT, Result};
 use crate::port::{devarch, devcons, devdup, devenv, devmnt, devpipe, devproc, devroot, devrtc, devsrv};
 
 /// The host owner, who owns everything until there are other users.
@@ -33,8 +33,11 @@ pub(crate) trait Dev: Sync {
     /// The root of the device's tree, for `#` with `spec` after the
     /// letter.
     fn attach(&self, spec: &str) -> Result<Chan>;
-    /// The file called `name` in directory `c`, unopened.
-    fn walk(&self, c: &Chan, name: &str) -> Result<Chan>;
+    /// Walks `names` from directory `c`, `..` going to the parent and
+    /// the root being its own (Plan 9's `walk`): fails if the first cannot
+    /// be walked, else gives the qid of each one walked and, if all were,
+    /// the file reached, unopened.
+    fn walk(&self, c: &Chan, names: &[&str]) -> Result<Walkqid>;
     /// The file's [`Dir`], encoded.
     fn stat(&self, c: &Chan) -> Result<Vec<u8>>;
     /// Opens the file; most devices check the mode and mark `c` open
@@ -136,13 +139,50 @@ impl Entry {
 /// Lists a directory: entry `i` of directory `c`, or `None` past the end.
 pub(crate) type Gen<'a> = &'a dyn Fn(&Chan, usize) -> Option<Entry>;
 
-/// Walks to `name` in `c` by looking through the directory's entries.
-pub(crate) fn walk_gen(c: &Chan, name: &str, list: Gen<'_>) -> Result<Chan> {
-    (0..)
-        .map_while(|i| list(c, i))
-        .find(|e| e.name == name)
-        .map(|e| c.child(e.qid, name))
-        .ok_or_else(|| ENONEXIST.into())
+/// Plan 9's `devwalk`: walks `names` from `c` by `step`, which walks one
+/// name, `..` included, from a directory, giving `None` if there is no
+/// such file. A name that is missing, or a file that is not a directory
+/// with names left, stops the walk; first it fails it.
+pub(crate) fn devwalk(c: &Chan, names: &[&str], step: impl Fn(&Chan, &str) -> Result<Option<Chan>>) -> Result<Walkqid> {
+    if !names.is_empty() && !c.qid.is_dir() {
+        return Err(ENOTDIR.into());
+    }
+    let mut nc = c.unopened();
+    let mut qids = Vec::new();
+    for (j, &n) in names.iter().enumerate() {
+        if !nc.qid.is_dir() {
+            break;
+        }
+        if n != "." {
+            match step(&nc, n)? {
+                Some(next) => nc = next,
+                None if j == 0 => return Err(ENONEXIST.into()),
+                None => break,
+            }
+        }
+        qids.push(nc.qid);
+    }
+    let clone = (qids.len() == names.len()).then_some(nc);
+    Ok(Walkqid { clone, qids })
+}
+
+/// Walks `names` from `c` by looking through each directory's entries;
+/// `..` goes to `parent`'s.
+pub(crate) fn walk_gen(c: &Chan, names: &[&str], list: Gen<'_>, parent: &dyn Fn(&Chan) -> Qid) -> Result<Walkqid> {
+    devwalk(c, names, |c, name| {
+        if name == ".." {
+            return Ok(Some(c.child(parent(c), name)));
+        }
+        Ok((0..)
+            .map_while(|i| list(c, i))
+            .find(|e| e.name == name)
+            .map(|e| c.child(e.qid, name)))
+    })
+}
+
+/// A device of one directory: `..` is the root, `root`.
+pub(crate) fn flat(root: Qid) -> impl Fn(&Chan) -> Qid {
+    move |_| root
 }
 
 /// Reads directory `c` at byte `offset`: as many whole entries as fit.

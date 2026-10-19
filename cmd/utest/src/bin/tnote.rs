@@ -554,7 +554,7 @@ fn proc_files() -> Check {
     )?;
     fails(
         r::stat(c"#p/999999", &mut stat),
-        b"file does not exist",
+        b"'#p/999999' file does not exist",
         "a process that never was",
     )
 }

@@ -18,5 +18,13 @@ cp nonesuch x
 chmod 644 nonesuch
 mv nonesuch x
 cat nonesuch
+# Walks: one that stops partway, one through a file, and .. from a file,
+# which Plan 9 walks rather than taking away from the name.
+ls full/nonesuch/x
+ls full/f/x
+ls /dev/cons/../null
+touch x/
+ls '#Z'
+/tmp
 cd /tmp
 echo end

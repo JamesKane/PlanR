@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 
 use abi::{Access, DMDIR, OpenFlags, OpenMode, QTDIR, QTFILE, Qid};
 
-use crate::port::chan::Chan;
+use crate::port::chan::{Chan, Walkqid};
 use crate::port::dev::{self, Dev, Entry};
 use crate::port::error::{EBADSPEC, EBADUSEFD, ENONEXIST, EPERM, Result};
 use crate::port::pgrp;
@@ -77,7 +77,7 @@ fn describe(fd: u64, c: &Chan) -> String {
         c.qid.ty,
         0,
         c.offset.load(core::sync::atomic::Ordering::Relaxed),
-        c.name
+        c.name()
     )
 }
 
@@ -97,18 +97,24 @@ impl Dev for Dup {
         Ok(Chan::new(&DUP, 0, DIR, String::from("#d")))
     }
 
-    fn walk(&self, c: &Chan, name: &str) -> Result<Chan> {
-        let (digits, ctl) = match name.strip_suffix("ctl") {
-            Some(d) => (d, true),
-            None => (name, false),
-        };
-        // Only the number as it is listed: no sign, no leading zeros.
-        let fd: usize = digits.parse().map_err(|_| ENONEXIST)?;
-        if alloc::format!("{fd}") != digits {
-            return Err(ENONEXIST.into());
-        }
-        pgrp::fgrp()?.get(fd as u64).map_err(|_| ENONEXIST)?;
-        Ok(c.child(qid(fd, ctl), name))
+    fn walk(&self, c: &Chan, names: &[&str]) -> Result<Walkqid> {
+        dev::devwalk(c, names, |c, name| {
+            if name == ".." {
+                return Ok(Some(c.child(DIR, name)));
+            }
+            let (digits, ctl) = match name.strip_suffix("ctl") {
+                Some(d) => (d, true),
+                None => (name, false),
+            };
+            // Only the number as it is listed: no sign, no leading zeros.
+            let Ok(fd) = digits.parse::<usize>() else {
+                return Ok(None);
+            };
+            if alloc::format!("{fd}") != digits || pgrp::fgrp()?.get(fd as u64).is_err() {
+                return Ok(None);
+            }
+            Ok(Some(c.child(qid(fd, ctl), name)))
+        })
     }
 
     fn stat(&self, c: &Chan) -> Result<Vec<u8>> {

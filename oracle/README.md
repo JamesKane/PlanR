@@ -65,9 +65,10 @@ system rather than by program:
   leaves it be; make files of different ages by writing them a second
   apart;
 - the name `stat` gives `.` (Plan 9's is the directory's own name);
-- a missing file's error string: Plan 9's kernel names the file
-  (`'nonesuch' file does not exist`), Plan R's does not yet, so send
-  such errors to `/dev/null`;
+- a name's error string: Plan 9's kernel, and Plan R's, names the file
+  (`'nonesuch' file does not exist`, `'a/b' does not exist` when a walk
+  stops partway), which the host's does not, so send such errors to
+  `/dev/null` or put the case in `expect/`;
 - `seq -f` formats with more than one conversion (plan9port prints
   garbage for the second).
 

@@ -33,7 +33,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use abi::{Access, Dir, OpenFlags, OpenMode};
 use ninep::{Elems, HDRSZ, IOHDRSZ, NOFID, NOTAG, Rmsg, Tmsg, VERSION};
 
-use crate::port::chan::{Chan, join};
+use crate::port::chan::{Chan, Walkqid};
 use crate::port::dev::{Dev, EVE};
 use crate::port::error::{
     EBADARG, EBADSTAT, EBADUSEFD, EHUNGUP, EINTR, EMOUNTRPC, ENOATTACH, ENONEXIST, Error, Result,
@@ -638,26 +638,37 @@ impl Dev for MntDev {
         Err(ENOATTACH.into())
     }
 
-    fn walk(&self, c: &Chan, name: &str) -> Result<Chan> {
+    /// One `Twalk` for all the names, as Plan 9's `mntwalk`: a server
+    /// that walks only some gives no new fid.
+    fn walk(&self, c: &Chan, names: &[&str]) -> Result<Walkqid> {
+        let wnames = Elems::new(names).ok_or("devmnt: too many name elements")?;
         let f = fid(c)?;
         let newfid = f.mnt.new_fid();
-        let wnames = Elems::new(&[name]).expect("one name");
-        let qid = f
-            .mnt
-            .call(
-                &Tmsg::Walk {
-                    fid: f.num,
-                    newfid,
-                    wnames,
-                },
-                true,
-                |r| match r {
-                    Rmsg::Walk { wqids } if wqids.len() <= 1 => Some(wqids.as_slice().first().copied()),
-                    _ => None,
-                },
-            )?
-            .ok_or(ENONEXIST)?;
-        Ok(Chan::new(&MNT, c.devno, qid, join(&c.name, name)).with_aux(Fid::new(&f.mnt, &f.transport, newfid)))
+        let wqids = f.mnt.call(
+            &Tmsg::Walk {
+                fid: f.num,
+                newfid,
+                wnames,
+            },
+            true,
+            |r| match r {
+                Rmsg::Walk { wqids } => Some(wqids.as_slice().to_vec()),
+                _ => None,
+            },
+        )?;
+        if wqids.len() > names.len() {
+            return Err("too many QIDs returned by walk".into());
+        }
+        // A server should have said why; Plan 9 says what it said last.
+        if wqids.is_empty() && !names.is_empty() {
+            return Err(ENONEXIST.into());
+        }
+        let clone = (wqids.len() == names.len()).then(|| {
+            let mut nc = Chan::new(&MNT, c.devno, wqids.last().copied().unwrap_or(c.qid), String::new());
+            nc.path = c.path.clone();
+            nc.with_aux(Fid::new(&f.mnt, &f.transport, newfid))
+        });
+        Ok(Walkqid { clone, qids: wqids })
     }
 
     fn stat(&self, c: &Chan) -> Result<Vec<u8>> {
@@ -710,7 +721,7 @@ impl Dev for MntDev {
         )?;
         f.iounit.store(iounit, Ordering::Relaxed);
         c.qid = qid;
-        c.name = join(&c.name, name);
+        c.path.addelem(name, None);
         c.union = None;
         Ok(c.opened(chan_mode(mode)))
     }

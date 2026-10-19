@@ -10,7 +10,7 @@ r::main!(run);
 
 fn run(_: r::Args) -> Result<(), &'static str> {
     let e = exec(c"/bin/nonexistent", &[c"nonexistent"]);
-    if e.as_bytes() != b"file does not exist" {
+    if e.as_bytes() != b"'/bin/nonexistent' file does not exist" {
         return Err("exec of a missing file: wrong error");
     }
     // SAFETY: the kernel must refuse both without touching anything.

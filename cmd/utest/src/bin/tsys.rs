@@ -96,7 +96,7 @@ fn exec_path() -> Check {
     let s = run_child(b"/bin/targs", &[c"targs", c"rooted"])?;
     ensure(s == b"targs rooted", "targs by its full name")?;
     let s = run_child(b"nonesuch", &[c"nonesuch"])?;
-    ensure(s == b"file does not exist", "a command that is nowhere")?;
+    ensure(s == b"'/bin/nonesuch' file does not exist", "a command that is nowhere")?;
     r::remove(c"/env/path").map_err(|_| "remove failed")
 }
 

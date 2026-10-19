@@ -119,7 +119,7 @@ pub(crate) fn load(ns: &NameSpace, name: &str, argv: &[Vec<u8>]) -> Result<Loade
             return Err(EBADEXEC.into());
         }
         let image = image_of(&c)?;
-        let elem = String::from(last_elem(&c.name));
+        let elem = String::from(last_elem(c.name()));
         drop(c);
         let b = image.bytes();
         if !b.starts_with(b"#!") {

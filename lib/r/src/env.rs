@@ -92,9 +92,9 @@ pub fn path() -> Vec<Vec<u8>> {
 }
 
 /// Runs `name` on `argv` as [`crate::exec`] does, looking for it in each
-/// `$path` directory unless [`is_explicit`]. Returns only if every try
-/// failed, with the first failure that was not "file does not exist" (else
-/// that one).
+/// `$path` directory unless [`is_explicit`], as Plan 9's rc does
+/// (`Execute`). Returns only if every try failed, with the last failure,
+/// or the first that says memory or swap ran out (" allocat", " full").
 #[must_use]
 pub fn exec_path(name: &[u8], argv: &[&CStr]) -> Error {
     let try_one = |full: Vec<u8>| match CString::new(full) {
@@ -104,18 +104,18 @@ pub fn exec_path(name: &[u8], argv: &[&CStr]) -> Error {
     if is_explicit(name) {
         return try_one(name.to_vec());
     }
-    let mut first = None;
+    let mut last = Error::from_text(b"");
     for dir in path() {
         let mut full = dir;
         if !full.is_empty() && full.last() != Some(&b'/') {
             full.push(b'/');
         }
         full.extend_from_slice(name);
-        let e = try_one(full);
-        if e.as_bytes() != b"file does not exist" {
-            return e;
+        last = try_one(full);
+        let e = last.as_bytes();
+        if e.windows(8).any(|w| w == b" allocat") || e.windows(5).any(|w| w == b" full") {
+            break;
         }
-        first.get_or_insert(e);
     }
-    first.unwrap_or_else(|| Error::from_text(b"file does not exist"))
+    last
 }

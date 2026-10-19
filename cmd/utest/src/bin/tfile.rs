@@ -6,6 +6,8 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 use core::ffi::CStr;
 
 use r::{Access, BindFlags, Dir, OpenFlags, OpenMode, Whence};
@@ -127,7 +129,7 @@ fn run(_: r::Args) -> Result<(), &'static str> {
 fn devices() -> Check {
     fails(
         r::open(c"/dev/cons", WRITE),
-        b"file does not exist",
+        b"'/dev/cons' does not exist",
         "/dev/cons before any bind",
     )?;
     r::bind(c"#c", c"/dev", BindFlags::AFTER).map_err(|_| "bind #c /dev failed")?;
@@ -184,7 +186,7 @@ fn environment() -> Check {
     r::close(fd).map_err(|_| "close failed")?;
     fails(
         r::create(c"#e/greeting", mode_excl(), 0o666),
-        b"file already exists",
+        b"'#e/greeting' file already exists",
         "exclusive create of an existing file",
     )?;
 
@@ -205,13 +207,17 @@ fn environment() -> Check {
     let fd = r::create(c"/env/new", WRITE, 0o600).map_err(|_| "create in a -c bind failed")?;
     r::close(fd).map_err(|_| "close failed")?;
     r::remove(c"/env/new").map_err(|_| "remove failed")?;
-    fails(r::open(c"/env/new", READ), b"file does not exist", "open after remove")?;
+    fails(
+        r::open(c"/env/new", READ),
+        b"'/env/new' file does not exist",
+        "open after remove",
+    )?;
 
     r::bind(c"#e", c"/mnt", BindFlags::empty()).map_err(|_| "bind #e /mnt failed")?;
     ensure(lists(c"/mnt", "greeting")?, "/mnt does not list greeting")?;
     fails(
         r::create(c"/mnt/x", WRITE, 0o600),
-        b"mounted directory forbids creation",
+        b"'/mnt/x' mounted directory forbids creation",
         "create in a bind without CREATE",
     )?;
     r::unmount(None, c"/mnt").map_err(|_| "unmount failed")?;
@@ -273,11 +279,10 @@ fn descriptors() -> Check {
         r::pread(fd3, &mut buf, 0) == Ok(5) && &buf[..5] == b"hello",
         "/fd/n is not the file",
     )?;
-    fails(
-        r::open(name, WRITE),
-        b"inappropriate use of fd",
-        "/fd/n opened for writing",
-    )?;
+    let mut want = alloc::vec::Vec::from(&b"'"[..]);
+    want.extend_from_slice(name.to_bytes());
+    want.extend_from_slice(b"' inappropriate use of fd");
+    fails(r::open(name, WRITE), &want, "/fd/n opened for writing")?;
     let mut nb = [0u8; 64];
     let ctl = name_of(&mut nb, b"/fd/", fd, b"ctl");
     let n = slurp(ctl, &mut buf)?;
@@ -306,11 +311,23 @@ fn directories() -> Check {
     let d = stat_dir(c".", &mut sb)?;
     ensure(d.name == "bin" && d.qid.is_dir(), "stat .")?;
     r::chdir(c"..").map_err(|_| "chdir .. failed")?;
-    let d = stat_dir(c"bin/./targs/../tmem", &mut sb)?;
+    let d = stat_dir(c"bin/../bin/./tmem", &mut sb)?;
     ensure(d.name == "tmem" && d.mode & 0o111 != 0, "stat through . and ..")?;
+    // `..` is walked, as in Plan 9, not taken away from the name: a
+    // file has none.
+    fails(
+        r::stat(c"bin/./targs/../tmem", &mut sb),
+        b"'bin/./targs' not a directory",
+        ".. from a file",
+    )?;
+    // Plan 9 names `/` by the empty last element of its name.
     let d = stat_dir(c"/", &mut sb)?;
-    ensure(d.name == "/" && d.qid.is_dir(), "stat /")?;
-    fails(r::chdir(c"/bin/targs"), b"not a directory", "chdir to a file")?;
+    ensure(d.name.is_empty() && d.qid.is_dir(), "stat /")?;
+    fails(
+        r::chdir(c"/bin/targs"),
+        b"'/bin/targs' not a directory",
+        "chdir to a file",
+    )?;
     let fd = r::open(c"/", READ).map_err(|_| "cannot open /")?;
     fails(
         r::seek(fd, 5, Whence::Start),
@@ -324,7 +341,7 @@ fn directories() -> Check {
 fn errors() -> Check {
     fails(
         r::open(c"/env/greeting/x", READ),
-        b"not a directory",
+        b"'/env/greeting' not a directory",
         "walk through a file",
     )?;
     fails(
@@ -334,12 +351,12 @@ fn errors() -> Check {
     )?;
     fails(
         r::open(c"/bin/targs", WRITE),
-        b"permission denied",
+        b"'/bin/targs' permission denied",
         "write to the archive",
     )?;
     fails(
         r::open(c"/env", WRITE),
-        b"file is a directory",
+        b"'/env' file is a directory",
         "a directory opened to write",
     )?;
     let mut b = [0u8; 64];

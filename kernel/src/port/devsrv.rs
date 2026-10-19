@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use abi::{Access, DMDIR, OpenFlags, OpenMode, QTDIR, QTFILE, Qid};
 
-use crate::port::chan::Chan;
+use crate::port::chan::{Chan, Walkqid};
 use crate::port::dev::{self, Dev, Entry};
 use crate::port::error::{EBADARG, EBADCHAR, EBADSPEC, EBADUSEFD, EEXIST, EISDIR, ENONEXIST, EPERM, ESHUTDOWN, Result};
 use crate::port::lock::SpinLock;
@@ -81,8 +81,8 @@ impl Dev for SrvDev {
         Ok(Chan::new(&SRV, 0, DIR, String::from("#s")))
     }
 
-    fn walk(&self, c: &Chan, name: &str) -> Result<Chan> {
-        dev::walk_gen(c, name, &dirgen)
+    fn walk(&self, c: &Chan, names: &[&str]) -> Result<Walkqid> {
+        dev::walk_gen(c, names, &dirgen, &dev::flat(DIR))
     }
 
     fn stat(&self, c: &Chan) -> Result<Vec<u8>> {

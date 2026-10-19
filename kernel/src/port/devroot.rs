@@ -13,7 +13,7 @@ use abi::{DMDIR, OpenMode, QTDIR, QTFILE, Qid};
 use bootarc::Archive;
 use bootinfo::BootInfo;
 
-use crate::port::chan::Chan;
+use crate::port::chan::{Chan, Walkqid};
 use crate::port::dev::{self, Dev, Entry};
 use crate::port::error::{EBADSPEC, EPERM, Result};
 use crate::println;
@@ -30,6 +30,8 @@ struct Node {
     perm: u32,
     /// A directory's children, by index, in name order.
     children: Vec<usize>,
+    /// Its directory's index: the root is its own.
+    parent: usize,
     data: &'static [u8],
 }
 
@@ -40,11 +42,12 @@ struct Tree {
 }
 
 impl Tree {
-    fn dir(name: &'static str) -> Node {
+    fn dir(name: &'static str, parent: usize) -> Node {
         Node {
             name,
             perm: DMDIR | 0o555,
             children: Vec::new(),
+            parent,
             data: &[],
         }
     }
@@ -58,7 +61,7 @@ impl Tree {
         {
             return i;
         }
-        self.nodes.push(Tree::dir(name));
+        self.nodes.push(Tree::dir(name, parent));
         let i = self.nodes.len() - 1;
         self.insert(parent, i);
         i
@@ -74,7 +77,7 @@ impl Tree {
 
     fn build(archive: Option<&Archive<'static>>) -> Tree {
         let mut t = Tree {
-            nodes: alloc::vec![Tree::dir("/")],
+            nodes: alloc::vec![Tree::dir("/", 0)],
         };
         for d in DIRS {
             t.subdir(0, d);
@@ -91,6 +94,7 @@ impl Tree {
                         // The archive cannot be written.
                         perm: f.mode & 0o555,
                         children: Vec::new(),
+                        parent,
                         data: f.data,
                     });
                     let i = t.nodes.len() - 1;
@@ -194,8 +198,8 @@ impl Dev for Root {
         Ok(Chan::new(&ROOT, 0, tree().qid(0), String::from("#/")))
     }
 
-    fn walk(&self, c: &Chan, name: &str) -> Result<Chan> {
-        dev::walk_gen(c, name, &dirgen)
+    fn walk(&self, c: &Chan, names: &[&str]) -> Result<Walkqid> {
+        dev::walk_gen(c, names, &dirgen, &|c| tree().qid(tree().nodes[node(c)].parent))
     }
 
     fn stat(&self, c: &Chan) -> Result<Vec<u8>> {

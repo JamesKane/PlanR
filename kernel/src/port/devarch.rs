@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use abi::{DMDIR, OpenMode, QTDIR, QTFILE, Qid};
 
 use crate::arch;
-use crate::port::chan::Chan;
+use crate::port::chan::{Chan, Walkqid};
 use crate::port::dev::{self, Dev, Entry};
 use crate::port::error::{EBADSPEC, Result};
 use crate::port::{clock, cpu};
@@ -51,8 +51,8 @@ impl Dev for Arch {
         Ok(Chan::new(&ARCH, 0, DIR, String::from("#P")))
     }
 
-    fn walk(&self, c: &Chan, name: &str) -> Result<Chan> {
-        dev::walk_gen(c, name, &dirgen)
+    fn walk(&self, c: &Chan, names: &[&str]) -> Result<Walkqid> {
+        dev::walk_gen(c, names, &dirgen, &dev::flat(DIR))
     }
 
     fn stat(&self, c: &Chan) -> Result<Vec<u8>> {

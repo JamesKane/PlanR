@@ -4,7 +4,8 @@ Where work stands, for picking it up in a new session. Last updated
 2026-10-19: P3 slices 1 to 10 (console input, libr base, libr system
 layer, the 9P server framework and `ramfs`, `rc` parts 1 and 2, the
 oracle harness, the file commands, the name-space commands and the real
-boot and init, regular expressions and the text commands) are done.
+boot and init, regular expressions and the text commands) are done, and
+part 1 of the kernel audit against Plan 9's source (names, `chan.c`).
 
 ## State
 
@@ -142,22 +143,26 @@ boot and init, regular expressions and the text commands) are done.
      - `lib/abi` gains `Qid`, `Dir` with Plan 9's stat encoding
        (`encode`, `decode`, `dirs` for directory reads, `DONT_TOUCH` for
        wstat), and the `QT*`/`DM*` bits. Host-tested.
-     - `port/dev.rs`: `trait Dev` (attach, walk one name, stat, open,
-       create, read, write, close, remove, wstat, and `mapped` for files
-       that stay in memory), the device table (`dev::all`), and helpers
-       for table-driven devices (`Entry`, `walk_gen`, `dirread_gen`,
-       `open_checked`). Every file is owned by `eve`, the only user, so
-       the owner bits decide.
-     - `port/chan.rs`: `Chan` (device, instance, qid, cleaned name, open
-       mode, offset, union members). Names are cleaned lexically first
-       (`clean`; `..` stops at `/` or `#c`). A relative name with no `..`
-       walks from dot, any other from its root. `walk` follows the mount
-       table at the start and after each element, and after the last
-       only if asked (not for `bind`'s old or `chdir`). Union walks try
-       each member; union creates go to the first `CREATE` member, else
-       fail with "mounted directory forbids creation"; union reads go
-       member by member, from 0 or onward only. Dropping an open chan
-       calls `Dev::close`, and removes an `RCLOSE` file.
+     - `port/dev.rs`: `trait Dev` (attach, walk a run of names as Plan
+       9's `walk` does, stat, open, create, read, write, close, remove,
+       wstat, and `mapped` for files that stay in memory), the device
+       table (`dev::all`), and helpers for table-driven devices
+       (`devwalk`, `Entry`, `walk_gen`, `dirread_gen`, `open_checked`).
+       Every file is owned by `eve`, the only user, so the owner bits
+       decide.
+     - `port/chan.rs`: `Chan` (device, instance, qid, `Path`, open mode,
+       offset, union members, `ismtpt`), ported from Plan 9's `chan.c`
+       (the kernel audit, 2026-10-19): `namec` with Plan 9's access
+       modes (`Amode`), `validname`, `parsename`, `walk` (16 names a
+       device walk, `..` alone and walked on the device, the mount table
+       followed before each run and at the first mount point within one,
+       `undomount` back through a crossed mount point), `cleanname`, and
+       `namelenerror`, so an error inside `namec` names as much of the
+       name as was walked (`'/a/b' does not exist`). Union walks try each
+       member; union creates go to the first `CREATE` member, else fail
+       with "mounted directory forbids creation"; union reads go member
+       by member, from 0 or onward only. Dropping an open chan calls
+       `Dev::close`, and removes an `RCLOSE` file.
      - `port/pgrp.rs`: `Pgrp` (mount heads keyed by `same_file`; a new
        union starts with the mount point itself, as in Plan 9), `Fgrp`
        (lowest free fd, at most 1024, close-on-exec), and `Files`, which
@@ -870,11 +875,8 @@ boot and init, regular expressions and the text commands) are done.
      - Oracle: `oracle/expect` gains `bind mount unmount ns ps newns`
        (77 scripts in all, each output line worked out from Plan 9's
        source).
-     - Known, from Plan 9's source, not yet done: Plan 9's kernel names
-       the file in a walk error (`'nonesuch' file does not exist`,
-       `namelenerror`'s `"%#q %s"`); Plan R's says only `file does not
-       exist`, so `oracle/expect/errors.err` holds Plan R's text, not
-       Plan 9's. The kernel's errors are for the kernel audit.
+     - Plan 9's kernel names the file in a walk error (`'nonesuch' file
+       does not exist`); Plan R's did not until the kernel audit below.
   10. Regular expressions and the text commands, each ported from
       `../plan9/sys/src`:
      - **`lib/regexp`** (crate `regexp`, from `libregexp`): `regcomp`,
@@ -934,6 +936,63 @@ boot and init, regular expressions and the text commands) are done.
        Latin-1, tr's and uniq's messages, uniq's long lines), and
        `kill` (88 scripts in all).
 
+  The kernel audit, part 1 (2026-10-19): names, against Plan 9's
+  `port/chan.c` and the name-taking calls of `port/sysfile.c`:
+     - **`namec` ported** (`port/chan.rs`): `validname` (control
+       characters are `bad character in file name: 'x'`), `parsename`
+       (`.` and empty elements skipped; a trailing `/` must be a
+       directory), `#` names as Plan 9 splits them (`file name syntax`
+       past 127 bytes), and the access modes: `chdir` and the mount
+       point of `bind`/`mount` stay before a mount point at the end,
+       `bind`'s new file crosses it and keeps its union whole, `stat`,
+       `wstat`, `remove` and `open` cross it (`ismtpt`). A create walks
+       all but the last name, opens what is there truncated (unless
+       `EXCL`), else creates in the directory or the union's `CREATE`
+       member, and on failure tries the walk once more, as Plan 9's;
+       `create without DMDIR` for a name ending `/`; `cannot exec
+       directory`; `empty file name`; `name too long` at 64 KiB.
+     - **`walk` ported:** runs of up to 16 names to one device walk
+       (`Dev::walk` now takes a list and gives a `Walkqid`, Plan 9's
+       `devwalk` in `dev::devwalk`; `#M` sends them as one `Twalk`),
+       the mount table followed before each run and at the first mount
+       point within one, the rest of a union tried when the first
+       member's walk fails. `..` is no longer cleaned away: it is walked
+       alone on the device (each device knows its parents; `#/`'s tree
+       keeps them), then `undomount` goes back through a crossed mount
+       point, as recorded in the chan's `Path` (Plan 9's `mtpt`), and
+       `cleanname` (ported) tidies the name.
+     - **Errors name the file,** as `namelenerror` makes them: an error
+       inside `namec` once a name has been walked, or partly walked,
+       shows that much of it quoted (`'/tmp/x' file does not exist`;
+       `'a/b' does not exist` when a device walks some of a run but not
+       all; `'/dev/cons' not a directory` for `/dev/cons/../null`), a
+       long name by its last elements after `...`. Errors from the call
+       after `namec` (a `remove` or `wstat` the server refuses) do not.
+       The error text a call leaves is cut at a character, not a byte.
+     - **The calls:** `stat` names the result by the last element of
+       its name (`pathlast`: empty for `/`), `fstat` gives the device's
+       own name; `remove` of a mount point is `is a mount point`, and so
+       is renaming one by `wstat`; `unmount` of a file not in the union
+       is `not in union`; `mount` checks its descriptors and attaches
+       before it resolves the mount point, as `bindmount` does; the mount
+       table matches a file by device, instance and qid path (Plan 9's
+       `eqchan`, without the qid type).
+     - **rc's `$path` search** (libr's `exec_path`) is Plan 9 rc's
+       `Execute`: every directory is tried and the last error given,
+       unless one says memory ran out (it stopped at the first error
+       other than `file does not exist` before, which no longer matched).
+     - **Tests:** the ktests check `cleanname` and `namelenerror`; the
+       user tests' error texts are Plan 9's now, and `tfile` checks `..`
+       from a file fails. `oracle/expect/errors` gains a partial walk, a
+       walk through a file, `..` from a file, create without DMDIR, an
+       unknown device and exec of a directory, and its `.err` (and
+       `cp`'s, `mv`'s, `chmod`'s) holds Plan 9's text; `expect/ns` was
+       wrong: binding a union binds its first member, which `ns` names.
+     - Still to audit: the rest of `sysfile.c` (read's directory
+       offsets and `mountfix`, `fdtochan`'s checks, `seek`, `dup`,
+       `fd2path`), the devices against their `dev*.c`, and `sysproc.c`
+       and `proc.c`.
+
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -945,10 +1004,9 @@ boot and init, regular expressions and the text commands) are done.
 
 P3 slice 11: `awk` and `diff`, ported from `../plan9/sys/src/cmd`
 (`awk`: its `awkgram.y` grammar, `run.c` interpreter and `re.c`;
-`diff`). Before or with it, the kernel's audit against
-`../plan9/sys/src/9/port`: walk errors that name the file
-(`namelenerror`), then the rest of the P2 calls and devices, as the
-slice-8 audit did for rc, libr and ramfs. The P3 slices were agreed on
+`diff`). Before or with it, the rest of the kernel's audit against
+`../plan9/sys/src/9/port` (part 1, names and `chan.c`, is done): the
+rest of `sysfile.c`, the devices, then `sysproc.c` and `proc.c`. The P3 slices were agreed on
 2026-10-19 (`docs/ROADMAP.md`; `srv` and `9fs` moved to P5).
 
 plan9port is built on this host (2026-10-19, by
@@ -1078,8 +1136,12 @@ P1 results, for reference:
   after the flush (`segment::Pending`). A fault on a page the segment
   already maps (another CPU changed it, or it was read-only until now)
   just fixes the faulting space's entry and flushes this CPU.
-- **`..` is lexical,** as in Plan 9: `chdir("..")` from a bound
-  directory goes to the parent of its name, not of what is bound there.
+- **`..` is walked,** as in Plan 9: on the device, then back through
+  the mount point if that reached the root of what is mounted there, so
+  `chdir("..")` from a bound directory goes to the parent of its name,
+  and `/dev/cons/../null` fails (`'/dev/cons' not a directory`).
+- **Names are UTF-8:** Plan 9 takes any bytes but the control
+  characters; a name that is not UTF-8 is refused as a bad character.
 - **User programs on amd64 are soft-float,** like the kernel: they build
   for `x86_64-unknown-none`, whose ABI has no SSE. The kernel still saves
   and restores user SSE state. A Plan R target (TOOLCHAIN.md) fixes it.

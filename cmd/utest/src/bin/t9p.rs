@@ -199,10 +199,21 @@ fn files() -> Check {
     // Several elements, and the server's own error text.
     let n = read_file(c"/n/sub/deep", &mut buf).map_err(|_| "read /n/sub/deep failed")?;
     ensure(&buf[..n] == b"deep\n", "/n/sub/deep's contents")?;
-    fails(r::open(c"/n/sub/nothing", READ), b"no such toy file", "a missing file")?;
+    // A walk that fails at its first name gives the server's error; one
+    // that stops later, Plan 9's own; either names the file.
+    fails(
+        r::open(c"/n/nothing", READ),
+        b"'/n/nothing' no such toy file",
+        "a missing file",
+    )?;
+    fails(
+        r::open(c"/n/sub/nothing", READ),
+        b"'/n/sub/nothing' does not exist",
+        "a missing file in a directory",
+    )?;
     fails(
         r::open(c"/n/sub/deep/x", READ),
-        b"not a directory",
+        b"'/n/sub/deep' not a directory",
         "a walk through a file",
     )?;
     // More than one message's worth.
@@ -228,16 +239,20 @@ fn files() -> Check {
     let n = d.encode(&mut st).ok_or("encode failed")?;
     r::fwstat(fd, &st[..n]).map_err(|_| "fwstat failed")?;
     r::close(fd).map_err(|_| "close failed")?;
-    fails(r::open(c"/n/new", READ), b"no such toy file", "the old name")?;
+    fails(r::open(c"/n/new", READ), b"'/n/new' no such toy file", "the old name")?;
     let n = read_file(c"/n/renamed", &mut buf).map_err(|_| "read /n/renamed failed")?;
     ensure(&buf[..n] == b"abc", "the renamed file")?;
     fails(
         r::create(c"/n/renamed", mode_excl(), 0o644),
-        b"file already exists",
+        b"'/n/renamed' file already exists",
         "create over a file",
     )?;
     r::remove(c"/n/renamed").map_err(|_| "remove failed")?;
-    fails(r::open(c"/n/renamed", READ), b"no such toy file", "a removed file")?;
+    fails(
+        r::open(c"/n/renamed", READ),
+        b"'/n/renamed' no such toy file",
+        "a removed file",
+    )?;
     // Remove on close happens at the server, at the clunk.
     let rclose = OpenMode {
         access: Access::Write,
@@ -248,7 +263,7 @@ fn files() -> Check {
     r::close(fd).map_err(|_| "close failed")?;
     fails(
         r::stat(c"/n/tmp", &mut st),
-        b"no such toy file",
+        b"'/n/tmp' no such toy file",
         "/n/tmp after its close",
     )?;
     // Truncation by open.
@@ -348,7 +363,7 @@ fn clunked(c: r::Fd) -> Check {
     r::unmount(None, c"/n").map_err(|_| "unmount /n failed")?;
     fails(
         r::stat(c"/n/hello", &mut [0; 128]),
-        b"file does not exist",
+        b"'/n/hello' does not exist",
         "/n/hello unmounted",
     )?;
     r::close(c).map_err(|_| "close failed")?;
@@ -374,7 +389,7 @@ fn hangup() -> Check {
     reap()?;
     fails(
         r::open(c"/mnt/hello", READ),
-        b"i/o on hungup channel",
+        b"'/mnt/hello' i/o on hungup channel",
         "a request to a dead server",
     )?;
     r::unmount(None, c"/mnt").map_err(|_| "unmount failed")?;

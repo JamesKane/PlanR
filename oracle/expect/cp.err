@@ -2,8 +2,8 @@ cp: a and a are the same file
 cp: a and ./a are the same file
 cp: d is a directory
 cp: nonesuch not a directory
-cp: can't stat nonesuch: file does not exist
-cp: can't create nonesuch/x: file does not exist
+cp: can't stat nonesuch: 'nonesuch' file does not exist
+cp: can't create nonesuch/x: 'nonesuch' file does not exist
 usage:	cp [-gux] fromfile tofile
 	cp [-x] fromfile ... todir
 usage:	cp [-gux] fromfile tofile

@@ -1,6 +1,7 @@
 # ns: a line for each mount, in the order made, with its flags and ns's
 # quoting; the mount point itself in a new union; a union bound whole;
-# then cd. And its usage.
+# then cd. And its usage. Binding a union binds what namec gives, its
+# first member, so ns names that, as Plan 9's.
 rfork n
 d=`{pwd}
 mkdir a b e

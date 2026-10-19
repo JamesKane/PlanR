@@ -85,13 +85,13 @@ fn files() -> Check {
     ensure(get(c"/tmp/a")? == b"new", "create truncates")?;
     fails(
         r::open(c"/tmp/nonesuch", READ),
-        b"file does not exist",
+        b"'/tmp/nonesuch' file does not exist",
         "open of nothing",
     )?;
     let excl = mode(Access::Write, OpenFlags::EXCL);
     fails(
         r::create(c"/tmp/a", excl, 0o664),
-        b"file already exists",
+        b"'/tmp/a' file already exists",
         "exclusive create",
     )?;
     // The owner's bits decide, for the owner too.
@@ -100,7 +100,7 @@ fn files() -> Check {
     r::dirwstat(c"/tmp/a", &n).map_err(|_| "chmod failed")?;
     fails(
         r::open(c"/tmp/a", READ),
-        b"permission denied",
+        b"'/tmp/a' permission denied",
         "open without permission",
     )?;
     r::remove(c"/tmp/a").map_err(|_| "remove failed")
@@ -115,7 +115,11 @@ fn wstat() -> Check {
     d.name = "new".into();
     d.length = 4;
     r::dirwstat(c"/tmp/old", &d).map_err(|_| "rename failed")?;
-    fails(r::dirstat(c"/tmp/old"), b"file does not exist", "the old name stays")?;
+    fails(
+        r::dirstat(c"/tmp/old"),
+        b"'/tmp/old' file does not exist",
+        "the old name stays",
+    )?;
     ensure(get(c"/tmp/new")? == b"0123", "rename and truncate")?;
     let s = r::dirstat(c"/tmp/new").map_err(|_| "dirstat failed")?;
     ensure(s.name == "new" && s.length == 4, "the stat after wstat")?;
@@ -148,7 +152,7 @@ fn directories() -> Check {
     )?;
     fails(
         r::open(c"/tmp/d", WRITE),
-        b"permission denied",
+        b"'/tmp/d' permission denied",
         "a directory opened to write",
     )?;
     for i in 0..ENTRIES {
@@ -208,7 +212,11 @@ fn removed() -> Check {
     let fd = r::create(c"/tmp/rclose", rclose, 0o664).map_err(|_| "create failed")?;
     ensure(r::dirstat(c"/tmp/rclose").is_ok(), "the ORCLOSE file is not there")?;
     r::close(fd).map_err(|_| "close failed")?;
-    fails(r::dirstat(c"/tmp/rclose"), b"file does not exist", "ORCLOSE")
+    fails(
+        r::dirstat(c"/tmp/rclose"),
+        b"'/tmp/rclose' file does not exist",
+        "ORCLOSE",
+    )
 }
 
 /// Two processes writing their own files, line by line, at once.
@@ -269,7 +277,7 @@ fn second() -> Check {
     put(c"/n/file", b"in the second")?;
     fails(
         r::dirstat(c"/tmp/file"),
-        b"file does not exist",
+        b"'/tmp/file' file does not exist",
         "the second is not /tmp",
     )?;
     let fd = r::open(c"/srv/tramfs", RDWR).map_err(|_| "open /srv/tramfs failed")?;
@@ -279,7 +287,7 @@ fn second() -> Check {
     ensure(get(c"/mnt/file")? == b"in the second", "the same tree twice")?;
     fails(
         r::create(c"/mnt/x", WRITE, 0o664),
-        b"mounted directory forbids creation",
+        b"'/mnt/x' mounted directory forbids creation",
         "a mount without -c",
     )?;
     let fd = r::open(c"/mnt", READ).map_err(|_| "open failed")?;

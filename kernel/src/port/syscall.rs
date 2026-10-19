@@ -84,9 +84,10 @@ pub(crate) fn dispatch(number: u64, args: [u64; abi::MAX_ARGS], u: &mut Ureg) ->
         None => Err(Error::from(EBADSYS)),
     };
     Some(abi::encode(r.map_err(|e| {
-        let mut e = e.as_str().as_bytes().to_vec();
-        e.truncate(ERRMAX - 1);
-        *me().errstr().lock() = e;
+        // Cut at a character, as Plan 9's kstrcpy and snprint do.
+        let mut e = alloc::string::String::from(e.as_str());
+        crate::port::chan::truncate(&mut e, ERRMAX - 1);
+        *me().errstr().lock() = e.into_bytes();
         Failed
     })))
 }

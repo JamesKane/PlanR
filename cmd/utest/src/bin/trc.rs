@@ -147,8 +147,8 @@ const CASES: &[Case] = &[
         "functions",
         "fn f { echo args $#* $* }; f a b; whatis f; fn f; f",
         "args 2 a b\nfn f {echo args $#* $*}\n",
-        "f: file does not exist\n",
-        "file does not exist",
+        "f: '/bin/f' file does not exist\n",
+        "'/bin/f' file does not exist",
     ),
     case(
         "locals",
@@ -200,7 +200,7 @@ const CASES: &[Case] = &[
     ),
     case("eval", "x=5; eval echo '$x'; eval 'y=1; echo $y'", "5\n1\n"),
     Case {
-        err: "Can't cd -- $home empty\nCan't cd /nonesuch: file does not exist\n",
+        err: "Can't cd -- $home empty\nCan't cd /nonesuch: '/nonesuch' file does not exist\n",
         ..case(
             "cd",
             "cd /tmp/trc/g/sub; echo *; home=(); cd; echo $status; cd /nonesuch; echo $status",
@@ -231,7 +231,7 @@ const CASES: &[Case] = &[
         "not found",
     ),
     Case {
-        err: "nonesuch: file does not exist\n",
+        err: "nonesuch: '/bin/nonesuch' file does not exist\n",
         ..case(
             "not-found",
             "nonesuch; ~ $status *'file does not exist' && echo status ok",
@@ -255,7 +255,7 @@ const CASES: &[Case] = &[
         "redirection-error",
         "echo x </nonesuch; echo not reached",
         "",
-        "/nonesuch: rc: can't open: file does not exist\n",
+        "/nonesuch: rc: can't open: '/nonesuch' file does not exist\n",
         "error",
     ),
     case(
@@ -392,8 +392,8 @@ const CASES: &[Case] = &[
         "cat",
         "echo a >/tmp/trc/c1; echo b >/tmp/trc/c2; cat /tmp/trc/c1 /tmp/trc/c2; echo c | cat; cat /nonesuch",
         "a\nb\nc\n",
-        "cat: can't open /nonesuch: file does not exist\n",
-        "can't open /nonesuch: file does not exist",
+        "cat: can't open /nonesuch: '/nonesuch' file does not exist\n",
+        "can't open /nonesuch: '/nonesuch' file does not exist",
     ),
 ];
 
