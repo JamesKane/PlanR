@@ -32,7 +32,7 @@ SECTIONS
          * link by xtask, which says how much it used. */
         . = ALIGN(8);
         __ksyms_start = .;
-        . += 0x80000;
+        . += 0x100000;
         __ksyms_end = .;
     } :rodata
     __rodata_end = ALIGN(4096);

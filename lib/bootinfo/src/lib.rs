@@ -16,7 +16,7 @@ use core::fmt;
 /// `BootInfo::magic`: "PLANR9BI".
 pub const MAGIC: u64 = u64::from_le_bytes(*b"PLANR9BI");
 /// Bumped on any layout change.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// Base of the direct map of physical memory: `phys` is at `HHDM_BASE + phys`.
 pub const HHDM_BASE: u64 = 0xffff_8000_0000_0000;
@@ -207,6 +207,9 @@ pub struct BootInfo {
     /// Contents of `\planr\boot.arc` (`lib/bootarc`), possibly empty;
     /// page aligned, in `Boot` memory, which the kernel keeps.
     pub archive: Slice<u8>,
+    /// The firmware clock's time, read just before the handoff, in seconds
+    /// since 1970-01-01 UTC; 0 if it was unreadable.
+    pub boot_time: u64,
 }
 
 /// Why a handoff was rejected.
@@ -250,6 +253,7 @@ impl BootInfo {
             kernel_size: 0,
             config: Slice::empty(),
             archive: Slice::empty(),
+            boot_time: 0,
         }
     }
 

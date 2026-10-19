@@ -134,7 +134,7 @@ pub struct BootServices {
 #[derive(Debug)]
 pub struct RuntimeServices {
     pub hdr: TableHeader,
-    pub get_time: Unused,
+    pub get_time: unsafe extern "efiapi" fn(*mut Time, *mut c_void) -> Status,
     pub set_time: Unused,
     pub get_wakeup_time: Unused,
     pub set_wakeup_time: Unused,
@@ -148,6 +148,24 @@ pub struct RuntimeServices {
     pub update_capsule: Unused,
     pub query_capsule_capabilities: Unused,
     pub query_variable_info: Unused,
+}
+
+/// `EFI_TIME`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Time {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+    pub pad1: u8,
+    pub nanosecond: u32,
+    /// Minutes from UTC, or 2047 for unspecified.
+    pub time_zone: i16,
+    pub daylight: u8,
+    pub pad2: u8,
 }
 
 /// `EFI_CONFIGURATION_TABLE`.

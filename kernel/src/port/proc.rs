@@ -56,6 +56,7 @@ use crate::port::cpu::{self, MAXCPU};
 use crate::port::lock::SpinLock;
 use crate::port::mm::Stack;
 use crate::port::mmu;
+use crate::port::pgrp::{Fgrp, Files};
 use crate::port::segment::Memory;
 
 /// Priorities, 0 (lowest) to `NPRI - 1`, as in Plan 9.
@@ -117,8 +118,12 @@ pub(crate) struct Proc {
     errstr: SpinLock<Vec<u8>>,
     /// The exit status, once `exits` or a fatal trap has set it.
     status: SpinLock<Option<Vec<u8>>>,
+    /// A user thread's name space and files, until it exits.
+    files: SpinLock<Option<Files>>,
     /// Who hears when it exits.
     parent: Option<Weak<Proc>>,
+    /// The parent's pid, or 0.
+    ppid: u64,
     children: SpinLock<Children>,
     /// Woken when a child exits.
     child_exited: Rendez,
@@ -201,6 +206,16 @@ impl Proc {
     /// The error text of the last failed system call.
     pub(crate) fn errstr(&self) -> &SpinLock<Vec<u8>> {
         &self.errstr
+    }
+
+    /// The parent's pid, or 0 if it had none.
+    pub(crate) fn ppid(&self) -> u64 {
+        self.ppid
+    }
+
+    /// A user thread's name space and files.
+    pub(crate) fn files(&self) -> &SpinLock<Option<Files>> {
+        &self.files
     }
 
     /// The exit status, if it has exited through `exits` or a trap.
@@ -323,17 +338,30 @@ unsafe fn local() -> &'static mut Local {
 
 /// Makes a kernel thread that runs `f`, and makes it ready.
 pub(crate) fn spawn(how: Spawn<'_>, f: impl FnOnce() + Send + 'static) -> Option<Arc<Proc>> {
-    make(how, None, None, Entry::Kernel(Box::new(f)))
+    make(how, None, None, None, Entry::Kernel(Box::new(f)))
 }
 
-/// Makes a user thread in `mem` that starts at `pc` with stack pointer
-/// `sp` and `arg` in the first argument register, and makes it ready. It
-/// is a child of the calling thread, if any.
-pub(crate) fn spawn_user(how: Spawn<'_>, mem: Arc<Memory>, pc: u64, sp: u64, arg: u64) -> Option<Arc<Proc>> {
-    make(how, Some(mem), current(), Entry::User { pc, sp, arg })
+/// Makes a user thread in `mem`, with `files`, that starts at `pc` with
+/// stack pointer `sp` and `arg` in the first argument register, and makes
+/// it ready. It is a child of the calling thread, if any.
+pub(crate) fn spawn_user(
+    how: Spawn<'_>,
+    mem: Arc<Memory>,
+    files: Files,
+    pc: u64,
+    sp: u64,
+    arg: u64,
+) -> Option<Arc<Proc>> {
+    make(how, Some(mem), Some(files), current(), Entry::User { pc, sp, arg })
 }
 
-fn make(how: Spawn<'_>, mem: Option<Arc<Memory>>, parent: Option<Arc<Proc>>, entry: Entry) -> Option<Arc<Proc>> {
+fn make(
+    how: Spawn<'_>,
+    mem: Option<Arc<Memory>>,
+    files: Option<Files>,
+    parent: Option<Arc<Proc>>,
+    entry: Entry,
+) -> Option<Arc<Proc>> {
     assert!(how.pri < NPRI, "priority out of range");
     let stack = Stack::new()?;
     // SAFETY: the stack is new and ours.
@@ -359,7 +387,9 @@ fn make(how: Spawn<'_>, mem: Option<Arc<Memory>>, parent: Option<Arc<Proc>>, ent
         user: UnsafeCell::new(UserRegs::INITIAL),
         errstr: SpinLock::new(Vec::new()),
         status: SpinLock::new(None),
+        files: SpinLock::new(files),
         parent: parent.as_ref().map(Arc::downgrade),
+        ppid: parent.as_ref().map_or(0, |p| p.pid),
         children: SpinLock::new(Children {
             live: 0,
             exited: VecDeque::new(),
@@ -595,6 +625,13 @@ fn tell_parent(me: &Proc) {
 /// Ends the calling thread.
 fn exit() -> ! {
     if let Some(me) = current() {
+        // The descriptors go first, while the rest is still there for
+        // their devices to use (an `RCLOSE` file in `#e`).
+        let empty = Fgrp::new();
+        let fds = me.files.lock().as_mut().map(|f| core::mem::replace(&mut f.fgrp, empty));
+        drop(fds);
+        let files = me.files.lock().take();
+        drop(files);
         tell_parent(&me);
     }
     let _ = arch::splhi();

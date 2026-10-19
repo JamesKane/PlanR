@@ -8,49 +8,49 @@
 //! `exec`) leave nothing on the stack that needs dropping: the dispatcher
 //! holds no reference to the thread while a call runs.
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
 use abi::{ERRMAX, Failed, Sys};
 
+use crate::port::error::{EBADARG, Error};
+use crate::port::pgrp::{self, NameSpace};
 use crate::port::proc;
 use crate::port::segment::SegError;
 use crate::port::uaccess::{self, BadAddress};
-use crate::port::{clock, exec};
+use crate::port::{clock, exec, sysfile};
 use crate::println;
 
-/// Why a call failed: its error text.
-#[derive(Debug)]
-struct Error(String);
-
-impl From<&str> for Error {
-    fn from(s: &str) -> Error {
-        Error(String::from(s))
-    }
-}
-
-impl From<BadAddress> for Error {
-    fn from(_: BadAddress) -> Error {
-        Error::from(EBADADDR)
-    }
-}
-
 const EBADSYS: &str = "bad system call";
-const EBADARG: &str = "bad arg in system call";
-const EBADADDR: &str = "bad address in system call";
 const ENOTYET: &str = "system call not yet implemented";
 const ENOCHILD: &str = "no living children";
 const ESOVERLAP: &str = "segments overlap";
-/// The longest file name a call takes.
-const NAME_MAX: usize = 1024;
 
 type SysResult = Result<u64, Error>;
 
 /// Runs system call `number` for the calling thread and returns the
 /// register pair its caller sees.
 pub(crate) fn dispatch(number: u64, args: [u64; abi::MAX_ARGS]) -> [u64; 2] {
+    let [a0, a1, a2, a3, ..] = args;
     let r = match Sys::from_raw(number) {
+        Some(Sys::Open) => sysfile::open(a0, a1),
+        Some(Sys::Create) => sysfile::create(a0, a1, a2),
+        Some(Sys::Close) => sysfile::close(a0),
+        Some(Sys::Read) => sysfile::read(a0, a1, a2, None),
+        Some(Sys::Write) => sysfile::write(a0, a1, a2, None),
+        Some(Sys::Pread) => sysfile::read(a0, a1, a2, Some(a3)),
+        Some(Sys::Pwrite) => sysfile::write(a0, a1, a2, Some(a3)),
+        Some(Sys::Seek) => sysfile::seek(a0, a1, a2),
+        Some(Sys::Stat) => sysfile::stat(a0, a1, a2),
+        Some(Sys::Fstat) => sysfile::fstat(a0, a1, a2),
+        Some(Sys::Wstat) => sysfile::wstat(a0, a1, a2),
+        Some(Sys::Fwstat) => sysfile::fwstat(a0, a1, a2),
+        Some(Sys::Remove) => sysfile::remove(a0),
+        Some(Sys::Fd2path) => sysfile::fd2path(a0, a1, a2),
+        Some(Sys::Dup) => sysfile::dup(a0, a1),
+        Some(Sys::Chdir) => sysfile::chdir(a0),
+        Some(Sys::Bind) => sysfile::bind(a0, a1, a2),
+        Some(Sys::Unmount) => sysfile::unmount(a0, a1),
         Some(Sys::Errstr) => errstr(args[0], args[1]),
         Some(Sys::Exits) => exits(args[0]),
         Some(Sys::Exec) => exec(args[0], args[1]),
@@ -61,8 +61,8 @@ pub(crate) fn dispatch(number: u64, args: [u64; abi::MAX_ARGS]) -> [u64; 2] {
         Some(_) => Err(Error::from(ENOTYET)),
         None => Err(Error::from(EBADSYS)),
     };
-    abi::encode(r.map_err(|Error(text)| {
-        let mut e = text.into_bytes();
+    abi::encode(r.map_err(|e| {
+        let mut e = e.as_str().as_bytes().to_vec();
         e.truncate(ERRMAX - 1);
         *me().errstr().lock() = e;
         Failed
@@ -105,12 +105,14 @@ fn exits(msg: u64) -> SysResult {
     proc::exits(status)
 }
 
-/// `exec(name, argv)`: replaces the thread's program.
+/// `exec(name, argv)`: replaces the thread's program, closing the
+/// descriptors marked close-on-exec.
 fn exec(name: u64, argv: u64) -> SysResult {
-    let path = uaccess::copy_in_str(name, NAME_MAX)?;
+    let name = sysfile::name_arg(name)?;
     let argv = read_argv(argv)?;
-    let l = exec::load(&path, &argv)?;
-    drop((path, argv));
+    let l = exec::load(&NameSpace::current()?, &name, &argv)?;
+    drop((name, argv));
+    drop(pgrp::fgrp()?.close_on_exec());
     proc::exec(l.mem, l.name, l.pc, l.sp)
 }
 
@@ -206,8 +208,9 @@ pub(crate) mod ktests {
     use crate::port::cpu;
     use crate::port::ktest::TestResult;
     use crate::port::mm::PAGE;
+    use crate::port::pgrp::Files;
     use crate::port::proc::{PRI_NORMAL, Proc, Spawn, State, spawn_user};
-    use crate::port::segment::{Kind, Memory, Segment};
+    use crate::port::segment::{Image, Kind, Memory, Segment};
 
     const SECOND: u64 = 1_000_000_000;
     const TEXT: u64 = 0x0000_0000_0040_0000;
@@ -260,7 +263,7 @@ pub(crate) mod ktests {
         let program = arch::context::ktests::user_test();
         let mem = Memory::new().ok_or("no memory for a space")?;
         for (kind, at) in [(Kind::Text, TEXT), (Kind::Data, DATA), (Kind::Stack, STACK)] {
-            mem.add(Segment::new(kind, at, at + PAGE, &[], 0))
+            mem.add(Segment::new(kind, at, at + PAGE, Image::NONE, 0))
                 .map_err(|_| "segments overlap")?;
         }
         let (tag, mode) = (tag.to_ne_bytes(), mode.to_ne_bytes());
@@ -279,7 +282,8 @@ pub(crate) mod ktests {
             pri: PRI_NORMAL,
             wired: Some(cpu::current().index()),
         };
-        let p = spawn_user(how, mem.clone(), TEXT, STACK + PAGE - below, DATA).ok_or("cannot spawn")?;
+        let files = Files::boot().map_err(|_| "no name space")?;
+        let p = spawn_user(how, mem.clone(), files, TEXT, STACK + PAGE - below, DATA).ok_or("cannot spawn")?;
         Ok(Run { p, mem })
     }
 

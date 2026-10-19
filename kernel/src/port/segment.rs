@@ -4,7 +4,7 @@
 //! **Segments** are Plan 9's: text, data, bss and stack, each a page-aligned
 //! range of the user half that owns the frames mapped in it. A segment may
 //! have an *image*, file bytes that fill its pages (the program's text and
-//! data, from the boot archive); the rest of every page is zero.
+//! data); the rest of every page is zero.
 //!
 //! **Demand paging.** Nothing is mapped until it is touched. A fault on an
 //! unmapped page of a segment ([`fault`]) fills a new frame and maps it,
@@ -19,6 +19,7 @@
 //! them. Shrinking the bss (`brk`) unmaps and flushes its pages first.
 
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use bootinfo::phys_to_virt;
@@ -68,6 +69,69 @@ pub(crate) enum Access {
     Exec,
 }
 
+/// Bytes that fill a segment's pages: a file's contents where they lie
+/// for good (the boot archive's, [`Image::mapped`]), or read into memory
+/// shared by the segments that use them.
+#[derive(Debug, Clone)]
+pub(crate) struct Image {
+    src: Source,
+    start: usize,
+    len: usize,
+}
+
+#[derive(Debug, Clone)]
+enum Source {
+    Static(&'static [u8]),
+    Owned(Arc<[u8]>),
+}
+
+impl Image {
+    /// No bytes: every page zero.
+    pub(crate) const NONE: Image = Image {
+        src: Source::Static(&[]),
+        start: 0,
+        len: 0,
+    };
+
+    pub(crate) fn mapped(b: &'static [u8]) -> Image {
+        Image {
+            src: Source::Static(b),
+            start: 0,
+            len: b.len(),
+        }
+    }
+
+    pub(crate) fn owned(b: Arc<[u8]>) -> Image {
+        let len = b.len();
+        Image {
+            src: Source::Owned(b),
+            start: 0,
+            len,
+        }
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        let all: &[u8] = match &self.src {
+            Source::Static(b) => b,
+            Source::Owned(b) => b,
+        };
+        &all[self.start..self.start + self.len]
+    }
+
+    /// `len` bytes from `start`, which must lie inside.
+    pub(crate) fn slice(&self, start: usize, len: usize) -> Image {
+        assert!(
+            start.checked_add(len).is_some_and(|e| e <= self.len),
+            "image slice out of range"
+        );
+        Image {
+            src: self.src.clone(),
+            start: self.start + start,
+            len,
+        }
+    }
+}
+
 /// A range of the user half and the frames mapped in it.
 #[derive(Debug)]
 pub(crate) struct Segment {
@@ -75,7 +139,7 @@ pub(crate) struct Segment {
     base: u64,
     top: u64,
     /// Bytes that belong at `image_at`, filling the pages they overlap.
-    image: &'static [u8],
+    image: Image,
     image_at: u64,
     /// Mapped pages, by address, and their frames.
     pages: BTreeMap<u64, u64>,
@@ -83,8 +147,8 @@ pub(crate) struct Segment {
 
 impl Segment {
     /// A segment over `[base, top)`, both page aligned, filled from
-    /// `image` at `image_at` (empty for none).
-    pub(crate) fn new(kind: Kind, base: u64, top: u64, image: &'static [u8], image_at: u64) -> Segment {
+    /// `image` at `image_at`.
+    pub(crate) fn new(kind: Kind, base: u64, top: u64, image: Image, image_at: u64) -> Segment {
         assert!(
             base.is_multiple_of(PAGE) && top.is_multiple_of(PAGE) && base <= top,
             "segment not page aligned"
@@ -107,13 +171,14 @@ impl Segment {
     /// zeros elsewhere.
     fn fill(&self, page: u64) -> Option<u64> {
         let frame = mm::alloc_frame()?;
+        let image = self.image.bytes();
         let (start, end) = (
             page.max(self.image_at),
-            (page + PAGE).min(self.image_at + self.image.len() as u64),
+            (page + PAGE).min(self.image_at + image.len() as u64),
         );
         if start < end {
             #[allow(clippy::cast_possible_truncation)] // inside the image
-            let from = &self.image[(start - self.image_at) as usize..(end - self.image_at) as usize];
+            let from = &image[(start - self.image_at) as usize..(end - self.image_at) as usize];
             // SAFETY: the frame is new, ours, and in the direct map; the
             // bytes fit inside it.
             unsafe {

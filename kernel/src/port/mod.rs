@@ -1,12 +1,20 @@
 //! Portable kernel code.
 
 pub(crate) mod acpi;
-pub(crate) mod archive;
+pub(crate) mod chan;
 pub(crate) mod clock;
 pub(crate) mod config;
 pub(crate) mod console;
 pub(crate) mod cpu;
+pub(crate) mod dev;
+pub(crate) mod devarch;
+pub(crate) mod devcons;
+pub(crate) mod devdup;
+pub(crate) mod devenv;
+pub(crate) mod devroot;
+pub(crate) mod devrtc;
 pub(crate) mod early;
+pub(crate) mod error;
 pub(crate) mod exec;
 pub(crate) mod heap;
 pub(crate) mod intr;
@@ -14,9 +22,11 @@ pub(crate) mod ktest;
 pub(crate) mod lock;
 pub(crate) mod mm;
 pub(crate) mod mmu;
+pub(crate) mod pgrp;
 pub(crate) mod proc;
 pub(crate) mod qlock;
 pub(crate) mod segment;
 pub(crate) mod syscall;
+pub(crate) mod sysfile;
 pub(crate) mod trap;
 pub(crate) mod uaccess;

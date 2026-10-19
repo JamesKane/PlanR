@@ -42,7 +42,7 @@ PlanR/
 │  ├─ arch/arm64/       entry, MMU, GICv3, exceptions, PSCI
 │  └─ drivers/          virtio, nvme, ahci, xhci, nics, uarts, gop/fb
 ├─ lib/                 no_std libraries, host-testable
-│  ├─ abi/              syscall numbers, typed flags, the result pair
+│  ├─ abi/              syscall numbers, typed flags, the result pair, Dir
 │  ├─ bootarc/          the boot archive format (`#/`, 9boot loads it)
 │  ├─ 9p/               9P2000 codec + client/server framework
 │  ├─ acpi/             table parser + AML interpreter

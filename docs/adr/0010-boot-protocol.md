@@ -64,8 +64,11 @@ EL2 stub vector table for that is future work.
 
 **`BootInfo`** (`lib/bootinfo`): magic `PLANR9BI`, a version, entry level,
 memory regions, RSDP, UEFI system table, framebuffer, persistent log
-ring, kernel physical location, config text, and the boot archive. All pointers are
-direct-map addresses.
+ring, kernel physical location, config text, the boot archive, and
+(version 4) the firmware clock's time just before the handoff, in seconds
+since 1970 UTC, read with `GetTime` and 0 if unreadable; the time zone
+field is ignored, as Linux ignores it. All pointers are direct-map
+addresses.
 
 **Persistent log ring** (`lib/logring`, version 2 of `BootInfo`): 1 MiB at
 the top of the highest RAM range, 2 MiB aligned, so it lands at the same

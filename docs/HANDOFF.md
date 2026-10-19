@@ -1,7 +1,7 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-18, after P2 slice 6.
+2026-10-19, after P2 slice 8.
 
 ## State
 
@@ -102,8 +102,8 @@ Where work stands, for picking it up in a new session. Last updated
        flushes the user half. `brk` moves the bss end (clamped as Plan 9
        does when the linked bss starts inside data's last page) and
        unmaps, flushes and frees what it gives up.
-     - `port/exec.rs`: `load(path, argv)` finds `path` (minus its `/`) in
-       the boot archive, checks the ELF (no W+X, nothing below 64 KiB or
+     - `port/exec.rs`: `load(path, argv)` finds `path` (in the archive
+       then; through the name space since slice 8), checks the ELF (no W+X, nothing below 64 KiB or
        into the stack, at most one writable segment, entry in text) and
        builds text, data, bss and a 16 MiB stack below `USER_TOP`, with
        the arguments laid out as `lib/abi` documents (sp at argc, argv,
@@ -122,7 +122,8 @@ Where work stands, for picking it up in a new session. Last updated
      - `lib/bootarc`: the archive format (sorted table, page-aligned
        contents, clean relative names), host-tested. 9boot loads
        `\planr\boot.arc` into its own pages (`BootInfo` version 3,
-       `archive`); `port/archive.rs` keeps it where it is.
+       `archive`); the kernel keeps it where it is (`port/devroot.rs` since
+       slice 8).
      - User space: `lib/r` (libr: `_start`, `main!`, the calls, `Error`
        holding errstr text, exit on panic) and `cmd/utest` (`tmem`,
        `targs`, `texec`, `tfault`), linked by `lib/r/user.ld` at
@@ -133,6 +134,51 @@ Where work stands, for picking it up in a new session. Last updated
        wait message; `exec: programs' memory is freed` checks the free
        frame count comes back. The slice-6 programs now run in a `Memory`
        too, with a different stack pointer each, and check it survives.
+  8. The Chan/Dev core, the name space, the first devices:
+     - `lib/abi` gains `Qid`, `Dir` with Plan 9's stat encoding
+       (`encode`, `decode`, `dirs` for directory reads, `DONT_TOUCH` for
+       wstat), and the `QT*`/`DM*` bits. Host-tested.
+     - `port/dev.rs`: `trait Dev` (attach, walk one name, stat, open,
+       create, read, write, close, remove, wstat, and `mapped` for files
+       that stay in memory), the device table (`dev::all`), and helpers
+       for table-driven devices (`Entry`, `walk_gen`, `dirread_gen`,
+       `open_checked`). Every file is owned by `eve`, the only user, so
+       the owner bits decide.
+     - `port/chan.rs`: `Chan` (device, instance, qid, cleaned name, open
+       mode, offset, union members). Names are cleaned lexically first
+       (`clean`; `..` stops at `/` or `#c`). A relative name with no `..`
+       walks from dot, any other from its root. `walk` follows the mount
+       table at the start and after each element, and after the last
+       only if asked (not for `bind`'s old or `chdir`). Union walks try
+       each member; union creates go to the first `CREATE` member, else
+       fail with "mounted directory forbids creation"; union reads go
+       member by member, from 0 or onward only. Dropping an open chan
+       calls `Dev::close`, and removes an `RCLOSE` file.
+     - `port/pgrp.rs`: `Pgrp` (mount heads keyed by `same_file`; a new
+       union starts with the mount point itself, as in Plan 9), `Fgrp`
+       (lowest free fd, at most 1024, close-on-exec), and `Files`, which
+       a user `Proc` holds: the groups, `slash` and `dot`. `Files::boot`
+       is a fresh one: `#/` at `/`, nothing bound. `exit` closes the
+       descriptors first, while the environment is still there.
+     - Devices: `#/` (`devroot`: Plan 9's mount-point directories plus
+       the archive, read-only, pages used in place), `#c` (`cons` writes
+       to the console and has no input yet; `null`, `zero`, `pid`,
+       `ppid`, `user`, `sysname`, `osversion`, `drivers`, `time`), `#e`
+       (a per-process `Egrp`), `#d`, `#r` (`rtc`, from
+       `BootInfo::boot_time`, version 4, which 9boot reads with UEFI
+       `GetTime`; the counter carries it on), `#P` (`cputype`).
+     - `port/sysfile.rs`: `open`, `create`, `close`, `read`, `write`,
+       `pread`, `pwrite`, `seek`, `stat`, `fstat`, `wstat`, `fwstat`,
+       `remove`, `fd2path`, `dup`, `chdir`, `bind`, `unmount`. Data goes
+       through a kernel buffer, at most 128 KiB a read. A stat buffer
+       too small gets just the 2-byte size. Errors are Plan 9's texts
+       (`port/error.rs`; `Error` holds a `Cow`, so a device can give its
+       own).
+     - `exec` opens its file for exec through the name space. A segment
+       `Image` is either the archive's bytes in place or an `Arc<[u8]>`
+       read in.
+     - libr wraps the new calls. `cmd/utest/tfile` exercises them on
+       every device, then runs `targs` from a copy in `#e`.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -142,7 +188,21 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-Slice 8: the Chan/Dev core, the name space, and the first devices.
+Slice 9: `rfork` with copy-on-write, `qio`/`Block`, `#|` and `#s`.
+- `rfork`: share or copy each part of `Files` as the flags say (`NAMEG`
+  shares the `Pgrp`, `CNAMEG` starts clean, a copy clones the mount
+  heads; likewise `FDG`/`CFDG` and `ENVG`/`CENVG`); `NOMNT` (refuse
+  `#` names but a few, as Plan 9 does); `REND`, a rendezvous group in
+  place of the global table; `NOWAIT`; `NOTEG`, recorded for slice 10.
+- Copy-on-write for data, bss and stack on `RFPROC` without `RFMEM`: a
+  page stays shared read-only until written, and the write fault copies
+  it. `RFMEM` shares the `Memory` (an `Arc` already); text is shared.
+- `qio`: Plan 9's queues of `Block`s with flow control, sleeping on
+  `Rendez`. Then `#|` (pipes: two data files, and the `pipe` call) and
+  `#s` (`/srv`: post a descriptor by name). These need per-file state
+  on a chan, as Plan 9's `c->aux` holds.
+
+The slice 8 plan, for reference:
 - `Dev` (Plan 9's `Dev` table as a trait: attach, walk, stat, open,
   create, read, write, remove, wstat), `Chan`, `Qid`, and `Dir` with
   Plan 9's stat encoding (likely in `lib/abi` or a small new crate,
@@ -190,6 +250,13 @@ no runs until P2's exit test. P1 results, for reference:
   `UserRegs` keeps it across switches with `TPIDR_EL0`. Without that, a
   preempted thread came back on another thread's stack pointer; the
   slice-6 test missed it because both its threads used one stack address.
+- **Never drop an open `Chan` under a spin lock:** `Dev::close` may
+  sleep once `#M` exists, so the groups take chans out under their locks
+  and drop them after. The exception is `exit` from `user_trap`, which
+  runs with interrupts off. That is fine for slice 8's devices, but it
+  will need a proper context once closes can sleep.
+- **`..` is lexical,** as in Plan 9: `chdir("..")` from a bound
+  directory goes to the parent of its name, not of what is bound there.
 - **User programs on amd64 are soft-float,** like the kernel: they build
   for `x86_64-unknown-none`, whose ABI has no SSE. The kernel still saves
   and restores user SSE state. A Plan R target (TOOLCHAIN.md) fixes it.
@@ -203,7 +270,7 @@ no runs until P2's exit test. P1 results, for reference:
 
 - **Kernel images come from `build/<arch>/kernel`,** not cargo's output:
   `xtask` copies the linked kernel there with the symbol table written in.
-  The block is 512 KiB (debug kernels use about 200 KiB); `xtask` prints
+  The block is 1 MiB (debug kernels use about 560 KiB since slice 8); `xtask` prints
   the usage and fails with a clear error if it overflows.
 - **What the board ACPI sets show** (`oracle/acpi-corpus`):
   - The Orange Pi has no SPCR. Its console comes from DBG2: a PL011 at

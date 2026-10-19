@@ -31,6 +31,12 @@ path = "src/bin/tfault.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "tfile"
+path = "src/bin/tfile.rs"
+test = false
+bench = false
+
 [dependencies]
 r = { path = "../../lib/r" }
 

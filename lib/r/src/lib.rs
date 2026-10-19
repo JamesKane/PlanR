@@ -2,6 +2,8 @@
 //! thread; for now it is what the first programs need: the start-up
 //! code, the system calls, and an exit on panic.
 //!
+//! The file calls take names as `&CStr` and give errors as [`Error`].
+//!
 //! A program is `#![no_std]` and `#![no_main]`, links with `user.ld`, and
 //! names its main function with [`main!`]:
 //!
@@ -21,7 +23,7 @@ use core::arch::{asm, global_asm};
 use core::ffi::CStr;
 use core::fmt;
 
-pub use abi::{ERRMAX, Failed, Sys};
+pub use abi::{Access, BindFlags, Dir, ERRMAX, Failed, OpenFlags, OpenMode, Qid, Sys, Whence, dirs};
 
 /// Makes `$f`, a `fn(Args) -> Result<(), &'static str>`, the program's
 /// main function.
@@ -204,6 +206,14 @@ impl Error {
     }
 }
 
+impl PartialEq for Error {
+    fn eq(&self, other: &Error) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl Eq for Error {}
+
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Error(\"{}\")", self.as_bytes().escape_ascii())
@@ -358,6 +368,166 @@ pub fn await_child(buf: &mut [u8]) -> Result<usize, Error> {
         Ok(n) => Ok(n as usize),
         Err(f) => failed(f),
     }
+}
+
+/// A file descriptor.
+pub type Fd = usize;
+
+/// Makes call `n` with `a` and gives its value as a count or descriptor.
+///
+/// # Safety
+///
+/// As for [`syscall`].
+unsafe fn call_n(n: Sys, a: [u64; abi::MAX_ARGS]) -> Result<usize, Error> {
+    // SAFETY: the caller's contract.
+    match unsafe { syscall(n, a) } {
+        #[allow(clippy::cast_possible_truncation)] // a count or descriptor
+        Ok(v) => Ok(v as usize),
+        Err(f) => failed(f),
+    }
+}
+
+fn ptr(s: &CStr) -> u64 {
+    s.as_ptr() as u64
+}
+
+/// Opens `name`.
+pub fn open(name: &CStr, mode: OpenMode) -> Result<Fd, Error> {
+    // SAFETY: `name` is NUL-terminated.
+    unsafe { call_n(Sys::Open, [ptr(name), mode.raw(), 0, 0, 0, 0]) }
+}
+
+/// Creates `name` with permissions `perm` (`DMDIR` for a directory) and
+/// opens it.
+pub fn create(name: &CStr, mode: OpenMode, perm: u32) -> Result<Fd, Error> {
+    // SAFETY: `name` is NUL-terminated.
+    unsafe { call_n(Sys::Create, [ptr(name), mode.raw(), u64::from(perm), 0, 0, 0]) }
+}
+
+pub fn close(fd: Fd) -> Result<(), Error> {
+    // SAFETY: no memory is involved.
+    unsafe { call_n(Sys::Close, [fd as u64, 0, 0, 0, 0, 0]) }.map(drop)
+}
+
+/// Reads at the descriptor's offset.
+pub fn read(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
+    // SAFETY: the kernel writes at most `buf.len()` bytes.
+    unsafe {
+        call_n(
+            Sys::Read,
+            [fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0],
+        )
+    }
+}
+
+/// Writes at the descriptor's offset.
+pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Error> {
+    // SAFETY: the kernel only reads `buf`.
+    unsafe { call_n(Sys::Write, [fd as u64, buf.as_ptr() as u64, buf.len() as u64, 0, 0, 0]) }
+}
+
+pub fn pread(fd: Fd, buf: &mut [u8], offset: u64) -> Result<usize, Error> {
+    // SAFETY: the kernel writes at most `buf.len()` bytes.
+    unsafe {
+        call_n(
+            Sys::Pread,
+            [fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64, offset, 0, 0],
+        )
+    }
+}
+
+pub fn pwrite(fd: Fd, buf: &[u8], offset: u64) -> Result<usize, Error> {
+    // SAFETY: the kernel only reads `buf`.
+    unsafe {
+        call_n(
+            Sys::Pwrite,
+            [fd as u64, buf.as_ptr() as u64, buf.len() as u64, offset, 0, 0],
+        )
+    }
+}
+
+/// Moves the descriptor's offset; returns the new one.
+pub fn seek(fd: Fd, offset: i64, whence: Whence) -> Result<u64, Error> {
+    #[allow(clippy::cast_sign_loss)] // passed as the bits of an i64
+    // SAFETY: no memory is involved.
+    unsafe { syscall(Sys::Seek, [fd as u64, offset as u64, whence as u64, 0, 0, 0]) }.or_else(failed)
+}
+
+/// Puts `name`'s encoded [`Dir`] in `buf` and returns its length; if
+/// `buf` is too small, only the size field fits, and 2 is returned.
+pub fn stat(name: &CStr, buf: &mut [u8]) -> Result<usize, Error> {
+    // SAFETY: the kernel writes at most `buf.len()` bytes.
+    unsafe {
+        call_n(
+            Sys::Stat,
+            [ptr(name), buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0],
+        )
+    }
+}
+
+/// As [`stat`], for an open file.
+pub fn fstat(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
+    // SAFETY: the kernel writes at most `buf.len()` bytes.
+    unsafe {
+        call_n(
+            Sys::Fstat,
+            [fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0],
+        )
+    }
+}
+
+/// Changes what the encoded [`Dir`] in `buf` says to change.
+pub fn wstat(name: &CStr, buf: &[u8]) -> Result<(), Error> {
+    // SAFETY: the kernel only reads `buf`.
+    unsafe { call_n(Sys::Wstat, [ptr(name), buf.as_ptr() as u64, buf.len() as u64, 0, 0, 0]) }.map(drop)
+}
+
+pub fn fwstat(fd: Fd, buf: &[u8]) -> Result<(), Error> {
+    // SAFETY: the kernel only reads `buf`.
+    unsafe { call_n(Sys::Fwstat, [fd as u64, buf.as_ptr() as u64, buf.len() as u64, 0, 0, 0]) }.map(drop)
+}
+
+pub fn remove(name: &CStr) -> Result<(), Error> {
+    // SAFETY: `name` is NUL-terminated.
+    unsafe { call_n(Sys::Remove, [ptr(name), 0, 0, 0, 0, 0]) }.map(drop)
+}
+
+/// Puts the name `fd` was opened by in `buf`, NUL-terminated, cut to fit;
+/// returns its length.
+pub fn fd2path(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
+    // SAFETY: the kernel writes at most `buf.len()` bytes.
+    unsafe {
+        call_n(
+            Sys::Fd2path,
+            [fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0],
+        )
+    }?;
+    Ok(buf.iter().position(|&b| b == 0).unwrap_or(buf.len()))
+}
+
+/// Makes `new` (the lowest free descriptor if `None`) refer to what `old`
+/// does.
+pub fn dup(old: Fd, new: Option<Fd>) -> Result<Fd, Error> {
+    let new = new.map_or(u64::MAX, |n| n as u64);
+    // SAFETY: no memory is involved.
+    unsafe { call_n(Sys::Dup, [old as u64, new, 0, 0, 0, 0]) }
+}
+
+pub fn chdir(name: &CStr) -> Result<(), Error> {
+    // SAFETY: `name` is NUL-terminated.
+    unsafe { call_n(Sys::Chdir, [ptr(name), 0, 0, 0, 0, 0]) }.map(drop)
+}
+
+/// Binds `name` onto `old`.
+pub fn bind(name: &CStr, old: &CStr, flags: BindFlags) -> Result<(), Error> {
+    // SAFETY: both names are NUL-terminated.
+    unsafe { call_n(Sys::Bind, [ptr(name), ptr(old), flags.bits(), 0, 0, 0]) }.map(drop)
+}
+
+/// Unmounts `name` from `old`, or everything there if `name` is `None`.
+pub fn unmount(name: Option<&CStr>, old: &CStr) -> Result<(), Error> {
+    // SAFETY: both names are NUL-terminated, or the first null.
+    unsafe { call_n(Sys::Unmount, [name.map_or(0, ptr), ptr(old), 0, 0, 0, 0]) }.map(drop)
 }
 
 #[panic_handler]

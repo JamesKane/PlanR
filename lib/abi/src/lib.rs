@@ -33,8 +33,15 @@
 //! `await` does. The message is empty for a normal exit, else the
 //! program's name and pid before what it exited with
 //! (`tfault 12: sys: trap: …`).
+//!
+//! **Files.** A `stat` buffer, a `wstat` buffer and each entry of a
+//! directory read hold a [`Dir`] in Plan 9's encoding.
 
 #![cfg_attr(not(test), no_std)]
+
+mod dir;
+
+pub use dir::*;
 
 /// The longest error string, NUL included (Plan 9's `ERRMAX`).
 pub const ERRMAX: usize = 128;

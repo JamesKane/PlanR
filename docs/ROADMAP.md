@@ -268,15 +268,16 @@ plus a toy 9P server). All of them pass on both architectures.
    state on switch, and user threads entered by hand.
 7. ✅ Segments, demand paging, ELF `exec`, `exits`/`await`, and the boot
    archive (`lib/bootarc`), with the first user programs on `lib/r`.
-8. Chan/Dev core: `Dev`, `Chan`, `Qid`, `Dir`, `Pgrp`/`Fgrp`/`Egrp`, the
-   mount table, `bind`/`mount`; `#/ #c #e #d #r #P`.
+8. ✅ Chan/Dev core: `Dev`, `Chan`, `Qid`, `Dir`, `Pgrp`/`Fgrp`/`Egrp`,
+   the mount table, `bind`/`unmount` (`mount` waits for `#M`); `#/ #c #e
+   #d #r #P`; `exec` through the name space.
 9. `rfork` with copy-on-write; `qio`/`Block`; `#|` and `#s`.
 10. Notes, `#p`, `alarm`, `nsec`, `semacquire`/`tsemacquire`, `segattach`.
 11. `#M` with a first 9P codec (`lib/9p`).
 12. The exit test: `init` and the user test programs, in CI on both arches.
 
 User test programs are small `no_std` Rust binaries built by `xtask`
-against `lib/abi` (no `libr` until P3). Hardware runs wait for slice 12.
+on a first `lib/r` (the full libr is P3). Hardware runs wait for slice 12.
 
 ## P3: Userland bootstrap
 

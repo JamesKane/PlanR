@@ -525,6 +525,14 @@ pub enum ResetType {
 pub struct RuntimeServices<'a>(&'a raw::RuntimeServices);
 
 impl RuntimeServices<'_> {
+    /// The time the firmware's clock gives.
+    pub fn get_time(&self) -> Result<raw::Time> {
+        let mut t = raw::Time::default();
+        // SAFETY: `t` is writable; the capabilities pointer may be null.
+        unsafe { (self.0.get_time)(&raw mut t, ptr::null_mut()) }.to_result()?;
+        Ok(t)
+    }
+
     /// Reads variable `name` (NUL-terminated, see [`ucs2`]) into `buf`, and
     /// returns its attributes and length.
     pub fn get_variable(&self, name: &[u16], vendor: &Guid, buf: &mut [u8]) -> Result<(u32, usize)> {
@@ -559,9 +567,50 @@ impl RuntimeServices<'_> {
     }
 }
 
+/// Seconds since 1970-01-01 00:00 for `t`, taken as UTC, as Linux takes
+/// the firmware clock too: the time zone field is unreliable in practice.
+/// `None` if it is not a valid date from 1970 on.
+#[must_use]
+pub fn unix_seconds(t: &raw::Time) -> Option<u64> {
+    let (y, m, d) = (i64::from(t.year), i64::from(t.month), i64::from(t.day));
+    if y < 1970 || !(1..=12).contains(&m) || !(1..=31).contains(&d) || t.hour > 23 || t.minute > 59 || t.second > 59 {
+        return None;
+    }
+    // Days from the civil date (Howard Hinnant's algorithm), with March
+    // the first month so the leap day comes last.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let secs = days * 86_400 + i64::from(t.hour) * 3_600 + i64::from(t.minute) * 60 + i64::from(t.second);
+    u64::try_from(secs).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unix_time() {
+        let t = |year, month, day, hour, minute, second| raw::Time {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            ..raw::Time::default()
+        };
+        assert_eq!(unix_seconds(&t(1970, 1, 1, 0, 0, 0)), Some(0));
+        assert_eq!(unix_seconds(&t(2000, 3, 1, 0, 0, 0)), Some(951_868_800));
+        assert_eq!(unix_seconds(&t(2024, 2, 29, 12, 34, 56)), Some(1_709_210_096));
+        assert_eq!(unix_seconds(&t(2026, 10, 18, 0, 0, 0)), Some(1_792_281_600));
+        assert_eq!(unix_seconds(&t(1969, 12, 31, 0, 0, 0)), None);
+        assert_eq!(unix_seconds(&t(2026, 13, 1, 0, 0, 0)), None);
+        assert_eq!(unix_seconds(&t(0, 0, 0, 0, 0, 0)), None);
+    }
 
     #[test]
     fn guid_display_round_trip() {

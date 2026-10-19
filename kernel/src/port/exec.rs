@@ -1,21 +1,24 @@
-//! Loading programs: a static ELF from the boot archive becomes a fresh
-//! [`Memory`] with text, data, bss and stack segments, and its arguments
-//! on the stack (ADR 0002's start-up layout). Nothing is copied but the
-//! arguments: the segments' pages fill from the file as they are touched.
-//!
-//! Until the name space arrives, a program's name is its path in the boot
-//! archive, with a leading `/` (`/boot/init` is `boot/init`).
+//! Loading programs: a static ELF file becomes a fresh [`Memory`] with
+//! text, data, bss and stack segments, and its arguments on the stack
+//! (ADR 0002's start-up layout). Nothing is copied but the arguments: the
+//! segments' pages fill from the file as they are touched. A file in the
+//! boot archive pages straight from where 9boot left it; any other is read
+//! into memory first.
 
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use abi::{Access, OpenFlags, OpenMode};
 use elf::{Elf, Machine};
 
-use crate::port::archive;
+use crate::port::chan::{self, Chan, last_elem};
+use crate::port::error::{ENOMEM, Error, Result};
 use crate::port::mm::PAGE;
+use crate::port::pgrp::{Files, NameSpace};
 use crate::port::proc::{self, Proc, Spawn};
-use crate::port::segment::{Kind, Memory, Segment};
+use crate::port::segment::{Image, Kind, Memory, Segment};
+use crate::port::sysfile::IO_MAX;
 use crate::port::uaccess::USER_TOP;
 
 #[cfg(target_arch = "x86_64")]
@@ -31,17 +34,17 @@ const STACK_BASE: u64 = USER_TOP - STACK_SIZE;
 const LOWEST: u64 = 0x1_0000;
 /// The most argument bytes (strings, NULs and pointers) exec takes.
 pub(crate) const ARGS_MAX: usize = 64 * 1024;
+/// The largest program that is read into memory to run.
+const FILE_MAX: usize = 64 << 20;
 
-pub(crate) const ENOEXIST: &str = "file does not exist";
 pub(crate) const EBADEXEC: &str = "exec header invalid";
-pub(crate) const ENOMEM: &str = "out of memory";
 pub(crate) const E2BIG: &str = "argument list too long";
 
 /// A program ready to run.
 #[derive(Debug)]
 pub(crate) struct Loaded {
     pub(crate) mem: Arc<Memory>,
-    /// The last element of its path, for the process's name.
+    /// The last element of its name, for the process's name.
     pub(crate) name: String,
     pub(crate) pc: u64,
     pub(crate) sp: u64,
@@ -55,11 +58,41 @@ fn page_up(a: u64) -> Option<u64> {
     a.checked_next_multiple_of(PAGE)
 }
 
-/// Loads the program at `path` with arguments `argv`.
-pub(crate) fn load(path: &[u8], argv: &[Vec<u8>]) -> Result<Loaded, &'static str> {
-    let path = core::str::from_utf8(path).map_err(|_| ENOEXIST)?;
-    let file = path.strip_prefix('/').and_then(archive::find).ok_or(ENOEXIST)?;
-    let elf = Elf::parse(file.data, MACHINE).map_err(|_| EBADEXEC)?;
+/// The contents of `c`, opened for exec: in place if they lie in memory
+/// for good, else read in.
+fn image_of(c: &Chan) -> Result<Image> {
+    if let Some(b) = c.dev.mapped(c) {
+        return Ok(Image::mapped(b));
+    }
+    let mut data = Vec::new();
+    loop {
+        let at = data.len();
+        if at >= FILE_MAX {
+            return Err("exec file too large".into());
+        }
+        data.resize(at + IO_MAX, 0);
+        let n = c.read(&mut data[at..], at as u64)?;
+        data.truncate(at + n);
+        if n == 0 {
+            return Ok(Image::owned(data.into()));
+        }
+    }
+}
+
+/// Loads the program `name`, resolved in `ns`, with arguments `argv`.
+pub(crate) fn load(ns: &NameSpace, name: &str, argv: &[Vec<u8>]) -> Result<Loaded> {
+    let exec = OpenMode {
+        access: Access::Exec,
+        flags: OpenFlags::empty(),
+    };
+    let c = chan::open(&ns.names(), name, exec)?;
+    if c.qid.is_dir() {
+        return Err(EBADEXEC.into());
+    }
+    let image = image_of(&c)?;
+    let prog_name = String::from(last_elem(&c.name));
+    drop(c);
+    let elf = Elf::parse(image.bytes(), MACHINE).map_err(|_| EBADEXEC)?;
     let mem = Memory::new().ok_or(ENOMEM)?;
     let mut writable = 0;
     for s in elf.segments() {
@@ -67,12 +100,13 @@ pub(crate) fn load(path: &[u8], argv: &[Vec<u8>]) -> Result<Loaded, &'static str
         let file_top = page_up(s.vaddr + s.filesz).ok_or(EBADEXEC)?;
         let top = page_up(s.vaddr + s.memsz).ok_or(EBADEXEC)?;
         if base < LOWEST || top > STACK_BASE || s.perms.write && s.perms.exec {
-            return Err(EBADEXEC);
+            return Err(EBADEXEC.into());
         }
-        let image = elf.file_data(&s);
+        #[allow(clippy::cast_possible_truncation)] // checked against the file in `parse`
+        let file = image.slice(s.offset as usize, s.filesz as usize);
         let add = |kind, base, top| {
-            mem.add(Segment::new(kind, base, top, image, s.vaddr))
-                .map_err(|_| EBADEXEC)
+            mem.add(Segment::new(kind, base, top, file.clone(), s.vaddr))
+                .map_err(|_| Error::from(EBADEXEC))
         };
         if s.perms.write {
             // Plan 9's split: file pages in data, the rest in the bss,
@@ -85,23 +119,23 @@ pub(crate) fn load(path: &[u8], argv: &[Vec<u8>]) -> Result<Loaded, &'static str
         }
     }
     if writable > 1 {
-        return Err(EBADEXEC);
+        return Err(EBADEXEC.into());
     }
     if writable == 0 {
         // An empty bss after the highest segment, for brk.
         let end = mem.segment_end();
-        mem.add(Segment::new(Kind::Bss, end, end, &[], 0))
+        mem.add(Segment::new(Kind::Bss, end, end, Image::NONE, 0))
             .map_err(|_| EBADEXEC)?;
     }
     if mem.kind_at(elf.entry()) != Some(Kind::Text) {
-        return Err(EBADEXEC);
+        return Err(EBADEXEC.into());
     }
-    mem.add(Segment::new(Kind::Stack, STACK_BASE, USER_TOP, &[], 0))
+    mem.add(Segment::new(Kind::Stack, STACK_BASE, USER_TOP, Image::NONE, 0))
         .map_err(|_| EBADEXEC)?;
     let sp = push_args(&mem, argv)?;
     Ok(Loaded {
         mem: Arc::new(mem),
-        name: String::from(path.rsplit('/').next().unwrap_or(path)),
+        name: prog_name,
         pc: elf.entry(),
         sp,
     })
@@ -109,11 +143,11 @@ pub(crate) fn load(path: &[u8], argv: &[Vec<u8>]) -> Result<Loaded, &'static str
 
 /// Writes `argv` at the top of the stack as ADR 0002 lays it out, and
 /// returns the stack pointer.
-fn push_args(mem: &Memory, argv: &[Vec<u8>]) -> Result<u64, &'static str> {
+fn push_args(mem: &Memory, argv: &[Vec<u8>]) -> Result<u64> {
     let strings: usize = argv.iter().map(|a| a.len() + 1).sum();
     let pointers = (argv.len() + 2) * 8;
     if strings + pointers + 16 > ARGS_MAX {
-        return Err(E2BIG);
+        return Err(E2BIG.into());
     }
     let strings_at = USER_TOP - strings as u64;
     let sp = (strings_at - pointers as u64) & !15;
@@ -132,17 +166,18 @@ fn push_args(mem: &Memory, argv: &[Vec<u8>]) -> Result<u64, &'static str> {
     Ok(sp)
 }
 
-/// Starts the program at `path` as a new process, a child of the calling
-/// thread.
-pub(crate) fn spawn(path: &str, argv: &[&str], pri: usize) -> Result<Arc<Proc>, &'static str> {
+/// Starts the program `name` as a new process, a child of the calling
+/// thread, in a fresh name space ([`Files::boot`]).
+pub(crate) fn spawn(name: &str, argv: &[&str], pri: usize) -> Result<Arc<Proc>> {
     let argv: Vec<Vec<u8>> = argv.iter().map(|a| a.as_bytes().to_vec()).collect();
-    let l = load(path.as_bytes(), &argv)?;
+    let files = Files::boot()?;
+    let l = load(&NameSpace::of(&files), name, &argv)?;
     let how = Spawn {
         name: &l.name,
         pri,
         wired: None,
     };
-    proc::spawn_user(how, l.mem, l.pc, l.sp, l.sp).ok_or(ENOMEM)
+    proc::spawn_user(how, l.mem, files, l.pc, l.sp, l.sp).ok_or_else(|| ENOMEM.into())
 }
 
 /// Tests run by [`crate::port::ktest`].
@@ -177,6 +212,7 @@ pub(crate) mod ktests {
         ("/boot/tfault", &["tfault", "text"], Want::Trap),
         ("/boot/tfault", &["tfault", "brk"], Want::Trap),
         ("/boot/tfault", &["tfault", "stack"], Want::Trap),
+        ("/boot/tfile", &["tfile"], Want::Status("targs from env")),
     ];
 
     /// Each child's pid and its wait message, as `await` formats it.
@@ -197,7 +233,10 @@ pub(crate) mod ktests {
             for &(path, argv, _) in RUNS {
                 match super::spawn(path, argv, PRI_NORMAL) {
                     Ok(p) => pids.push(p.pid()),
-                    Err(e) => r = Err(e),
+                    Err(e) => {
+                        crate::println!("ktest: cannot run {path}: {e}");
+                        r = Err("a program would not start");
+                    }
                 }
             }
             let sl = proc::sleepable().expect("a thread may sleep");
@@ -232,9 +271,10 @@ pub(crate) mod ktests {
 
     /// Programs from the boot archive run, exit and are awaited: data,
     /// bss, stack and brk pages appear on first touch, arguments arrive,
-    /// exec replaces a program, and faults end one with a trap status.
+    /// exec replaces a program, faults end one with a trap status, and
+    /// the file calls work on every device (`tfile`).
     pub(crate) fn programs_run() -> TestResult {
-        if crate::port::archive::find("boot/tmem").is_none() {
+        if !crate::port::devroot::has("boot/tmem") {
             return Err("no boot archive with the test programs".into());
         }
         let (waits, pids) = run_all()?;

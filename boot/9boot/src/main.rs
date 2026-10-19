@@ -155,19 +155,7 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     // memory until it is reserved.
     let log_ring = logring::setup(st, &root);
     if reset_test {
-        match (log_ring, before) {
-            // A fresh ring after the first boot: the old one was lost.
-            (Some((_, 1)), Some((at, what))) => bootnext::lost(st, &root, at, &what),
-            // The first boot arranges the second.
-            (Some((ring, 1)), None) => match bootnext::arrange(st, &root, ring.phys) {
-                Ok(n) => println!(st, "9boot: BootNext = {n:04X}, so Plan R starts again after the reset"),
-                Err(e) => println!(
-                    st,
-                    "9boot: cannot arrange a second boot ({e}); the reset may boot another OS"
-                ),
-            },
-            _ => {}
-        }
+        reset_test_boot(st, &root, log_ring, before);
     }
 
     let kernel = load_kernel(st, &kernel_file)?;
@@ -209,6 +197,7 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     info.kernel_size = kernel.size;
     info.config = Slice::new(phys_to_virt(config_phys) as *const u8, config.len());
     info.archive = archive;
+    info.boot_time = firmware_time(st);
     let info_ptr = block as *mut BootInfo;
     // SAFETY: the block starts with room for a BootInfo, page aligned.
     unsafe { info_ptr.write(info) };
@@ -373,6 +362,37 @@ fn exit_and_jump(mut st: SystemTable<Boot>, image: Handle, mut p: Prepared) -> !
     println!(st, "{ERROR_MARKER}: could not exit boot services; powering off in 15 s");
     st.boot_services().stall(15_000_000);
     st.runtime_services().reset(ResetType::Shutdown, Status::ABORTED)
+}
+
+/// The reset test's part in this boot: the first arranges the second;
+/// a second that finds a fresh ring says the old one was lost.
+fn reset_test_boot(
+    st: &SystemTable<Boot>,
+    root: &File<'_>,
+    ring: Option<(bootinfo::LogRing, u64)>,
+    before: Option<(u64, alloc::string::String)>,
+) {
+    match (ring, before) {
+        (Some((_, 1)), Some((at, what))) => bootnext::lost(st, root, at, &what),
+        (Some((ring, 1)), None) => match bootnext::arrange(st, root, ring.phys) {
+            Ok(n) => println!(st, "9boot: BootNext = {n:04X}, so Plan R starts again after the reset"),
+            Err(e) => println!(
+                st,
+                "9boot: cannot arrange a second boot ({e}); the reset may boot another OS"
+            ),
+        },
+        _ => {}
+    }
+}
+
+/// The firmware clock's time in seconds since 1970, or 0 if it cannot
+/// be read.
+fn firmware_time(st: &SystemTable<Boot>) -> u64 {
+    st.runtime_services()
+        .get_time()
+        .ok()
+        .and_then(|t| uefi::unix_seconds(&t))
+        .unwrap_or(0)
 }
 
 /// Reads the boot archive, if there is one, into pages of its own, which
