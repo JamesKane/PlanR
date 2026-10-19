@@ -338,17 +338,21 @@ pub fn rerrstr() -> Error {
     Error { text }
 }
 
-/// The most arguments [`exec`] passes.
+/// The most arguments [`exec`] passes without allocating.
 pub const MAX_EXEC_ARGS: usize = 64;
 
 /// Replaces the program with `name`, run on `argv`; returns only if that
 /// fails.
 #[must_use]
 pub fn exec(name: &CStr, argv: &[&CStr]) -> Error {
-    if argv.len() > MAX_EXEC_ARGS {
-        return Error::from_text(b"too many arguments");
-    }
-    let mut ptrs = [core::ptr::null::<u8>(); MAX_EXEC_ARGS + 1];
+    let mut small = [core::ptr::null::<u8>(); MAX_EXEC_ARGS + 1];
+    let mut big = alloc::vec::Vec::new();
+    let ptrs: &mut [*const u8] = if argv.len() <= MAX_EXEC_ARGS {
+        &mut small
+    } else {
+        big.resize(argv.len() + 1, core::ptr::null());
+        &mut big
+    };
     for (p, a) in ptrs.iter_mut().zip(argv) {
         *p = a.as_ptr().cast();
     }

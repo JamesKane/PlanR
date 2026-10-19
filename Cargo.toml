@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["boot/9boot", "cmd/init", "cmd/ramfs", "cmd/utest", "kernel", "lib/9p", "lib/abi", "lib/acpi", "lib/bootarc", "lib/bootinfo", "lib/elf", "lib/fbtext", "lib/frames", "lib/heap", "lib/ksyms", "lib/logring", "lib/r", "lib/uefi", "xtask"]
+members = ["boot/9boot", "cmd/cmds", "cmd/init", "cmd/ramfs", "cmd/rc", "cmd/utest", "kernel", "lib/9p", "lib/abi", "lib/acpi", "lib/bootarc", "lib/bootinfo", "lib/elf", "lib/fbtext", "lib/frames", "lib/heap", "lib/ksyms", "lib/logring", "lib/r", "lib/uefi", "xtask"]
 # Plan R crates build for their own targets via `cargo xtask`; a bare
 # `cargo build` at the root builds only the host tool.
 default-members = ["xtask"]
@@ -44,4 +44,12 @@ strip = "debuginfo"
 [profile.dev.package.ramfs]
 strip = "debuginfo"
 [profile.release.package.ramfs]
+strip = "debuginfo"
+[profile.dev.package.rc]
+strip = "debuginfo"
+[profile.release.package.rc]
+strip = "debuginfo"
+[profile.dev.package.cmds]
+strip = "debuginfo"
+[profile.release.package.cmds]
 strip = "debuginfo"

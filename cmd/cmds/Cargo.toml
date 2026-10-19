@@ -1,0 +1,20 @@
+[package]
+name = "cmds"
+description = "The commands that are a file each, as Plan 9's /sys/src/cmd/*.c"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autobins = false
+
+[[bin]]
+name = "echo"
+path = "src/bin/echo.rs"
+test = false
+bench = false
+
+[dependencies]
+r = { path = "../../lib/r" }
+
+[lints]
+workspace = true

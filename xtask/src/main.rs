@@ -186,10 +186,13 @@ struct Built {
 const USER_PROGRAMS: &[(&str, &[&str])] = &[
     ("init", &["init"]),
     ("ramfs", &["ramfs"]),
+    ("rc", &["rc"]),
+    ("cmds", &["echo"]),
     (
         "utest",
         &[
             "tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote", "t9p", "tcons", "tlibr", "tsys", "tramfs",
+            "trc",
         ],
     ),
 ];
@@ -467,8 +470,8 @@ fn write_images(built: &[Built], name: &str, config: &str) -> Result<Vec<PathBuf
 
 /// Crates with host unit tests (everything except the bare-metal binaries).
 const HOST_TESTED: &[&str] = &[
-    "ninep", "abi", "acpi", "bootarc", "bootinfo", "elf", "fbtext", "frames", "heap", "ksyms", "logring", "r", "uefi",
-    "xtask",
+    "ninep", "abi", "acpi", "bootarc", "bootinfo", "elf", "fbtext", "frames", "heap", "ksyms", "logring", "r", "rc",
+    "uefi", "xtask",
 ];
 
 fn with_packages(c: &mut Command, packages: &[&str]) {

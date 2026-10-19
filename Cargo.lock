@@ -19,6 +19,13 @@ name = "bootinfo"
 version = "0.1.0"
 
 [[package]]
+name = "cmds"
+version = "0.1.0"
+dependencies = [
+ "r",
+]
+
+[[package]]
 name = "elf"
 version = "0.1.0"
 
@@ -97,6 +104,13 @@ name = "ramfs"
 version = "0.1.0"
 dependencies = [
  "ninep",
+ "r",
+]
+
+[[package]]
+name = "rc"
+version = "0.1.0"
+dependencies = [
  "r",
 ]
 

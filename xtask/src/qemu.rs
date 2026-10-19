@@ -142,6 +142,10 @@ pub(crate) fn run_test(
 ) -> Result<(), String> {
     let mut c = command(arch, profile, img, m)?;
     c.args(["-display", "none", "-serial", "stdio", "-monitor", "none"]);
+    // `PLANR_GDB=port` lets gdb attach to a test that hangs.
+    if let Ok(port) = std::env::var("PLANR_GDB") {
+        c.args(["-gdb", &format!("tcp:127.0.0.1:{port}")]);
+    }
     let stdin = if input.is_empty() {
         Stdio::null()
     } else {

@@ -1,0 +1,23 @@
+[package]
+name = "rc"
+description = "The shell, with Plan 9 rc's grammar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autobins = false
+
+[lib]
+bench = false
+
+[[bin]]
+name = "rc"
+path = "src/shell/main.rs"
+test = false
+bench = false
+
+[dependencies]
+r = { path = "../../lib/r" }
+
+[lints]
+workspace = true

@@ -1,8 +1,8 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19: P3 slices 1 to 4 (console input, libr base, libr system
-layer, the 9P server framework and `ramfs`) are done.
+2026-10-19: P3 slices 1 to 5 (console input, libr base, libr system
+layer, the 9P server framework and `ramfs`, `rc` part 1) are done.
 
 ## State
 
@@ -515,6 +515,48 @@ layer, the 9P server framework and `ramfs`) are done.
        without `MCREATE`), then unmounted.
      - A server that never exits fails `memory_freed` (about 1000
        frames lost per run, checked by breaking it on purpose).
+  5. `rc`, part 1 (`cmd/rc`; `/boot/rc`):
+     - The library (host-tested): `lex` (Plan 9's `lex.c`: free carets,
+       `SUB` after a word, `>[2=1]`/`|[2]` tokens, comments,
+       `\`-newline, keywords), `parse` (recursive descent over
+       `syn.y`'s precedences, a line at a time, `if not` checked against
+       the last compiled `if` from line to line), `tree` (printed as
+       `pcmd.c` prints it: `{a;b}`, `if(c)body`, `while (c)body`, a
+       simple command's redirections first) and `pattern` (`* ? [a-z]
+       [~…]`, active only where written unquoted).
+     - The shell (`src/shell`): `exec` runs the tree. Plan 9's rules as
+       far as known: a runtime error (`Xerror`) prints `rc: …`, sets
+       `$status` to `error` and unwinds to the nearest interactive loop
+       (none yet, so the shell exits); a syntax error ends only that
+       input (script, `eval`, `.`). `$status` is the wait message
+       (`name pid: text`), a pipeline's `left|right`; true is empty or
+       only `0` and `|`. The last element of a pipeline runs in the
+       shell itself; a forked child execs its last simple command
+       instead of forking again (`exitnext`). The shell's own forks
+       (pipeline sides, `&`, `@`) take `RFENVG`, unlike Plan 9's
+       `fork()`, so their assignments stay theirs; programs share the
+       shell's environment, which `Vars::export` brings up to date
+       (changed globals, then locals, then `fn#name`) before each.
+     - `fd`: the shell redirects its own descriptors (so builtins and
+       functions see redirections) after saving each as a copy at 10 or
+       above; its private descriptors move out of a redirection's way
+       and are closed in every program run.
+     - `word`: `$x`, `$1` (`$*(1)`), `$x(n n-m n-)`, `$#`, `$"`, `^`
+       with its list rules, and globbing (directories only where more
+       follows, matches sorted, no match leaves the word).
+     - Builtins: `. builtin cd eval exec exit rfork shift wait whatis`.
+       Not yet (part 2): here documents, `` `{} ``, `<{}`/`>{}`, notes,
+       `flag`, `-eilx`, `rcmain`, the prompt and interactive use.
+     - `cmd/cmds` (new, the one-file commands): `echo`, pulled forward
+       from slice 8 because rc's tests need it (it is not a builtin).
+     - `r::exec` now passes any number of arguments (allocating past
+       64); the kernel's limit is 64 KiB of them.
+     - `cmd/utest/trc` (in `init`'s list; `-v` names each case): 43
+       scripts through `rc -c`, stdout, stderr and exit status each
+       checked, with `/boot` bound on `/bin` and files made in
+       `/tmp/trc` for the patterns.
+     - `PLANR_GDB=port cargo xtask test …` starts QEMU with a gdb stub,
+       for a test that hangs.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -524,10 +566,10 @@ layer, the 9P server framework and `ramfs`) are done.
 
 ## Next steps
 
-P3 slice 5: `rc`, part 1: the lexer, a recursive-descent parser for
-rc's grammar, and the interpreter (commands, pipelines, redirections,
-`& ; && || !`, lists, `^`, `$#`, `$"`, quoting, globbing, `if`/`if not`/
-`for`/`while`/`switch`/`~`, functions, the core builtins). The P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`;
+P3 slice 6: `rc`, part 2: here documents, `` `{} ``, `<{}`/`>{}`,
+`$status` details, `$apid`, notes (`sigint`, `sigexit`), `rcmain`,
+`-c -e -i -l -x`, the prompt, and interactive `rc` on the serial console
+in QEMU. The P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`;
 `srv` and `9fs` moved to P5).
 
 The oracle harness (slice 7) needs host plan9port, built by
@@ -608,6 +650,15 @@ P1 results, for reference:
   - Notes to kernel threads are refused.
   - `#p/n/ctl` takes only `kill`.
   - Timers run at tick resolution (10 ms).
+- **An arm64 hang, seen once (2026-10-19, slice 5):** the first boot
+  test with `trc` in it timed out in `memory_freed`'s first `init -q`
+  (60 s; `trc` never reached its 11th case), and the SMP tests after it
+  found a CPU whose clock had stopped and calls refused: a CPU wedged
+  with interrupts masked, most likely a kernel spin-lock deadlock under
+  many forks, pipes and waits at once. It did not come back in 14 more
+  arm64 boot tests and two full CI runs. If it does, rerun with
+  `PLANR_GDB=1234` and attach `gdb build/…/kernel` (`target remote
+  :1234`, `thread apply all bt`) to see where each CPU is.
 - **`ramfs` limits:** one process answers every request in order, so a
   slow request holds up the rest (none are slow yet); `DMEXCL` is kept
   in the mode but not enforced; every attach is as `eve` (see `#M`), so

@@ -67,6 +67,7 @@ const PROGRAMS: &[(&CStr, &[&CStr], Want)] = &[
     ),
     (c"/boot/tsys", &[c"tsys"], Want::Normal),
     (c"/boot/tramfs", &[c"tramfs"], Want::Normal),
+    (c"/boot/trc", &[c"trc"], Want::Normal),
 ];
 
 /// The programs `-i` runs.
