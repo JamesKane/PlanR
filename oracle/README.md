@@ -1,19 +1,22 @@
 # Oracle corpora
 
-Scripts that must behave on Plan R as on a reference. `cargo xtask
-oracle` (and `cargo xtask ci`) runs each `CORPUS/NAME.rc` on Plan R and
-compares what it writes to standard output and error, and whether it
-exits normally, with what the reference gives:
+Scripts that must behave on Plan R as on Plan 9. The reference is Plan
+9's own source (`../plan9`); plan9port is a runnable stand-in for it
+where the two agree. `cargo xtask oracle` (and `cargo xtask ci`) runs
+each `CORPUS/NAME.rc` on Plan R and compares what it writes to standard
+output and error, and whether it exits normally, with the reference:
 
 - `rc/`: the shell. The reference is plan9port's `rc`.
-- `cmd/`: the commands plan9port has (`ls`, `wc`, `xd`, `test`, …). The
+- `cmd/`: the commands, where plan9port's and Plan 9's agree. The
   reference is plan9port, running its own commands.
-- `expect/`: what plan9port cannot answer: the commands it lacks (`cp`,
-  `mv`, `pwd`, `chmod`), what depends on Plan 9's kernel or ramfs
-  (`ls -l`, `stat`'s names, the local zone), and Plan 9's error strings.
-  The reference is written down beside each script: `NAME.out` and
+- `expect/`: what plan9port cannot answer, or answers differently from
+  Plan 9: the commands it lacks (`cp`, `mv`, `pwd`, `chmod`), what
+  depends on Plan 9's kernel or ramfs (`ls -l`, `stat`'s names), Plan
+  9's error strings, and each case where plan9port's code differs from
+  Plan 9's (`print`'s `%g`, `cmp`'s and `du`'s output, …). The
+  reference is written down beside each script: `NAME.out` and
   `NAME.err` (empty if missing), and `NAME.fail` if it should fail.
-  Check each line against Plan 9's behaviour before writing it down.
+  Check each line against Plan 9's source before writing it down.
 
 plan9port's rc gives only a Unix exit code, so a status string is
 compared by echoing it. Both sides' results are kept in

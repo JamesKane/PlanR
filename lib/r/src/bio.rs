@@ -93,21 +93,29 @@ impl<R: Read> Bin<R> {
         true
     }
 
-    /// The next rune; bytes that are not UTF-8 come one at a time as
-    /// [`utf::RUNE_ERROR`]. `None` at end of file.
+    /// The next rune, as Plan 9's `Bgetrune` reads it: after a byte
+    /// that starts a sequence, as many more as it says, all taken; if
+    /// they are not UTF-8, the rune is [`utf::RUNE_ERROR`]. A sequence the
+    /// file ends in the middle of is dropped. `None` at end of file.
     pub fn getrune(&mut self) -> Result<Option<char>, Error> {
-        while !utf::full_rune(&self.buf[self.rp..self.wp]) {
-            if !self.fill()? {
-                break;
+        let Some(c) = self.getc()? else { return Ok(None) };
+        if c < utf::RUNE_SELF {
+            return Ok(Some(char::from(c)));
+        }
+        let mut s = [c, 0, 0, 0];
+        let mut i = 1;
+        loop {
+            let Some(c) = self.getc()? else { return Ok(None) };
+            if i >= utf::UTF_MAX {
+                return Ok(Some(utf::RUNE_ERROR));
+            }
+            s[i] = c;
+            i += 1;
+            if full_rune(&s[..i]) {
+                // A good sequence is all of the bytes, so none go back.
+                return Ok(Some(utf::decode(&s[..i]).0));
             }
         }
-        let (c, n) = utf::decode(&self.buf[self.rp..self.wp]);
-        if n == 0 {
-            return Ok(None);
-        }
-        self.rp += n;
-        self.offset += n as u64;
-        Ok(Some(c))
     }
 
     /// The next line, with its `delim` unless the file ended first; `None`
@@ -151,6 +159,19 @@ impl<R: Read> Bin<R> {
     /// The reader underneath.
     pub fn get_mut(&mut self) -> &mut R {
         &mut self.r
+    }
+}
+
+/// Whether `s` is as long as its first byte says a rune is (Plan 9's
+/// `fullrune`): one byte below 0x80, two below 0xe0, three below 0xf0,
+/// else four.
+fn full_rune(s: &[u8]) -> bool {
+    match s.first() {
+        None => false,
+        Some(&c) if c < 0x80 => true,
+        Some(&c) if c < 0xe0 => s.len() >= 2,
+        Some(&c) if c < 0xf0 => s.len() >= 3,
+        Some(_) => s.len() >= 4,
     }
 }
 
@@ -298,10 +319,13 @@ mod tests {
         assert_eq!(b.getrune().unwrap(), Some('世'));
         assert_eq!(b.getrune().unwrap(), Some('\u{1d11e}'));
         assert_eq!(b.getrune().unwrap(), None);
-        let mut bad = Bin::new(&b"\xe4\xb8"[..]);
+        // As Plan 9's Bgetrune: a bad sequence takes as many bytes as its
+        // first says, and one cut off by the end is dropped.
+        let mut bad = Bin::new(&b"\xe4\xb8A\x80B\xe4\xb8"[..]);
         assert_eq!(bad.getrune().unwrap(), Some(utf::RUNE_ERROR));
         assert_eq!(bad.getrune().unwrap(), Some(utf::RUNE_ERROR));
         assert_eq!(bad.getrune().unwrap(), None);
+        assert_eq!(bad.offset(), 7);
     }
 
     #[test]

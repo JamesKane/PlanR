@@ -1,0 +1,10 @@
+# strings: files are named only when there are more than two, ahead of
+# the strings; -m sets the shortest run; a broken sequence ends a run.
+echo 'hello world, this is a string' >a
+echo 'another string' >b
+echo 'and a third one' >c
+strings a b
+strings a b c
+strings -m 3 b
+strings -m || echo usage failed
+strings -x || echo usage failed

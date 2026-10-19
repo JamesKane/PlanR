@@ -1,9 +1,10 @@
-//! `cmp [-lsL] file1 file2 [offset1 [offset2]]`: compares two files
+//! `cmp [-lLs] file1 file2 [offset1 [offset2]]`: compares two files
 //! byte by byte, from the offsets (in C's bases) if given, and says where
 //! they first differ: with `-L`, at which line of `file1` too; with
 //! `-l`, every byte that differs, in decimal position and hex; with
 //! `-s`, nothing, only the exit status. A file that ends before the
-//! other is reported.
+//! other is reported (Plan 9's `cmp.c`, whose loop this keeps, so `-L`
+//! counts lines as it does).
 
 #![no_std]
 #![no_main]
@@ -12,17 +13,65 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::vec;
 
-use r::{Access, Bin, File, OpenFlags, OpenMode, Text, Whence};
+use r::{Access, OpenFlags, OpenMode, Text, Whence};
 
 r::main!(run);
 
-fn usage() -> Result<(), &'static str> {
-    r::eprintln!("Usage: cmp [-lsL] file1 file2 [offset1 [offset2] ]");
-    Err("usage")
+const BUF: usize = 65536;
+
+fn usage() -> ! {
+    r::print!("usage: cmp [-lLs] file1 file2 [offset1 [offset2] ]\n");
+    r::exits(Some(b"usage"))
 }
 
+/// Seeks `fd` to the offset `arg`, if there is one.
+fn seekoff(fd: r::Fd, name: &[u8], arg: Option<&[u8]>, sflag: bool) {
+    let Some(a) = arg else { return };
+    if !a.first().is_some_and(u8::is_ascii_digit) {
+        usage();
+    }
+    let o = r::num::strtol(a, 0).0;
+    if let Err(e) = r::seek(fd, o, Whence::Start) {
+        if !sflag {
+            r::eprintln!("cmp: {}: seek by {o}: {e}", Text(name));
+        }
+        r::exits(Some(b"seek"));
+    }
+}
+
+/// One side: its buffer, and the unread part `[s, e)`; `e < s` after a
+/// read error.
+struct Side {
+    fd: r::Fd,
+    buf: alloc::vec::Vec<u8>,
+    s: usize,
+    e: isize,
+}
+
+impl Side {
+    fn fill(&mut self) {
+        #[allow(clippy::cast_possible_wrap)] // within BUF
+        if self.s as isize >= self.e {
+            if self.s >= BUF {
+                self.s = 0;
+            }
+            let n = match r::read(self.fd, &mut self.buf[self.s..]) {
+                Ok(n) => n as isize,
+                Err(_) => -1,
+            };
+            self.e = self.s as isize + n;
+        }
+    }
+
+    #[allow(clippy::cast_possible_wrap)] // within BUF
+    fn left(&self) -> isize {
+        self.e - self.s as isize
+    }
+}
+
+#[allow(clippy::too_many_lines, clippy::many_single_char_names, clippy::naive_bytecount)] // Plan 9's main, and no crates
 fn run(args: r::Args) -> Result<(), &'static str> {
     let mut o = r::Opts::new(args.iter());
     let (mut sflag, mut lflag, mut big_l) = (false, false, false);
@@ -31,76 +80,108 @@ fn run(args: r::Args) -> Result<(), &'static str> {
             's' => sflag = true,
             'l' => lflag = true,
             'L' => big_l = true,
-            _ => return usage(),
+            _ => usage(),
         }
     }
     let rest = o.rest();
     if rest.len() < 2 || rest.len() > 4 {
-        return usage();
+        usage();
     }
     let mode = OpenMode {
         access: Access::Read,
         flags: OpenFlags::empty(),
     };
-    let mut fds = Vec::new();
-    for &name in &rest[..2] {
-        match r::cstr(name).and_then(|c| r::open(&c, mode)) {
-            Ok(fd) => fds.push(fd),
-            Err(e) => {
-                if !sflag {
-                    r::eprintln!("{}: {e}", Text(name));
-                }
-                return Err("open");
-            }
-        }
-    }
-    for (i, off) in rest[2..].iter().enumerate() {
-        if let Err(e) = r::seek(fds[i], r::num::strtol(off, 0).0, Whence::Start) {
+    let (name1, name2) = (rest[0], rest[1]);
+    let open = |name: &[u8]| match r::cstr(name).and_then(|c| r::open(&c, mode)) {
+        Ok(fd) => fd,
+        Err(e) => {
             if !sflag {
-                r::eprintln!("cmp: seek by offset{}: {e}", i + 1);
+                r::eprintln!("{}: {e}", Text(name));
             }
-            return Err(if i == 0 { "seek 1" } else { "seek 2" });
+            r::exits(Some(b"open"))
         }
-    }
-    let (name1, name2) = (Text(rest[0]), Text(rest[1]));
-    let mut f1 = Bin::new(File(fds[0]));
-    let mut f2 = Bin::new(File(fds[1]));
-    let mut out = r::Bout::new(r::STDOUT);
-    let (mut nc, mut line) = (1u64, 1u64);
+    };
+    let (f1, f2) = (open(name1), open(name2));
+    seekoff(f1, name1, rest.get(2).copied(), sflag);
+    seekoff(f2, name2, rest.get(3).copied(), sflag);
+    let mut a = Side {
+        fd: f1,
+        buf: vec![0; BUF],
+        s: 0,
+        e: 0,
+    };
+    let mut b = Side {
+        fd: f2,
+        buf: vec![0; BUF],
+        s: 0,
+        e: 0,
+    };
+    let (mut nc, mut l) = (1i64, 1i64);
     loop {
-        let a = f1.getc().map_err(|_| "read error")?;
-        let b = f2.getc().map_err(|_| "read error")?;
-        let (a, b) = match (a, b) {
-            (Some(a), Some(b)) => (a, b),
-            (None, None) => return out.flush().map_err(|_| "write error"),
-            (_, None) | (None, _) => {
-                if !sflag {
-                    let short = if a.is_none() { name1 } else { name2 };
-                    let _ = out.print(format_args!("EOF on {short}\n"));
-                }
-                let _ = out.flush();
-                return Err("EOF");
-            }
-        };
-        if a == b'\n' {
-            line += 1;
+        a.fill();
+        b.fill();
+        let n = b.left().min(a.left());
+        if n <= 0 {
+            break;
         }
-        if a != b {
+        #[allow(clippy::cast_sign_loss)] // positive
+        let n = n as usize;
+        let (p, q) = (&a.buf[a.s..a.s + n], &b.buf[b.s..b.s + n]);
+        if p != q {
             if sflag {
                 return Err("differ");
             }
-            if !lflag {
-                let _ = out.print(format_args!("{name1} {name2} differ: char {nc}"));
-                let _ = if big_l {
-                    out.print(format_args!(" line {line}\n"))
-                } else {
-                    out.write(b"\n")
-                };
-                let _ = out.flush();
-                return Err("differ");
+            for (i, (&x, &y)) in p.iter().zip(q).enumerate() {
+                if x == b'\n' {
+                    l += 1;
+                }
+                if x != y {
+                    #[allow(clippy::cast_possible_wrap)] // within BUF
+                    let at = nc + i as i64;
+                    if !lflag {
+                        if big_l {
+                            r::print!("{} {} differ: char {at} line {l}\n", Text(name1), Text(name2));
+                        } else {
+                            r::print!("{} {} differ: char {at}\n", Text(name1), Text(name2));
+                        }
+                        return Err("differ");
+                    }
+                    r::print!("{at:6} 0x{x:02x} 0x{y:02x}\n");
+                }
             }
-            let _ = out.print(format_args!("{nc:6} 0x{a:02x} 0x{b:02x}\n"));
         }
-        nc += 1;
+        if big_l {
+            #[allow(clippy::cast_sign_loss)] // after a good read
+            let end = a.e as usize;
+            #[allow(clippy::cast_possible_wrap)] // within BUF
+            {
+                l += a.buf[a.s..end].iter().filter(|&&c| c == b'\n').count() as i64;
+            }
+        }
+        #[allow(clippy::cast_possible_wrap)] // within BUF
+        {
+            nc += n as i64;
+        }
+        a.s += n;
+        b.s += n;
     }
+    if a.left() < 0 || b.left() < 0 {
+        if !sflag {
+            if a.left() < 0 {
+                r::print!("error on {} after {} bytes\n", Text(name1), nc - 1);
+            }
+            if b.left() < 0 {
+                r::print!("error on {} after {} bytes\n", Text(name2), nc - 1);
+            }
+        }
+        return Err("read error");
+    }
+    if a.left() == b.left() {
+        return Ok(());
+    }
+    if !sflag {
+        let short = if a.left() > b.left() { name2 } else { name1 };
+        r::print!("EOF on {} after {} bytes\n", Text(short), nc - 1);
+    }
+    Err("EOF")
 }

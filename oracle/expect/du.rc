@@ -1,0 +1,14 @@
+# du, as Plan 9's: whole blocks counted in kbytes rounding up, names
+# quoted as rc would, -e -h -p, and usage.
+echo hello >a
+echo hello >'with space'
+du -b 512 a
+du -b 2kk a
+du 'with space'
+du -e a
+du -n -e a
+du -p k a
+du -p m a
+du -h a
+du -p x a || echo suffix failed
+du -z || echo usage failed

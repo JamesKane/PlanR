@@ -1,0 +1,8 @@
+# wc: words are separated by white space as isspacerune sees it, so an
+# ideographic or no-break space separates them too.
+echo 'héllo wörld' | wc -lwrbc
+echo 'a　b' | wc -w
+echo 'a b' | wc -w
+echo 'a
+b' >f
+wc -lwrbc f f

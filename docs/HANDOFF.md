@@ -664,45 +664,58 @@ oracle harness, the file commands) are done.
   8. The file commands:
      - `cmd/cmds` (a binary each, in the archive's `/boot`, so `/bin`):
        `ls cp mv rm mkdir pwd touch chmod basename cleanname seq date
-       sleep wc tee test cmp xd strings tail du`, ported from plan9port's
-       sources where it has them (`~/plan9port/src/cmd/*.c`), and from
-       Plan 9's behaviour for `cp mv pwd chmod`. Flags, messages, exit
-       statuses and quirks are Plan 9's, deliberately: `strings`
-       reports a run at offset 0 as at 1 and prints file names ahead of
-       buffered strings; `xd -r` drops the bytes read past a repeated
-       line; `cmp -l` exits normally when the lengths match; `chmod`
-       exits normally after errors; `du`'s total takes `-t` over `-q`;
-       `tail -rc3` ignores the `c3`; `test`'s `-o`/`-a` do not read
-       their right side once decided.
-     - libr: `num` (`strtol`, `strtoul`, `atol`, `strtod`, `atof`, C's
-       `%e %f %g` as `format_float`/`printf_float`, for `seq -f`),
-       `access` with `AEXIST AEXEC AWRITE AREAD`, `perror`, and `Mode`
-       (`%M`, `d-rwxr-xr-x`). `cmds` now depends on `abi` too.
+       sleep wc tee test cmp xd strings tail du`, each a port of Plan 9's
+       own `sys/src/cmd/NAME.c` in `../plan9` (the reference, not
+       plan9port: the user's rule, 2026-10-19). Flags, messages, exit
+       statuses and quirks are Plan 9's, deliberately: `strings` reports
+       a run at offset 0 as at 1, names files only when there are more
+       than two, and prints the names ahead of the buffered strings;
+       `xd -r` drops the bytes read past a repeated line; `cmp -l` exits
+       normally when the lengths match, and its usage goes to standard
+       output; `chmod` exits normally after errors; `tail -rc3` ignores
+       the `c3`; `test`'s `-o`/`-a` do not read their right side once
+       decided; `wc` counts runes with `Bgetrune` and words with
+       `isspacerune`; `sleep` takes up to three decimal places; `du`
+       rounds to blocks and then up to its unit.
+     - libr, each a port of Plan 9's libc and checked against it: `num`
+       (`strtol`, `strtoul`, `atol`, `strtod` with `nan`/`inf`, and
+       `fltfmt.c`'s `%e %f %g` as `format_float`/`printf_float`: `%g`
+       keeps 7 digits, prints `.5`, rounds half up in decimal, ignores
+       the `0` flag), `access`, `perror`, `Mode` (`%M`),
+       `utf::is_space_rune`; `Bin::getrune` is now `Bgetrune` (a broken
+       sequence takes the bytes its first says, a cut-off one at the end
+       is dropped); `time`'s zone file is read as `readtimezone` reads it
+       (three-letter names, blanks and newlines only, any error means
+       GMT, a 0 ends the times) and `asctime` is Plan 9's (a short zone
+       ends the text; the year is `19`/`20` and two digits). Integers are
+       64 bits where Plan 9's `long` is 32.
+     - How they were checked: Plan 9's `fltfmt.c`, `pow10.c`,
+       `cleanname.c`, `strtol.c`, `strtoul.c` and `atol.c` compile on the
+       host behind a small shim header (the `u.h`/`libc.h` types, `Fmt`
+       with `flags`/`prec`/`r`), and libr's ports were run against them:
+       11 449 random `%e %f %g` cases and 18 000 integer and `cleanname`
+       cases agree, but for 32-bit overflow. libr's `cleanname` already
+       matched Plan 9's, `#c` roots and all.
      - Kernel: `seek` on a pipe fails with "seek on a stream", as Plan
-       9's, which `tail` relies on to tell a pipe from a file. `test=oracle`
-       allows init 600 s (the corpus takes minutes on arm64 under
+       9's (`tail` tells a pipe from a file by it). `test=oracle` allows
+       init 600 s (the corpus takes about two minutes on arm64 under
        emulation; other modes keep 60), and xtask's oracle boot at least
        660.
-     - The oracle has three corpora now, scripts named `CORPUS/NAME`
+     - The oracle has three corpora, scripts named `CORPUS/NAME`
        (`oracle/README.md`, moved up from `oracle/rc/`): `rc`, `cmd` (16
-       scripts, a command each, against plan9port's commands) and
-       `expect` (`pwd cp mv chmod`, `ls -l`/`-m`/`du -t`/`mkdir -m`/the
-       local zone, and each command's errors with Plan 9's strings),
-       whose expected output is written down in `NAME.out`, `NAME.err`
-       and `NAME.fail`, each line checked against Plan 9's behaviour.
-       `allow` is optional. `toracle` runs every corpus under
-       `/sys/lib/oracle`.
-     - Differences found that are plan9port's, not ours, so kept out of
-       `cmd/`: a bare `=` argument (plan9port's 2020 parser takes it;
-       Plan 9's grammar makes it a syntax error, so the scripts quote
-       it); the name `stat` gives `.` (Plan 9's kernel names it for its
-       directory, so `ls -d .` prints that; in `expect/lsl`); `seq -f`
-       with two conversions (C varargs garbage).
-     - Open: libr's `cleanname` treats `#c` as a root, so
-       `cleanname '#c/../x'` gives `#c/x`; plan9port's (and, as far as
-       I know, Plan 9 libc's) gives `x`. The kernel's own cleaning does
-       keep `#c`. Left alone and out of the corpus; decide when a
-       program needs it.
+       scripts, the cases where plan9port's commands and Plan 9's agree)
+       and `expect` (15: `pwd cp mv chmod`, `ls -l`, Plan 9's error
+       strings, and every case where Plan 9 differs from plan9port:
+       `%g`, `cmp`'s messages, `du`'s rounding and flags, `ls`'s
+       cleaning and `-T`, `strings`, `sleep`, `wc`'s white space),
+       whose expected output is written in `NAME.out`, `NAME.err` and
+       `NAME.fail`, each line checked against Plan 9's source. `allow` is
+       optional. `toracle` runs every corpus under `/sys/lib/oracle`.
+     - plan9port is not Plan 9: besides the above, its rc's 2020 parser
+       takes a bare `=` as an argument (Plan 9's grammar makes it a
+       syntax error, as ours does, so scripts quote it), and its `stat`
+       names `.` as `.` (Plan 9's kernel names it for its directory, so
+       `ls -d .` prints that).
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -729,6 +742,12 @@ for `<{}`, and `/dev/stdin` interactively. Its tools' error strings are
 Unix's, so scripts that show them send stderr to `/dev/null` or go in
 `oracle/expect`. Its `cp mv pwd chmod` are missing from `$PLAN9/bin`
 (the oracle's `PATH` has only that), so those are in `expect` too.
+
+The reference for behaviour is Plan 9's own tree, `../plan9`
+(`/home/jkane/Projects/OS/plan9`, Fourth Edition 2025-10-28): port from
+its `sys/src`, and check a case against plan9port only where the two
+agree; where they differ, Plan 9 wins and the case goes in
+`oracle/expect`.
 
 The slice 12 plan, for reference: an `init` in the boot archive that
 builds a name space, runs the test programs and reports on the console,

@@ -1,7 +1,8 @@
-//! `wc [-lwrbc] [file ...]`: counts the lines, words, runes, bytes that
-//! are not UTF-8 ("bad runes") and bytes of each file, or of standard
-//! input, and the total of several; lines, words and bytes unless told.
-//! Words are separated by blanks, tabs and newlines.
+//! `wc [-lwrbc] [file ...]`: counts the lines, words, runes, broken
+//! UTF-8 sequences ("bad runes") and bytes of each file, or of standard
+//! input, and the total of several; lines, words and bytes unless told
+//! (Plan 9's `wc.c`). Words are separated by white space, as
+//! `isspacerune` sees it; a bad rune is a rune but not part of a word.
 
 #![no_std]
 #![no_main]
@@ -13,7 +14,8 @@ extern crate alloc;
 use alloc::string::String;
 use core::fmt::Write as _;
 
-use r::{Access, OpenFlags, OpenMode};
+use r::utf::{RUNE_ERROR, is_space_rune};
+use r::{Access, Bin, File, OpenFlags, OpenMode};
 
 r::main!(run);
 
@@ -36,72 +38,26 @@ impl core::ops::AddAssign for Counts {
     }
 }
 
-/// Where in the text: between words, in one, or in a rune that needs
-/// this many more bytes.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum State {
-    Space,
-    Word,
-    More(u8),
-}
-
-/// Counts `b`: the state after it, and whether it starts a word, is not
-/// a rune of its own, is bad, ends a line. This is Plan 9's table.
-fn step(s: State, b: u8) -> (State, bool, bool, bool, bool) {
-    use State::{More, Space, Word};
-    match s {
-        Space | Word => {
-            let w = s == Space;
-            match b {
-                b'\t' | b' ' => (Space, false, false, false, false),
-                b'\n' => (Space, false, false, false, true),
-                0..=0x7f => (Word, w, false, false, false),
-                0xc0..=0xdf => (More(1), w, false, false, false),
-                0xe0..=0xef => (More(2), w, false, false, false),
-                0xf0..=0xf7 => (More(3), w, false, false, false),
-                _ => (Word, w, false, true, false),
-            }
-        }
-        More(n) => match b {
-            b'\t' | b' ' => (Space, false, false, true, false),
-            b'\n' => (Space, false, false, true, true),
-            0x80..=0x97 if n == 3 => (More(2), false, true, false, false),
-            0x80..=0xbf if n < 3 => (if n == 1 { Word } else { More(1) }, false, true, false, false),
-            0xc0..=0xdf => (More(1), false, false, true, false),
-            0xe0..=0xef => (More(2), false, false, true, false),
-            0xf0..=0xf7 => (More(3), false, false, true, false),
-            _ => (Word, false, false, true, false),
-        },
-    }
-}
-
-fn count(fd: r::Fd, name: &str) -> Counts {
+fn wc(bin: &mut Bin<File>) -> Counts {
     let mut c = Counts::default();
-    let mut state = State::Space;
-    let mut buf = alloc::vec![0u8; 8192];
-    loop {
-        let n = match r::read(fd, &mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) => {
-                r::eprintln!("{name}: {e}");
-                break;
-            }
-        };
-        c.bytes += n as u64;
-        c.runes += n as u64;
-        for &b in &buf[..n] {
-            let (next, word, part, bad, line) = step(state, b);
-            state = next;
-            c.words += u64::from(word);
-            c.runes -= u64::from(part);
-            c.bad += u64::from(bad);
-            c.lines += u64::from(line);
+    let mut in_word = false;
+    while let Ok(Some(r)) = bin.getrune() {
+        c.runes += 1;
+        if r == RUNE_ERROR {
+            c.bad += 1;
+            continue;
+        }
+        if r == '\n' {
+            c.lines += 1;
+        }
+        if in_word {
+            in_word = !is_space_rune(r);
+        } else if !is_space_rune(r) {
+            in_word = true;
+            c.words += 1;
         }
     }
-    if matches!(state, State::More(_)) {
-        c.bad += 1;
-    }
+    c.bytes = bin.offset();
     c
 }
 
@@ -116,7 +72,7 @@ struct Show {
     bytes: bool,
 }
 
-fn report(show: &Show, c: &Counts, name: Option<&str>) {
+fn report(show: &Show, c: &Counts, name: Option<&[u8]>) {
     let mut line = String::new();
     for (on, n) in [
         (show.lines, c.lines),
@@ -129,10 +85,13 @@ fn report(show: &Show, c: &Counts, name: Option<&str>) {
             let _ = write!(line, " {n:7}");
         }
     }
+    let mut out = line.into_bytes();
     if let Some(name) = name {
-        let _ = write!(line, " {name}");
+        out.push(b' ');
+        out.extend_from_slice(name);
     }
-    r::println!("{}", line.get(1..).unwrap_or(""));
+    out.push(b'\n');
+    let _ = r::write(1, out.get(1..).unwrap_or_default());
 }
 
 fn run(args: r::Args) -> Result<(), &'static str> {
@@ -158,7 +117,7 @@ fn run(args: r::Args) -> Result<(), &'static str> {
     }
     let files = o.rest();
     if files.is_empty() {
-        report(&show, &count(0, ""), None);
+        report(&show, &wc(&mut Bin::new(r::STDIN)), None);
         return Ok(());
     }
     let mode = OpenMode {
@@ -170,9 +129,8 @@ fn run(args: r::Args) -> Result<(), &'static str> {
     for f in &files {
         match r::cstr(f).and_then(|c| r::open(&c, mode)) {
             Ok(fd) => {
-                let name = alloc::format!("{}", r::Text(f));
-                let c = count(fd, &name);
-                report(&show, &c, Some(&name));
+                let c = wc(&mut Bin::new(File(fd)));
+                report(&show, &c, Some(f));
                 total += c;
                 let _ = r::close(fd);
             }
@@ -183,7 +141,7 @@ fn run(args: r::Args) -> Result<(), &'static str> {
         }
     }
     if files.len() > 1 {
-        report(&show, &total, Some("total"));
+        report(&show, &total, Some(b"total"));
     }
     status
 }

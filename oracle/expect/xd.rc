@@ -1,0 +1,3 @@
+# xd: Plan 9's has no -S.
+echo hello >a
+xd -S a || echo usage failed

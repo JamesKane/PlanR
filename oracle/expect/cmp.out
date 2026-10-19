@@ -1,0 +1,16 @@
+     4 0x6c 0x70
+     5 0x6f 0x0a
+EOF on c after 5 bytes
+listed
+EOF on p after 5 bytes
+eof
+EOF on p after 5 bytes
+eof
+usage: cmp [-lLs] file1 file2 [offset1 [offset2] ]
+usage failed
+usage: cmp [-lLs] file1 file2 [offset1 [offset2] ]
+usage failed
+usage: cmp [-lLs] file1 file2 [offset1 [offset2] ]
+usage failed
+usage: cmp [-lLs] file1 file2 [offset1 [offset2] ]
+usage failed

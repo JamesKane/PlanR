@@ -1,10 +1,12 @@
-//! `strings [file ...]`: the runs of at least 6 printable runes in each
-//! file, or standard input, each with its offset; a run of 69 is printed
-//! and a new one started, marked `...`. With several files, each is
-//! named first.
+//! `strings [-m min] [file ...]`: the runs of at least `min` (6)
+//! printable runes in each file, or standard input, each with its
+//! offset; a run of 69 is printed and a new one started, marked `...`
+//! (Plan 9's `strings.c`).
 //!
-//! As Plan 9's, a run that starts at offset 0 is reported at the offset
-//! of its second rune.
+//! As Plan 9's: a run that starts at offset 0 is reported at the offset
+//! of its second rune; files are named only when there are more than
+//! two, and the names are printed straight away, ahead of the buffered
+//! strings.
 
 #![no_std]
 #![no_main]
@@ -23,10 +25,21 @@ const MINSPAN: usize = 6;
 const BUFSIZE: usize = 70;
 
 fn printable(c: char) -> bool {
-    (' '..'\u{7f}').contains(&c) || c > '\u{a0}'
+    c != r::utf::RUNE_ERROR && ((' '..'\u{7f}').contains(&c) || c > '\u{a0}')
 }
 
-fn stringit(fd: r::Fd, out: &mut Bout<File>) {
+fn stringit(name: &[u8], minspan: usize, out: &mut Bout<File>) {
+    let mode = OpenMode {
+        access: Access::Read,
+        flags: OpenFlags::empty(),
+    };
+    let fd = match r::cstr(name).and_then(|c| r::open(&c, mode)) {
+        Ok(fd) => fd,
+        Err(e) => {
+            r::eprintln!("open: {e}");
+            return;
+        }
+    };
     let mut fin = Bin::new(File(fd));
     let mut run = String::new();
     let mut cnt = 0;
@@ -46,7 +59,7 @@ fn stringit(fd: r::Fd, out: &mut Bout<File>) {
                 run.clear();
             }
         } else {
-            if cnt >= MINSPAN {
+            if cnt >= minspan {
                 let _ = out.print(format_args!("{start:8}: {run}\n"));
             }
             start = 0;
@@ -55,34 +68,40 @@ fn stringit(fd: r::Fd, out: &mut Bout<File>) {
         }
         posn = fin.offset();
     }
-    if cnt >= MINSPAN {
+    if cnt >= minspan {
         let _ = out.print(format_args!("{start:8}: {run}\n"));
     }
+    let _ = r::close(fd);
 }
 
 fn run(args: r::Args) -> Result<(), &'static str> {
-    let mut out = Bout::new(r::STDOUT);
-    if args.len() < 2 {
-        stringit(0, &mut out);
-        return out.flush().map_err(|_| "write error");
-    }
-    let mode = OpenMode {
-        access: Access::Read,
-        flags: OpenFlags::empty(),
+    let mut o = r::Opts::new(args.iter());
+    let argv0 = o.argv0();
+    let usage = || {
+        r::eprintln!("usage: {} [-m min] [file...]", Text(argv0));
+        Err("usage")
     };
-    for f in args.iter().skip(1) {
-        // Unbuffered, unlike the strings, as Plan 9's: with output to
-        // a file, the names come first.
-        if args.len() > 2 {
+    let mut minspan = MINSPAN;
+    while let Some(c) = o.next() {
+        match c {
+            'm' => {
+                let Some(m) = o.arg() else { return usage() };
+                // A negative minimum is as good as none.
+                minspan = usize::try_from(r::num::atol(m)).unwrap_or(0);
+            }
+            _ => return usage(),
+        }
+    }
+    let files = o.rest();
+    let mut out = Bout::new(r::STDOUT);
+    if files.is_empty() {
+        stringit(b"/fd/0", minspan, &mut out);
+    }
+    for f in &files {
+        if files.len() > 2 {
             r::print!("{}:\n", Text(f));
         }
-        match r::cstr(f).and_then(|c| r::open(&c, mode)) {
-            Ok(fd) => {
-                stringit(fd, &mut out);
-                let _ = r::close(fd);
-            }
-            Err(e) => r::eprintln!("open: {e}"),
-        }
+        stringit(f, minspan, &mut out);
     }
     out.flush().map_err(|_| "write error")
 }

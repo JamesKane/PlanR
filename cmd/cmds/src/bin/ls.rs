@@ -1,11 +1,15 @@
-//! `ls [-dlmnpqrstuFQ] [file ...]`: lists each file, or what is in each
-//! directory, sorted by name. `-l` gives the long form (mode, device
-//! type and number, owner, group, length, time), `-s` sizes in kbytes,
-//! `-m` who last changed it, `-q` the qid; `-t` sorts by time, newest
-//! first, `-u` takes the access time instead, `-r` reverses, `-n` does
-//! not sort; `-d` lists a directory itself, `-p` names without their
-//! directories, `-F` marks directories with `/` and executables with
-//! `*`, and `-Q` does not quote names as rc would.
+//! `ls [-dlmnpqrstuFQT] [file ...]`: lists each file, or what is in each
+//! directory, sorted by name (Plan 9's `ls.c`). `-l` gives the long form
+//! (mode, device type and number, owner, group, length, time), `-s`
+//! sizes in kbytes, `-m` who last changed it, `-q` the qid, `-T` a `t`
+//! for a temporary file; `-t` sorts by time, newest first, `-u` takes
+//! the access time instead, `-r` reverses, `-n` does not sort; `-d` lists
+//! a directory itself, `-p` names without their directories, `-F` marks
+//! directories with `/` and executables with `*`, and `-Q` does not
+//! quote names as rc would (owners are quoted regardless).
+//!
+//! A name has its slashes compressed and trailing ones taken off, and a
+//! file is shown by the name `stat` gives it.
 
 #![no_std]
 #![no_main]
@@ -38,6 +42,7 @@ struct Flags {
     t: bool,
     u: bool,
     big_f: bool,
+    big_t: bool,
 }
 
 /// An entry to print, and the directory it was found in, if it is to be
@@ -55,8 +60,9 @@ struct Ls {
     qwidth: usize,
     vwidth: usize,
     uwidth: usize,
+    gwidth: usize,
+    lwidth: usize,
     mwidth: usize,
-    glwidth: usize,
     /// The time now, for `-l`.
     clk: i64,
     out: Bout<File>,
@@ -65,10 +71,6 @@ struct Ls {
 impl Ls {
     /// Lists `s`; false if it cannot.
     fn ls(&mut self, s: &[u8], multi: bool) -> bool {
-        let mut s = s;
-        while s.len() > 1 && s.ends_with(b"/") {
-            s = &s[..s.len() - 1];
-        }
         let fail = |e: r::Error, out: &mut Bout<File>| {
             let _ = out.flush();
             r::eprintln!("ls: {}: {e}", Text(s));
@@ -100,21 +102,18 @@ impl Ls {
                 Ok(a) => a,
                 Err(e) => return fail(e, &mut self.out),
             };
+            let s = xcleanname(s);
             for d in all {
                 self.entries.push(Entry {
                     d,
-                    prefix: multi.then(|| s.to_vec()),
+                    prefix: multi.then(|| s.clone()),
                 });
             }
             self.output();
         } else {
-            let mut e = Entry { d, prefix: None };
-            if let Some(i) = s.iter().rposition(|&b| b == b'/') {
-                e.prefix = Some(s[..i].to_vec());
-                // The name as given, not as stat gives it.
-                e.d.name = String::from_utf8_lossy(&s[i + 1..]).into_owned();
-            }
-            self.entries.push(e);
+            let s = xcleanname(s);
+            let prefix = s.iter().rposition(|&b| b == b'/').map(|i| s[..i].to_vec());
+            self.entries.push(Entry { d, prefix });
         }
         true
     }
@@ -173,13 +172,15 @@ impl Ls {
         if self.f.q {
             self.qwidth = self.qwidth.max(width(u64::from(d.qid.vers)));
         }
+        let quoted = |s: &str| alloc::format!("{}", RcQuoted(s.as_bytes())).len();
         if self.f.m {
-            self.mwidth = self.mwidth.max(d.muid.len() + 2);
+            self.mwidth = self.mwidth.max(quoted(&d.muid) + 2);
         }
         if self.f.l {
             self.vwidth = self.vwidth.max(width(u64::from(d.dev)));
-            self.uwidth = self.uwidth.max(d.uid.len());
-            self.glwidth = self.glwidth.max(width(d.length) + d.gid.len());
+            self.uwidth = self.uwidth.max(quoted(&d.uid));
+            self.gwidth = self.gwidth.max(quoted(&d.gid));
+            self.lwidth = self.lwidth.max(width(d.length));
         }
     }
 
@@ -189,7 +190,11 @@ impl Ls {
             let _ = write!(line, "{:>w$} ", d.length.div_ceil(1024), w = self.swidth);
         }
         if self.f.m {
-            let _ = write!(line, "{:<w$} ", alloc::format!("[{}]", d.muid), w = self.mwidth);
+            let _ = write!(line, "[{}] ", RcQuoted(d.muid.as_bytes()));
+            // Plan 9's padding counts the name unquoted.
+            for _ in 2 + d.muid.len()..self.mwidth {
+                line.push(' ');
+            }
         }
         if self.f.q {
             let _ = write!(
@@ -201,21 +206,26 @@ impl Ls {
                 w = self.qwidth
             );
         }
+        if self.f.big_t {
+            line.push(if d.mode & abi::DMTMP != 0 { 't' } else { '-' });
+            line.push(' ');
+        }
         if self.f.l {
             let t = if self.f.u { d.atime } else { d.mtime };
             let _ = write!(
                 line,
-                "{} {} {:>vw$} {:<uw$} {} {:>lw$} {} ",
+                "{} {} {:>vw$} {:<uw$} {:<gw$} {:>lw$} {} ",
                 Mode(d.mode),
                 char::from_u32(u32::from(d.ty)).unwrap_or('?'),
                 d.dev,
-                d.uid,
-                d.gid,
+                alloc::format!("{}", RcQuoted(d.uid.as_bytes())),
+                alloc::format!("{}", RcQuoted(d.gid.as_bytes())),
                 d.length,
                 asciitime(i64::from(t), self.clk),
                 vw = self.vwidth,
                 uw = self.uwidth,
-                lw = self.glwidth.saturating_sub(d.gid.len()),
+                gw = self.gwidth,
+                lw = self.lwidth,
             );
         }
         if self.f.big_q {
@@ -233,6 +243,22 @@ impl Ls {
         line.push('\n');
         let _ = self.out.write(line.as_bytes());
     }
+}
+
+/// `name` with runs of slashes made one, and trailing slashes taken off
+/// (not `.` and `..`: Plan 9's `xcleanname`).
+fn xcleanname(name: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(name.len());
+    for (i, &c) in name.iter().enumerate() {
+        if c == b'/' && i > 0 && name[i - 1] == b'/' {
+            continue;
+        }
+        out.push(c);
+    }
+    while out.len() > 1 && out.last() == Some(&b'/') {
+        out.pop();
+    }
+    out
 }
 
 /// `t` as `-l` shows it: month, day and time, or month, day and year if
@@ -267,8 +293,9 @@ fn run(args: r::Args) -> Result<(), &'static str> {
             's' => f.s = true,
             't' => f.t = true,
             'u' => f.u = true,
+            'T' => f.big_t = true,
             _ => {
-                r::eprintln!("usage: ls [-dlmnpqrstuFQ] [file ...]");
+                r::eprintln!("usage: ls [-dlmnpqrstuFQT] [file ...]");
                 return Err("usage");
             }
         }
@@ -282,8 +309,9 @@ fn run(args: r::Args) -> Result<(), &'static str> {
         qwidth: 0,
         vwidth: 0,
         uwidth: 0,
+        gwidth: 0,
+        lwidth: 0,
         mwidth: 0,
-        glwidth: 0,
         out: Bout::new(r::STDOUT),
     };
     let mut ok = true;

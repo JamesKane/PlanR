@@ -1,0 +1,5 @@
+# sleep: Plan 9's takes up to three decimal places.
+sleep 0.5 && echo half
+sleep .25 && echo quarter
+sleep 0.1234 && echo cut
+sleep 0x1 && echo hex

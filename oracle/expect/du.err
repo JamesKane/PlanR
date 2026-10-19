@@ -1,0 +1,2 @@
+du: unknown suffix x
+usage: du [-aefhnqstu] [-b size] [-p si-pfx] [file ...]

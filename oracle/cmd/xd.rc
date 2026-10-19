@@ -25,7 +25,6 @@ xd -ao a
 xd -c -x a
 xd -x -c -1d a
 xd -s a
-xd -S a
 xd -R u
 xd -c u
 xd -r -c rr

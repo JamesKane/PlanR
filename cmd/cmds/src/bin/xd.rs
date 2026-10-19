@@ -4,8 +4,8 @@
 //! default) or 8 bytes at a time (`b w l v`, or `1 2 4 8`) in octal,
 //! decimal or hex (the default); or as characters (`-c`), or runes
 //! (`-R`). `-a` sets the address's base, `-r` prints `*` for lines that
-//! repeat, `-s` (`-S`) swaps the bytes of each 4 (8), `-u` writes each
-//! line as it is made.
+//! repeat, `-s` swaps the bytes of each 4, `-u` writes each line as it is
+//! made (Plan 9's `xd.c`).
 
 #![no_std]
 #![no_main]
@@ -50,7 +50,6 @@ struct Xd {
     abase: usize,
     repeats: bool,
     swizzle: bool,
-    swizzle8: bool,
     flush: bool,
     out: Bout<File>,
     /// The 32 bytes read; the first 16 are shown.
@@ -179,8 +178,8 @@ impl Xd {
         self.nstart = i.saturating_sub(self.ndata);
     }
 
-    fn swizz(&mut self, n: usize) {
-        for chunk in self.data[..16].chunks_mut(n) {
+    fn swizz(&mut self) {
+        for chunk in self.data[..16].chunks_mut(4) {
             chunk.reverse();
         }
     }
@@ -228,10 +227,7 @@ impl Xd {
                 self.data[self.ndata..nsee].fill(0);
             }
             if self.swizzle {
-                self.swizz(4);
-            }
-            if self.swizzle8 {
-                self.swizz(8);
+                self.swizz();
             }
             if self.ndata == nsee && self.repeats {
                 if addr > 0 && self.data[..nsee] == self.odata {
@@ -286,7 +282,6 @@ fn run(argv: r::Args) -> Result<(), &'static str> {
         abase: 2,
         repeats: false,
         swizzle: false,
-        swizzle8: false,
         flush: false,
         out: Bout::new(r::STDOUT),
         data: [0; 32],
@@ -305,9 +300,8 @@ fn run(argv: r::Args) -> Result<(), &'static str> {
         match flag {
             b"r" => x.repeats = true,
             b"s" => x.swizzle = true,
-            b"S" => x.swizzle8 = true,
             b"u" => x.flush = true,
-            [b'r' | b's' | b'S' | b'u', ..] => usage(),
+            [b'r' | b's' | b'u', ..] => usage(),
             [b'a', rest @ ..] => {
                 x.abase = match rest {
                     b"o" => 0,

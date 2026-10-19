@@ -4,18 +4,19 @@
 //!
 //! A zone file is Plan 9's: standard name and offset in seconds,
 //! daylight name and offset, then pairs of local standard times between
-//! which daylight time holds:
+//! which daylight time holds, ended by a 0 or the end of the file:
 //!
 //! ```text
 //! EST -18000 EDT -14400
 //!  9943200 25664400 41392800 …
 //! ```
 //!
-//! With no zone, or one that does not parse, time is GMT.
+//! It is read as Plan 9's `readtimezone` reads it: names of exactly three
+//! characters, fields apart by blanks and newlines only, at most 150
+//! times. With no zone, or one that does not parse, time is GMT.
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt::Write as _;
 
 /// A time broken down.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,18 +135,30 @@ impl Zone {
     /// Reads a zone file; `None` if it is not one.
     #[must_use]
     pub fn parse(text: &[u8]) -> Option<Zone> {
-        let text = core::str::from_utf8(text).ok()?;
-        let mut w = text.split_ascii_whitespace();
-        let name = |s: Option<&str>| s.filter(|s| !s.is_empty() && s.len() <= 3).map(String::from);
-        let std_name = name(w.next())?;
-        let std_off = w.next()?.parse().ok()?;
-        let dst_name = name(w.next())?;
-        let dst_off = w.next()?.parse().ok()?;
-        let times: Vec<i64> = w.map(str::parse).collect::<Result<_, _>>().ok()?;
+        // Plan 9's buffer: a file that fills it is not a zone.
+        if text.len() >= TZSIZE * 11 + 30 {
+            return None;
+        }
+        // As in C, the text ends at a NUL, and reads as NULs after.
+        let mut r = Reader { text, at: 0 };
+        let std_name = r.name()?;
+        let std_off = r.long()?;
+        let dst_name = r.name()?;
+        let dst_off = r.long()?;
+        let mut times = Vec::new();
+        loop {
+            if times.len() == TZSIZE {
+                return None;
+            }
+            match r.long()? {
+                0 => break,
+                t => times.push(t),
+            }
+        }
+        // A pair whose end is missing is the time and the closing 0.
         let dst = times
             .chunks(2)
-            .filter(|p| p[0] != 0)
-            .map(|p| (p[0], *p.get(1).unwrap_or(&i64::MAX)))
+            .map(|p| (p[0], p.get(1).copied().unwrap_or(0)))
             .collect();
         Some(Zone {
             std_name,
@@ -187,28 +200,107 @@ pub fn localtime(t: i64) -> Tm {
     Zone::local().time(t)
 }
 
+/// The most daylight times a zone file holds.
+const TZSIZE: usize = 150;
+
+/// Reads a zone file's fields, as Plan 9's `rd_name` and `rd_long`.
+struct Reader<'a> {
+    text: &'a [u8],
+    at: usize,
+}
+
+impl Reader<'_> {
+    /// The next byte; NULs at and after the end.
+    fn next(&mut self) -> u8 {
+        let c = self.text.get(self.at).copied().unwrap_or(0);
+        self.at += 1;
+        c
+    }
+
+    /// A name of three characters after blanks and newlines.
+    fn name(&mut self) -> Option<String> {
+        let mut c = self.next();
+        while c == b' ' || c == b'\n' {
+            c = self.next();
+        }
+        let mut name = Vec::new();
+        for _ in 0..3 {
+            if c == b' ' || c == b'\n' {
+                return None;
+            }
+            name.push(c);
+            c = self.next();
+        }
+        if c != b' ' && c != b'\n' {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&name).into_owned())
+    }
+
+    /// A number after blanks, newlines and minus signs (each of which
+    /// negates it); 0 at the end of the text.
+    fn long(&mut self) -> Option<i64> {
+        let mut neg = false;
+        let mut c = self.next();
+        while c == b'-' || c == b' ' || c == b'\n' {
+            neg |= c == b'-';
+            c = self.next();
+        }
+        if c == 0 {
+            return Some(0);
+        }
+        let mut l: i64 = 0;
+        while c != b' ' && c != b'\n' {
+            if !c.is_ascii_digit() {
+                return None;
+            }
+            l = l.wrapping_mul(10).wrapping_add(i64::from(c - b'0'));
+            c = self.next();
+        }
+        Some(if neg { -l } else { l })
+    }
+}
+
 const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-/// `tm` as `ctime` gives it: `Thu Jan  1 00:00:00 GMT 1970\n`.
+/// `tm` as `ctime` gives it: `Thu Jan  1 00:00:00 GMT 1970\n`. As Plan
+/// 9's, the zone is three characters (a shorter one ends the text), and
+/// the year is `19` or `20` and its last two digits.
 #[must_use]
 pub fn asctime(tm: &Tm) -> String {
-    let mut s = String::new();
-    let _ = writeln!(
-        s,
-        "{} {} {:>2} {:02}:{:02}:{:02} {} {}",
-        DAYS[tm.wday as usize % 7],
-        MONTHS[tm.mon as usize % 12],
-        tm.mday,
-        tm.hour,
-        tm.min,
-        tm.sec,
-        tm.zone,
-        tm.year + 1900
-    );
-    s
+    let mut b = *b"Thu Jan 01 00:00:00 GMT 1970\n";
+    b[..3].copy_from_slice(DAYS[tm.wday as usize % 7].as_bytes());
+    b[4..7].copy_from_slice(MONTHS[tm.mon as usize % 12].as_bytes());
+    let numb = |b: &mut [u8], n: i64| {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a digit
+        let digit = |d: i64| (d.rem_euclid(10) as u8) + b'0';
+        b[0] = if n >= 10 { digit(n / 10) } else { b' ' };
+        b[1] = digit(n);
+    };
+    numb(&mut b[8..], i64::from(tm.mday));
+    numb(&mut b[11..], i64::from(tm.hour) + 100);
+    numb(&mut b[14..], i64::from(tm.min) + 100);
+    numb(&mut b[17..], i64::from(tm.sec) + 100);
+    let zone = tm.zone.as_bytes();
+    let mut end = b.len();
+    for i in 0..3 {
+        match zone.get(i) {
+            Some(&c) if c != 0 => b[20 + i] = c,
+            _ => {
+                end = 20 + i;
+                break;
+            }
+        }
+    }
+    if tm.year >= 100 {
+        b[24] = b'2';
+        b[25] = b'0';
+    }
+    numb(&mut b[26..], tm.year + 100);
+    String::from_utf8_lossy(&b[..end]).into_owned()
 }
 
 /// `t` in the local zone, as text.
@@ -271,6 +363,28 @@ mod tests {
         assert_eq!(z.time(1_000_000).zone, "EST");
         assert!(Zone::parse(b"nonsense").is_none());
         assert!(Zone::parse(b"LONGNAME 0 X 0").is_none());
+        // As Plan 9's readtimezone: names of exactly three, blanks and
+        // newlines only, a number cut off by the end is an error, a 0
+        // ends the times, and a lone last time pairs with that 0.
+        assert!(Zone::parse(b"GM 0 GMT 0\n").is_none());
+        assert!(Zone::parse(b"EST\t-18000 EDT -14400\n").is_none());
+        assert!(Zone::parse(b"EST -18000 EDT -14400\n 100 200").is_none());
+        assert!(Zone::parse(b"EST -18000 EDT -14400").is_none());
+        assert_eq!(Zone::parse(b"EST -18000 EDT -14400 ").unwrap().dst, []);
+        let z = Zone::parse(b"EST -18000 EDT -14400\n100 200 0 300 400\n").unwrap();
+        assert_eq!(z.dst, [(100, 200)]);
+        let z = Zone::parse(b"EST -18000 EDT -14400\n100 200 300\n").unwrap();
+        assert_eq!(z.dst, [(100, 200), (300, 0)]);
+        assert_eq!(Zone::parse(b"EST --18000 EDT -14400\n").unwrap().std_off, -18000);
+    }
+
+    #[test]
+    fn asctime_is_plan_9s() {
+        // 2100-03-01: Plan 9's year is 20 and two digits.
+        assert_eq!(asctime(&gmtime(4_107_542_400)), "Mon Mar  1 00:00:00 GMT 2000\n");
+        let mut tm = gmtime(0);
+        tm.zone = String::from("Z");
+        assert_eq!(asctime(&tm), "Thu Jan  1 00:00:00 Z");
     }
 
     #[test]

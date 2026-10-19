@@ -1,0 +1,10 @@
+# seq, where Plan 9's print differs from C's (and so plan9port's): %g
+# has no leading zero, keeps 7 digits before an exponent, and floats
+# are not padded with zeros.
+seq 0 0.1 0.5
+seq 999998 1000001
+seq -w 999999 1000000
+seq -w 0 0.5 2
+seq -f '%05.1f|' -1 1
+seq -f '%.1f' 0.05 0.1 0.25
+seq 9999999 10000000

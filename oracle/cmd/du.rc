@@ -6,7 +6,6 @@ echo x >d/f
 echo yy >d/s/g
 du a
 du -n a
-du -b 512 a
 du -b 4k a
 du -s d
 du d

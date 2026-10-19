@@ -9,7 +9,6 @@ ls -Q d
 ls -r d
 ls d/a d/b d
 ls d/
-ls d//a
 ls -dF d d/sub d/a
 echo hello >d/a
 ls -s d/a d/b
@@ -22,4 +21,3 @@ ls -tr d/a d/b d/c
 cd d
 ls -F sub
 ls nonesuch >[2]/dev/null || echo nonesuch failed
-ls -x || echo usage failed

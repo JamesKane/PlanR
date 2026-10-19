@@ -35,6 +35,27 @@ pub fn decode(s: &[u8]) -> (char, usize) {
     }
 }
 
+/// Whether `c` is white space, as Plan 9's `isspacerune` (Unicode 6.2's
+/// list) says.
+#[must_use]
+pub fn is_space_rune(c: char) -> bool {
+    matches!(
+        c,
+        '\u{9}'..='\u{d}'
+            | ' '
+            | '\u{85}'
+            | '\u{a0}'
+            | '\u{1680}'
+            | '\u{180e}'
+            | '\u{2000}'..='\u{200a}'
+            | '\u{2028}'..='\u{2029}'
+            | '\u{202f}'
+            | '\u{205f}'
+            | '\u{3000}'
+            | '\u{feff}'
+    )
+}
+
 /// Whether `s` holds at least one whole rune (or a byte that can only be
 /// an error), so [`decode`] need not wait for more.
 #[must_use]

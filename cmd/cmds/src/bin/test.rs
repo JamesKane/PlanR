@@ -3,7 +3,7 @@
 //! -s -t -n -z`, `= !=`, `-eq -ne -gt -lt -ge -le`, `-nt -ot`) and Plan
 //! 9's (`-A -L -T` for append-only, exclusive-use and temporary files,
 //! and `file -older time`), joined by `!`, `-a`, `-o` and parentheses.
-//! Called `[`, it wants a `]` at the end.
+//! Called `[`, it wants a `]` at the end (Plan 9's `test.c`).
 
 #![no_std]
 #![no_main]
@@ -49,17 +49,20 @@ fn isatty(fd: r::Fd) -> bool {
     }
 }
 
-/// Whether `f` was last changed more than `spec` ago: seconds, or a
-/// sum of numbers each followed by `y M d h m s`.
+/// Whether `file` was last changed before `spec`: a time in seconds
+/// since the epoch, or, if it has units, that long ago: a sum of numbers
+/// each followed by `y M d h m s`.
+#[allow(clippy::many_single_char_names)] // Plan 9's
 fn older(spec: &[u8], file: &[u8]) -> bool {
     let Some(d) = stat(file) else { return false };
-    let mut ago: u64 = 0;
+    let mut n: u64 = 0;
+    let mut rel = false;
     let mut p = spec;
     while !p.is_empty() {
         let (mut m, k) = r::num::strtoul(p, 0);
         p = &p[k..];
         let Some(&unit) = p.first() else {
-            ago = m;
+            n = m;
             break;
         };
         let scale: &[u64] = match unit {
@@ -74,12 +77,19 @@ fn older(spec: &[u8], file: &[u8]) -> bool {
         for s in scale {
             m = m.wrapping_mul(*s);
         }
-        ago = ago.wrapping_add(m);
+        n = n.wrapping_add(m);
         p = &p[1..];
+        rel = true;
     }
-    #[allow(clippy::cast_sign_loss)] // after 1970
-    let now = r::time::time() as u64;
-    u64::from(d.mtime).wrapping_add(ago) < now
+    let when = if rel {
+        #[allow(clippy::cast_sign_loss)] // after 1970
+        let now = r::time::time() as u64;
+        // Before the epoch is the epoch.
+        now.saturating_sub(n)
+    } else {
+        n
+    };
+    u64::from(d.mtime) < when
 }
 
 /// The arguments, and the next to read.

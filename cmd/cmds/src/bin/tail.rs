@@ -2,7 +2,7 @@
 //! file, or standard input: its last 10 lines, or the last (`-N`) or all
 //! from the start but the first (`+N`) N lines, characters (`c`) or
 //! 1024-byte blocks (`b`); `-r` prints lines in reverse order (all, by
-//! default), `-f` waits for more to be written.
+//! default), `-f` waits for more to be written (Plan 9's `tail.c`).
 
 #![no_std]
 #![no_main]
@@ -374,7 +374,8 @@ fn run(cmdline: r::Args) -> Result<(), &'static str> {
             .and_then(|c| r::open(&c, mode))
             .unwrap_or_else(|e| fail(f, &e));
     }
-    let seekable = r::seek(t.file, 0, Whence::Start) == Ok(0);
+    // Plan 9's isseekable: whether a seek works, leaving the offset be.
+    let seekable = r::seek(t.file, 0, Whence::Current).is_ok();
     match (seekable, t.units, t.beg) {
         (false, _, false) => t.keep(),
         (false, _, true) | (true, Units::Lines, true) => t.skip(),

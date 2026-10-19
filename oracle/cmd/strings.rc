@@ -12,7 +12,6 @@ strings a
 strings b
 strings u
 strings long
-strings a b
 strings <b
 touch e
 strings e

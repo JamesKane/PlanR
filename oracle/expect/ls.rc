@@ -1,0 +1,9 @@
+# ls, as Plan 9's: names cleaned of extra slashes, -T, and usage.
+mkdir d
+touch d/a
+chmod +t d/a
+touch d/b
+ls d//a
+ls d///
+ls -T d
+ls -x || echo usage failed

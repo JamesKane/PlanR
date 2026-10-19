@@ -1,0 +1,12 @@
+# cmp: Plan 9's EOF message has the count, and its usage goes to
+# standard output.
+echo hello >a
+echo help >c
+echo -n hello >p
+cmp -l a c || echo listed
+cmp a p || echo eof
+cmp p a || echo eof
+cmp a || echo usage failed
+cmp a b 1 1 1 || echo usage failed
+cmp -x a b || echo usage failed
+cmp a a x || echo usage failed

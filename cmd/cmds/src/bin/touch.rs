@@ -1,6 +1,6 @@
 //! `touch [-c] [-t time] file ...`: sets each file's modification time
-//! to now, or `time` (seconds since the epoch), creating it if it does
-//! not exist, unless `-c`.
+//! to now, or `time` (seconds since the epoch, in C's bases), creating it
+//! if it does not exist, unless `-c` (Plan 9's `touch.c`).
 
 #![no_std]
 #![no_main]
@@ -18,12 +18,16 @@ fn usage() -> Result<(), &'static str> {
     Err("usage")
 }
 
-fn touch(name: &[u8], nocreate: bool, now: u32, tflag: bool) -> bool {
+/// Touches `name`; false (having said why) if it cannot.
+fn touch(name: &[u8], nocreate: bool, now: u32) -> bool {
     let mut d = DirBuf::null();
     d.mtime = now;
-    let Ok(c) = r::cstr(name) else {
-        r::eprintln!("touch: {}: bad character in file name", Text(name));
-        return false;
+    let c = match r::cstr(name) {
+        Ok(c) => c,
+        Err(e) => {
+            r::eprintln!("touch: {}: cannot create: {e}", Text(name));
+            return false;
+        }
     };
     let Err(e) = r::dirwstat(&c, &d) else { return true };
     if nocreate {
@@ -31,37 +35,38 @@ fn touch(name: &[u8], nocreate: bool, now: u32, tflag: bool) -> bool {
         return false;
     }
     let mode = OpenMode {
-        access: Access::Write,
-        flags: OpenFlags::empty(),
+        access: Access::Read,
+        flags: OpenFlags::EXCL,
     };
-    let fd = match r::create(&c, mode, 0o666) {
-        Ok(fd) => fd,
+    match r::create(&c, mode, 0o666) {
+        Ok(fd) => {
+            let _ = r::dirfwstat(fd, &d);
+            let _ = r::close(fd);
+            true
+        }
         Err(e) => {
             r::eprintln!("touch: {}: cannot create: {e}", Text(name));
-            return false;
+            false
         }
-    };
-    let ok = !tflag
-        || r::dirfwstat(fd, &d)
-            .map_err(|e| r::eprintln!("touch: {}: cannot wstat: {e}", Text(name)))
-            .is_ok();
-    let _ = r::close(fd);
-    ok
+    }
 }
 
 fn run(args: r::Args) -> Result<(), &'static str> {
     let mut o = r::Opts::new(args.iter());
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a 32-bit time
     let mut now = r::time::time() as u32;
-    let (mut nocreate, mut tflag) = (false, false);
+    let mut nocreate = false;
     while let Some(c) = o.next() {
         match c {
             't' => {
                 let Some(t) = o.arg() else { return usage() };
-                tflag = true;
+                let (v, n) = r::num::strtoul(t, 0);
+                if n == 0 || n != t.len() {
+                    return usage();
+                }
                 #[allow(clippy::cast_possible_truncation)] // a 32-bit time
                 {
-                    now = r::num::strtoul(t, 0).0 as u32;
+                    now = v as u32;
                 }
             }
             'c' => nocreate = true,
@@ -74,7 +79,7 @@ fn run(args: r::Args) -> Result<(), &'static str> {
     }
     let mut ok = true;
     for f in files {
-        ok &= touch(f, nocreate, now, tflag);
+        ok &= touch(f, nocreate, now);
     }
     if ok { Ok(()) } else { Err("touch") }
 }

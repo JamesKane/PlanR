@@ -716,10 +716,11 @@ pub fn access(name: &CStr, mode: u32) -> Result<(), Error> {
     if mode == AEXIST {
         return dirstat(name).map(drop);
     }
+    // Plan 9's table, approximations and all.
     let access = match mode & 7 {
+        0 | AREAD => Access::Read,
         AEXEC | 5 => Access::Exec,
         AWRITE => Access::Write,
-        AREAD => Access::Read,
         _ => Access::ReadWrite,
     };
     let fd = open(

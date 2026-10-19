@@ -1,8 +1,8 @@
-//! `mv fromfile tofile`, `mv fromfile ... todir`: moves files, to a new
-//! name or into a directory: by renaming them where they are if they
-//! stay in the same directory, else by copying them and removing them.
-//! A file already at the new name is removed first. A directory can be
-//! renamed but not moved.
+//! `mv fromfile tofile`, `mv fromfile ... todir` (Plan 9's `mv.c`):
+//! moves files, to a new name or into a directory: by renaming them where
+//! they are if they stay in the same directory, else by copying them and
+//! removing them. A file already at the new name is removed first. A
+//! directory can be renamed but not moved.
 
 #![no_std]
 #![no_main]
@@ -25,11 +25,12 @@ fn is_dir(name: &[u8]) -> bool {
     stat(name).is_some_and(|d| d.is_dir())
 }
 
-/// `name`'s directory and last element.
+/// `name`'s directory and last element, as Plan 9's `split`: `/x` is
+/// in the directory with the empty name, and `..` is `.` in `..`.
 fn split(name: &[u8]) -> (Vec<u8>, Vec<u8>) {
     match name.iter().rposition(|&b| b == b'/') {
-        Some(0) => (b"/".to_vec(), name[1..].to_vec()),
         Some(i) => (name[..i].to_vec(), name[i + 1..].to_vec()),
+        None if name == b".." => (b"..".to_vec(), b".".to_vec()),
         None => (b".".to_vec(), name.to_vec()),
     }
 }

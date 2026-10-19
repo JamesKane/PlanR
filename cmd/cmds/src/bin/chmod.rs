@@ -2,7 +2,7 @@
 //! octal (`0755`) or as changes, `[ugoa]*[-+=][rwxalt]*`: for the user,
 //! group, others or all (all if none is named), take away, add or set
 //! read, write and execute permission, append-only, exclusive use and
-//! temporary.
+//! temporary (Plan 9's `chmod.c`).
 
 #![no_std]
 #![no_main]
@@ -70,8 +70,8 @@ fn run(args: r::Args) -> Result<(), &'static str> {
         return Err("usage");
     }
     let spec = args.get(1).unwrap_or_default();
-    let (octal, n) = r::num::strtoul(spec, 8);
-    #[allow(clippy::cast_possible_truncation)] // mode bits
+    let (octal, n) = r::num::strtol(spec, 8);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // mode bits, as C's
     let parsed = if n == spec.len() {
         Some((all(RWX), octal as u32))
     } else {
