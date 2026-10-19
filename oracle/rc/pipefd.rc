@@ -1,0 +1,6 @@
+# <{} and >{}.
+cat <{echo from a pipe}
+cat <{echo one} <{echo two}
+fn into {echo into > $1}
+into >{cat}
+echo waited

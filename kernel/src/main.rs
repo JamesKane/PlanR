@@ -138,12 +138,8 @@ extern "C" fn boot_main(info: usize) -> ! {
             run_init(&["init"])
         }
         Some(TestMode::Cons) => run_init(&["init", "-i"]),
-        Some(TestMode::Trap) => {
-            println!("ktest: deliberate page fault at {:#x}", trap::UNMAPPED);
-            // SAFETY: none; this is meant to fault, and the fault is fatal.
-            let v = unsafe { core::ptr::read_volatile(trap::UNMAPPED as *const u64) };
-            panic!("read of unmapped {:#x} returned {v:#x}", trap::UNMAPPED);
-        }
+        Some(TestMode::Oracle) => run_init(&["init", "-o"]),
+        Some(TestMode::Trap) => trap_test(),
         Some(TestMode::Overflow) => overflow_test(),
         Some(TestMode::AcpiDump) => {
             match &acpi {
@@ -164,6 +160,15 @@ extern "C" fn boot_main(info: usize) -> ! {
     }
     println!("kernel: boot complete; idling");
     cpu::idle_loop(cpu::current())
+}
+
+/// `test=trap`: a deliberate fatal page fault, for the harness to check
+/// the report.
+fn trap_test() -> ! {
+    println!("ktest: deliberate page fault at {:#x}", trap::UNMAPPED);
+    // SAFETY: none; this is meant to fault, and the fault is fatal.
+    let v = unsafe { core::ptr::read_volatile(trap::UNMAPPED as *const u64) };
+    panic!("read of unmapped {:#x} returned {v:#x}", trap::UNMAPPED);
 }
 
 /// After the in-kernel tests: what a real boot does, but waited for. Init

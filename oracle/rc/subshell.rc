@@ -1,0 +1,12 @@
+# Subshells, groups and what they keep.
+x=outer
+@{x=inner; echo $x}
+echo $x
+{x=group; echo $x}
+echo $x
+@{cd /; echo in root}
+cat subshell.rc >/dev/null && echo still here
+fn f {@{echo $1 in subshell}; echo $1 outside}
+f arg
+@{exit 0}; echo $status
+{echo a; echo b} | {cat; echo c}

@@ -51,6 +51,9 @@ pub(crate) enum TestMode {
     /// `test=cons`: run `init -i`, whose console test the harness types
     /// to, and power off once it exits normally.
     Cons,
+    /// `test=oracle`: run `init -o`, whose `toracle` runs the oracle
+    /// scripts for `xtask oracle`, and power off once it exits normally.
+    Oracle,
 }
 
 impl<'a> Config<'a> {
@@ -88,6 +91,7 @@ impl<'a> Config<'a> {
             "acpidump" => Some(TestMode::AcpiDump),
             "reset" => Some(TestMode::Reset),
             "cons" => Some(TestMode::Cons),
+            "oracle" => Some(TestMode::Oracle),
             _ => None,
         }
     }

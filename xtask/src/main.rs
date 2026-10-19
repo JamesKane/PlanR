@@ -13,6 +13,7 @@ mod gpt;
 mod image;
 mod json;
 mod ksyms;
+mod oracle;
 mod qemu;
 
 use std::fs;
@@ -32,7 +33,8 @@ commands:
   test     host unit tests, then headless QEMU boot tests
   deps     check the dependency rule (ADR 0001)
   acpidump boot QEMU and write its ACPI tables to oracle/acpi-corpus
-  ci       everything CI runs: fmt, clippy, deps, test
+  oracle   run oracle/rc's scripts on plan9port and in QEMU, and compare
+  ci       everything CI runs: fmt, clippy, deps, test, oracle
 
 options:
   --arch amd64|arm64|all   target architecture (default: all; qemu: amd64)
@@ -93,6 +95,7 @@ fn run(args: &[String]) -> Result<(), String> {
         "test" => test(&opts),
         "deps" => deps::check(&root()),
         "acpidump" => acpidump::run(&opts),
+        "oracle" => oracle::run(&opts),
         "ci" => ci(&opts),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
@@ -192,7 +195,7 @@ const USER_PROGRAMS: &[(&str, &[&str])] = &[
         "utest",
         &[
             "tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote", "t9p", "tcons", "tlibr", "tsys", "tramfs",
-            "trc",
+            "trc", "toracle",
         ],
     ),
 ];
@@ -202,7 +205,8 @@ const USER_PROGRAMS: &[(&str, &[&str])] = &[
 const ARCHIVE_FILES: &[(&str, &str)] = &[("cmd/rc/rcmain", "rc/lib/rcmain")];
 
 /// Builds the user programs for `arch` and packs them into the boot
-/// archive, as `boot/<name>`, with [`ARCHIVE_FILES`].
+/// archive, as `boot/<name>`, with [`ARCHIVE_FILES`] and the oracle
+/// scripts.
 fn build_archive(arch: Arch, release: bool) -> Result<PathBuf, String> {
     let profile = if release { "release" } else { "debug" };
     let mut files = Vec::new();
@@ -223,6 +227,9 @@ fn build_archive(arch: Arch, release: bool) -> Result<PathBuf, String> {
         let path = root().join(from);
         let data = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         files.push((to.to_string(), data, 0o644));
+    }
+    for (name, data) in oracle::archive_files()? {
+        files.push((name, data, 0o644));
     }
     let entries: Vec<bootarc::File<'_>> = files
         .iter()
@@ -445,8 +452,8 @@ const BOOT_TESTS: &[BootTest] = &[
             "kernel: PANIC: trap:",
             "address 0xffff9000dead0000",
             "backtrace:",
-            // Symbolized: #0 is the faulting read in boot_main.
-            "kernel::boot_main+0x",
+            // Symbolized: #0 is the faulting read in trap_test.
+            "kernel::trap_test+0x",
             "#1 0x",
         ]),
         every_profile: false,
@@ -624,5 +631,6 @@ fn ci(opts: &Opts) -> Result<(), String> {
     test(&Opts {
         all_profiles: true,
         ..opts.clone()
-    })
+    })?;
+    oracle::run(opts)
 }

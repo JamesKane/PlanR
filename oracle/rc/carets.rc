@@ -1,0 +1,18 @@
+# Free carets and indirect variables.
+x=foo
+y=(a b)
+echo $x.c a$x $x-$x $x^$x
+echo $y.c
+echo -$y-
+echo $"y^z $#y^z
+echo $x'quoted'
+echo `{echo $x}^bar
+v=x
+echo $$v
+w=y
+echo $$w
+@{echo $$w(2)} || echo subscripted indirect failed
+w=(x y)
+@{echo $$w} || echo not singleton
+z=(1 2 3)
+echo $z(2)^x

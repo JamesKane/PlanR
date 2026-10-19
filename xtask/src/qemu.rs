@@ -123,8 +123,9 @@ pub(crate) fn log_path(arch: Arch, test: &str, profile: &Profile) -> PathBuf {
     crate::build_dir(arch).join(format!("serial-{test}-{}.log", profile.name))
 }
 
-/// Lines not echoed to the terminal: table dump bytes.
-const QUIET: &str = "acpidump: = ";
+/// Lines not echoed to the terminal: table dump bytes, and `toracle`'s
+/// report (`xtask oracle` says how each script went).
+const QUIET: &[&str] = &["acpidump: = ", "oracle: "];
 
 /// The ways in to a test that hangs: `PLANR_MONITOR=path` puts QEMU's
 /// monitor on a Unix socket (`info registers -a` shows every CPU without
@@ -192,7 +193,7 @@ pub(crate) fn run_test(
                 let line = strip_escapes(&raw);
                 let _ = writeln!(log, "{line}");
                 echo |= line.contains(BANNER);
-                if echo && !line.trim().is_empty() && !line.contains(QUIET) {
+                if echo && !line.trim().is_empty() && !QUIET.iter().any(|q| line.contains(q)) {
                     println!("[{arch}] {line}");
                 }
                 ok |= line.contains(OK_MARKER);

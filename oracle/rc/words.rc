@@ -1,0 +1,16 @@
+# Words, quoting, lists, concatenation and counting.
+echo plain 'quoted word' 'it''s' ''
+echo a^b a^'b c' (a b)^c a^(b c) (a b)^(c d)
+x=(one two three)
+echo $x $#x $"x
+echo $x(2) $x(3 1) $x(5)
+y=()
+echo $#y $"y end
+z=$x^-
+echo $z
+echo $#nonexistent
+echo 'tab	here' "double" \backslash
+echo -n no newline
+echo
+echo a#comment
+echo a # comment

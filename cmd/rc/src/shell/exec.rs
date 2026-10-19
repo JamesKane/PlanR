@@ -616,8 +616,17 @@ impl Shell {
             Redir::File(kind, fd, w) => {
                 let name = self.glob_words(core::slice::from_ref(w))?;
                 let [name] = &name[..] else {
-                    let what = if *kind == RedirKind::Read { "<" } else { ">" };
-                    return self.error(&format!("{what} requires singleton"));
+                    // Plan 9's texts, with their stray newlines (but for
+                    // `>>`'s).
+                    let what = match kind {
+                        RedirKind::Read | RedirKind::Here => "<",
+                        RedirKind::ReadWrite => "<>",
+                        RedirKind::Write => ">",
+                        RedirKind::Append => ">>",
+                    };
+                    let need = if name.is_empty() { "file" } else { "singleton" };
+                    let nl = if *kind == RedirKind::Append { "" } else { "\n" };
+                    return self.error(&format!("{what} requires {need}{nl}"));
                 };
                 let fd = *fd as usize;
                 let s = self.fds.save(fd);

@@ -1,0 +1,15 @@
+# Redirections: > >> < >[2] >[2=1] and closing.
+echo one > f
+echo two >> f
+cat f
+cat < f
+echo to err >[1=2]
+echo err file >[1=2] >[2]e
+cat e
+{echo a; echo b >[1=2]} > both >[2=1]
+cat both
+cat < f > g
+cat g
+>empty
+cat empty
+echo done

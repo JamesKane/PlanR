@@ -1,0 +1,5 @@
+# A syntax error ends the script.
+echo before
+@{eval 'echo ('} || echo eval failed
+echo (a b
+echo never

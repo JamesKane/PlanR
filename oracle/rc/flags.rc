@@ -1,0 +1,9 @@
+# Flags whose effect does not show rcmain's text.
+rc -c 'echo dash c $#*' a b c
+rc -e -c '~ a b; echo not reached'
+echo -e stopped
+rc -e -c 'if(~ a b) echo no; ~ a b || echo conditions are exempt'
+rc -c 'flag e && echo e set' -e
+rc -e -c 'flag e && echo e set'
+rc -c 'flag x || echo x unset'
+echo done

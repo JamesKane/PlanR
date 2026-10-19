@@ -1,0 +1,7 @@
+# A program's exit status as $status: on Plan 9 (and R), the wait
+# message's "name pid: text"; plan9port has only a Unix exit code.
+@{exit sub}
+~ $status *': sub' && echo status names the subshell
+rc -c 'exit inner'
+~ $status *': inner' && echo status names rc
+echo done

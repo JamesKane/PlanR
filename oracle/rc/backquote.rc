@@ -1,0 +1,16 @@
+# Backquotes, ifs and splitting.
+x=`{echo a b c}
+echo $#x $x
+y=`{echo 'one
+two'}
+echo $#y
+ifs=:
+z=`{echo a:b:c}
+echo $#z $z
+ifs=' 	
+'
+w=`split{echo -n a,b,,c}
+echo $#w $w
+n=`{}
+echo $#n
+echo `{echo nested `{echo deep}}

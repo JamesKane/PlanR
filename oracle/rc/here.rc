@@ -1,0 +1,16 @@
+# Here documents, substituted and not.
+x=(a b)
+cat <<EOF
+x is $x
+caret $x^y
+quoted '$x'
+EOF
+cat <<'EOF'
+not $x substituted
+EOF
+cat <<END
+	tabs kept
+END
+cat <<EOF; echo after
+same line
+EOF

@@ -6,7 +6,8 @@
 //! `-q`) and a summary; it exits normally only if every program passed.
 //! With `-i` it runs instead the programs that need someone (the test
 //! harness) typing at the console, one after another: `tcons`, then an
-//! interactive `rc`.
+//! interactive `rc`. With `-o` it runs only `toracle`, which runs the
+//! oracle scripts for `xtask oracle`.
 
 #![no_std]
 #![no_main]
@@ -18,7 +19,7 @@ use r::{Access, BindFlags, OpenFlags, OpenMode, RforkFlags as F};
 
 r::main!(run);
 
-const _: () = assert!(INTERACTIVE.len() <= PROGRAMS.len());
+const _: () = assert!(INTERACTIVE.len() <= PROGRAMS.len() && ORACLE.len() <= PROGRAMS.len());
 
 const fn mode(access: Access) -> OpenMode {
     OpenMode {
@@ -77,6 +78,9 @@ const INTERACTIVE: &[(&CStr, &[&CStr], Want)] = &[
     (c"/boot/rc", &[c"rc", c"-i"], Want::Normal),
 ];
 
+/// The program `-o` runs.
+const ORACLE: &[(&CStr, &[&CStr], Want)] = &[(c"/boot/toracle", &[c"toracle"], Want::Normal)];
+
 /// The binds, in order: what, where, how.
 const NAMESPACE: &[(&CStr, &CStr, BindFlags)] = &[
     (c"/boot", c"/bin", BindFlags::empty()),
@@ -96,8 +100,11 @@ fn say(text: &[u8]) {
 
 fn run(args: r::Args) -> Result<(), &'static str> {
     let quiet = args.get(1) == Some(b"-q");
-    let in_turn = args.get(1) == Some(b"-i");
-    let programs = if in_turn { INTERACTIVE } else { PROGRAMS };
+    let (in_turn, programs) = match args.get(1) {
+        Some(b"-i") => (true, INTERACTIVE),
+        Some(b"-o") => (true, ORACLE),
+        _ => (false, PROGRAMS),
+    };
     namespace()?;
     let mut pids = [0u64; PROGRAMS.len()];
     if !in_turn {

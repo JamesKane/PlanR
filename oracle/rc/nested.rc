@@ -1,0 +1,10 @@
+# rc running rc.
+rc -c 'echo inner $#*' a b
+rc -c 'exit inner'
+~ $status ''  || echo inner failed
+x=exported
+rc -c 'echo $x'
+fn f {echo function f}
+rc -c f
+rc -c 'echo (' >[2]/dev/null
+echo after

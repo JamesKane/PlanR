@@ -1,0 +1,6 @@
+# Bad flags: the message, then the usage line (plan9port's lists its
+# debugging flags, -DSY, too).
+rc -q || echo bad flag fails
+rc -c || echo missing argument fails
+rc -c a -c b || echo twice fails
+echo done

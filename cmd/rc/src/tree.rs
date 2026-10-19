@@ -221,12 +221,31 @@ impl Display for Cmd {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Cmd::Empty => Ok(()),
+            // Plan 9's parser takes the redirections out and wraps them
+            // round the command, so they come first, in order, as with
+            // `Cmd::Redir`.
             Cmd::Simple(args) => {
-                for (i, a) in args.iter().enumerate() {
+                let redirs = args.iter().filter_map(|a| match a {
+                    Arg::Redir(r) => Some(r),
+                    Arg::Word(_) => None,
+                });
+                let mut left = args.len();
+                for r in redirs {
+                    left -= 1;
+                    write!(f, "{r}")?;
+                    if left > 0 && matches!(r, Redir::File(..) | Redir::Here(..)) {
+                        f.write_char(' ')?;
+                    }
+                }
+                let ws = args.iter().filter_map(|a| match a {
+                    Arg::Word(w) => Some(w),
+                    Arg::Redir(_) => None,
+                });
+                for (i, w) in ws.enumerate() {
                     if i > 0 {
                         f.write_char(' ')?;
                     }
-                    write!(f, "{a}")?;
+                    write!(f, "{w}")?;
                 }
                 Ok(())
             }
@@ -282,12 +301,14 @@ impl Display for Cmd {
                 words(f, ps)
             }
             Cmd::Fn(names, body) => {
+                // Plan 9's "fn %t %t", the second empty for a deletion.
                 f.write_str("fn ")?;
                 words(f, names)?;
-                if let Some(b) = body {
-                    write!(f, " {{{b}}}")?;
+                f.write_char(' ')?;
+                match body {
+                    Some(b) => write!(f, "{{{b}}}"),
+                    None => Ok(()),
                 }
-                Ok(())
             }
         }
     }

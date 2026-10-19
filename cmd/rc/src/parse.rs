@@ -530,8 +530,8 @@ mod tests {
 
     #[test]
     fn redirections() {
-        assert_eq!(one("cat <a >b >>c <>d"), "cat <a >b >>c <>d");
-        assert_eq!(one("cmd >[2]e >[2=1] >[3=]"), "cmd >[2]e >[2=1] >[3=]");
+        assert_eq!(one("cat <a >b >>c <>d"), "<a >b >>c <>d cat");
+        assert_eq!(one("cmd >[2]e >[2=1] >[3=]"), ">[2]e >[2=1]>[3=]cmd");
         assert_eq!(one(">f echo"), ">f echo");
         assert_eq!(one("{a;b} >f <g"), ">f <g {a;b}");
         assert_eq!(one(">[2=1] echo"), ">[2=1]echo");
@@ -575,7 +575,7 @@ mod tests {
             "switch ($x) {case a;echo a;case *;echo other}"
         );
         assert_eq!(one("fn f {echo $*}"), "fn f {echo $*}");
-        assert_eq!(one("fn f g"), "fn f g");
+        assert_eq!(one("fn f g"), "fn f g ");
         assert_eq!(one("~ $x *.c a?b [a-z]"), "~ $x *.c a?b [a-z]");
         assert_eq!(one("{\n\ta\n\n\tb\n}"), "{a;b}");
     }
@@ -586,7 +586,7 @@ mod tests {
         let mut p = Parser::new(Box::new(Text::new(text.as_bytes())));
         let upper = |l: &[u8]| l.to_ascii_uppercase();
         let c = p.line_with(&upper).unwrap().unwrap();
-        assert_eq!(format!("{c}"), "cat <<EOF >f;cat <<'X'");
+        assert_eq!(format!("{c}"), "<<EOF >f cat;<<'X' cat");
         let mut docs = Vec::new();
         collect(&c, &mut docs);
         assert_eq!(docs, ["ONE $X\n", "$y\n"]);

@@ -1,0 +1,5 @@
+# A script that ends with a status fails.
+fn sigexit {echo sigexit runs}
+echo exiting
+exit 'bad news'
+echo never

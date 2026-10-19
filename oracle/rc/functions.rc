@@ -1,0 +1,23 @@
+# Functions, arguments, locals, recursion, status and whatis.
+fn greet {echo hello $1, $#* args}
+greet world a b
+fn count {
+	if(! ~ $#* 0){
+		echo $1
+		shift
+		count $*
+	}
+}
+count x y z
+x=global
+fn show {x=local echo in $x; echo out $x}
+show
+echo $x
+fn fails {~ a b}
+fails
+echo $status
+fn f {echo f}
+whatis f x
+fn f
+whatis f
+echo $#fn#f

@@ -1,0 +1,15 @@
+# Errors, each in a subshell, since an error ends a script; and their
+# messages.
+@{echo (a b)^(c d e)} || echo concat failed
+x=(a b)
+y=()
+@{echo $x(junk)} || echo subscript failed
+@{y=(a b); echo $$y} || echo indirect failed
+@{shift 5} || echo shift failed
+@{exit} && echo exit with nothing is ok
+for(k in r w a rw){
+	@{switch($k){case r; cat <$x; case w; echo >$x; case a; echo >>$x; case rw; cat <>$x}}
+	@{switch($k){case r; cat <$y; case w; echo >$y; case a; echo >>$y; case rw; cat <>$y}}
+	echo $k redirections failed
+}
+echo after all

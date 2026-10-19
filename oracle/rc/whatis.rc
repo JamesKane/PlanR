@@ -1,0 +1,10 @@
+# whatis, and how it quotes.
+a='two words'; b='it''s'; c=''
+d=(x 'y z' '' 'q=r' '#h' 'a^b' '~t' '$v' 'tab	t' 'semi;' 'pipe|' '{b}')
+whatis a b c d
+fn g {echo 'quoted arg' $a; x=`{echo hi}; if(~ $x h*) echo yes}
+whatis g
+fn h {for(i in a b){echo $i}; switch($1){case x; echo x}; @{echo sub} | cat >[2=1]}
+whatis h
+whatis cd
+@{whatis nosuchname} || echo whatis failed

@@ -1,0 +1,8 @@
+# Errors whose messages carry the system's error string, which differs
+# (Unix's against Plan 9's); what runs after them must not.
+@{cd /no/such/dir} || echo cd failed
+@{. /no/such/file} || echo dot failed
+@{nosuchcommand}
+echo after a missing command
+cat /no/such/file || echo cat failed
+echo done

@@ -1,0 +1,15 @@
+# $status after builtins, matches, functions and subshells.
+~ a b
+echo $status
+~ a a
+echo $status
+@{exit sub}
+~ $status '' || echo failed
+@{}
+echo $status
+true=()
+if(~ a a) echo $status
+! ~ a a
+echo $status
+eval 'exit evaled' >[2]/dev/null
+echo never

@@ -320,7 +320,7 @@ on Plan R and on host plan9port (see [TESTING.md](TESTING.md)).
 6. ✅ `rc`, part 2: here documents, `` `{} ``, `<{}`/`>{}`, `$status`,
    `$apid`, notes (`sigint`, `sigexit`), `rcmain`, `-c -e -i -l -x`,
    the prompt; interactive `rc` on the serial console in QEMU.
-7. Oracle harness: `cargo xtask oracle` runs `oracle/rc/` scripts on host
+7. ✅ Oracle harness: `cargo xtask oracle` runs `oracle/rc/` scripts on host
    plan9port (`scripts/install-plan9port.sh`) and in QEMU and compares
    stdout, stderr and status, with an allow-file; in CI from then on.
 8. File commands: `echo` and `cat` (done in slices 5 and 6, for rc's

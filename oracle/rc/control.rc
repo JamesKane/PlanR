@@ -1,0 +1,28 @@
+# if, if not, for, while, switch, ~, && || and !.
+if(~ a a) echo match
+if(~ a b) echo wrong
+if not echo not matched
+for(i in 1 2 3) echo i is $i
+for(i) echo none
+x=()
+while(! ~ $#x 3) x=($x .)
+echo $#x
+for(w in apple box cat dog){
+	switch($w){
+	case a*
+		echo $w starts with a
+	case box cat
+		echo $w listed
+	case *
+		echo $w default
+	}
+}
+~ abc a?c && echo and
+~ abc x || echo or
+! ~ a b && echo bang
+~ foo (bar foo) && echo any
+~ '*' '*' && echo literal star
+~ x '[a-z]' || echo quoted class
+~ x [a-z] && echo class
+~ - [-a] && echo dash
+~ b [~a] && echo negated

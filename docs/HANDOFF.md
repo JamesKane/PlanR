@@ -1,9 +1,9 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19: P3 slices 1 to 6 (console input, libr base, libr system
-layer, the 9P server framework and `ramfs`, `rc` parts 1 and 2) are
-done.
+2026-10-19: P3 slices 1 to 7 (console input, libr base, libr system
+layer, the 9P server framework and `ramfs`, `rc` parts 1 and 2, the
+oracle harness) are done.
 
 ## State
 
@@ -623,7 +623,44 @@ done.
        `/proc/$pid/note`, `-e -x -v -m`, `flag`, a bad flag, `cat`.
      - Seen in plan9port, not yet compared: its `whatis` quotes with
        `pwrd` (not `needsrcquote`), and its error texts carry stray
-       newlines (`< requires singleton\n`). Slice 7 decides.
+       newlines (`< requires singleton\n`). Slice 7 decided (below).
+  7. The oracle harness:
+     - `cargo xtask oracle` (`xtask/src/oracle.rs`; also the last step of
+       `ci`) runs each `oracle/rc/NAME.rc` as `rc NAME.rc`, alone in an
+       empty directory with stdin from `/dev/null`, on host plan9port
+       (environment only `PLAN9` and `PATH=.:$PLAN9/bin`, `argv[0]`
+       `rc`, 10 s each) and on both arches in QEMU, and compares stdout,
+       stderr and whether the status is empty. `oracle/rc/allow` lists
+       known differences (script, stream, why); one that stops showing
+       fails the run. Results are kept in `build/oracle/`.
+     - In QEMU: `test=oracle` runs `init -o`, which runs only
+       `cmd/utest/toracle`. The scripts are in the boot archive at
+       `/sys/lib/oracle/rc` (every image has them); `toracle` copies
+       each to `/tmp/oracle/NAME/`, runs it with output in files, and
+       prints `oracle: begin/out/err/status/end/done` lines with the
+       bytes in hex, which xtask reads back from the serial log (and
+       does not echo).
+     - The corpus: 24 scripts (words, carets, control, functions,
+       whatis, deparse, redirect, pipes, here, backquote, pipefd,
+       status, waitstatus, glob, errors, oserrors, syntax, eval, exit,
+       nested, env, subshell, flags, usage); see `oracle/rc/README.md`
+       for how to write one.
+     - Allowed: syntax errors (plan9port's 2020 hand-written parser
+       words them and counts lines its own way: "missing newline at end
+       of line", "token EOF"; ours are Plan 9's yacc ones), `$status`
+       after a program (Plan 9's `name pid: text` against a Unix exit
+       code), the system's error strings, and plan9port's usage line
+       (`-DSY`).
+     - Fixed in rc, to match: a simple command's redirections print
+       before it, as Plan 9's parser hoists them (`>f echo hi`,
+       `>[2=1]cat`); `fn name` with no body prints `fn name ` (Plan 9's
+       `"fn %t %t"`); redirection errors are Plan 9's texts, `< > <>
+       requires singleton\n` or `requires file\n` for an empty list
+       (`>>`'s without the newline). `whatis` already quoted as
+       plan9port does.
+     - plan9port's rc has no `return` (nor has Plan 9's; ours has none).
+     - `boot_main`'s `test=trap` arm is now `trap_test()` (clippy's line
+       limit), so the `trap` boot test looks for `kernel::trap_test+0x`.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -633,18 +670,20 @@ done.
 
 ## Next steps
 
-P3 slice 7: the oracle harness. `cargo xtask oracle` runs the scripts
-in `oracle/rc/` on host plan9port and in QEMU and compares stdout,
-stderr and status, with an allow-file for known differences; in CI from
-then on. The P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`;
+P3 slice 8: the file commands, `ls cp mv rm mkdir pwd touch chmod
+basename cleanname seq date sleep wc tee test cmp xd strings tail du`
+(`echo` and `cat` are done), each with oracle scripts where plan9port
+has the command (in `oracle/rc`, or a new `oracle/cmd` corpus run the
+same way). The P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`;
 `srv` and `9fs` moved to P5).
 
 plan9port is built on this host (2026-10-19, by
 `scripts/install-plan9port.sh`, in `~/plan9port`; `$PLAN9` is not set,
-so the harness should default to `~/plan9port`). Its rc reads
+and `xtask oracle` defaults to `~/plan9port`). Its rc reads
 `$PLAN9/rcmain` (the Unix one: different lines, so `-x`/`-s` output
-differs from ours), names itself `rc (/home/…/bin/rc)` in errors unless
-run as `rc`, uses `/dev/fd/N` for `<{}`, and `/dev/stdin` interactively.
+differs from ours, and the corpus leaves them out), uses `/dev/fd/N`
+for `<{}`, and `/dev/stdin` interactively. Its tools' error strings are
+Unix's, so scripts that show them need an allow line.
 
 The slice 12 plan, for reference: an `init` in the boot archive that
 builds a name space, runs the test programs and reports on the console,

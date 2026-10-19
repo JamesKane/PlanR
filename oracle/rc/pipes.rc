@@ -1,0 +1,9 @@
+# Pipelines, including stderr and status.
+echo piped | cat
+echo a b c | cat | cat
+{echo out; echo err >[1=2]} |[2] cat
+echo $status
+fn grab {cat}
+echo to function | grab
+x=`{echo hi | cat}
+echo $x

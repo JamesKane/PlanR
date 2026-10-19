@@ -1,0 +1,14 @@
+# eval, shift and the argument list.
+eval echo evaluated
+x='echo built'
+eval $x
+*=(a b c d)
+echo $#* $*
+shift
+echo $*
+shift 2
+echo $*
+echo $0
+fn args {echo $#*: $*}
+args 'a b' c
+eval 'args one; args two'
