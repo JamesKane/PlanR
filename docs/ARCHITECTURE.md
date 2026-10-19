@@ -48,6 +48,7 @@ PlanR/
 │  ├─ bootinfo/         9boot → kernel handoff types (ADR 0010)
 │  ├─ uefi/             UEFI type definitions (loader only)
 │  ├─ elf/              ELF64 parser/loader
+│  ├─ frames/           physical frame allocator (buddy)
 │  ├─ sec/              crypto primitives, TLS 1.3, PAKE (libsec successor)
 │  ├─ net/              IP/TCP/UDP stack core
 │  ├─ draw/             memdraw/memlayer, draw protocol

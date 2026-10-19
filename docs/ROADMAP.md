@@ -218,7 +218,7 @@ from a USB stick:
 in, the timer interrupt ticks on all of them, and a kernel self-test suite
 reports pass/fail through `isa-debug-exit` / PSCI `SYSTEM_OFF` status.
 
-## P2: Kernel core
+## P2: Kernel core (in progress)
 
 The Plan 9 `port/` layer, redesigned in Rust.
 
@@ -246,6 +246,28 @@ The Plan 9 `port/` layer, redesigned in Rust.
 **Exit:** `init` from the boot archive runs, builds a namespace, and starts
 a set of user-mode test programs (fork, exec, pipe, bind/mount, notes, srv
 plus a toy 9P server). All of them pass on both architectures.
+
+**Slices** (agreed 2026-10-18; one commit each):
+1. ✅ Frame allocator: `lib/frames`, a binary buddy allocator over the boot
+   map's free RAM, host-tested; `mm::alloc_frames`/`free_frames`.
+2. Kernel heap: our `#[global_allocator]`, so `alloc` works.
+3. `trait Mmu`: the kernel's own page tables and address spaces on both
+   arches, with TLB shootdown.
+4. Threads: `Proc`, kernel stacks, context switch.
+5. Scheduler: preemptive SMP, per-CPU run queues and priorities;
+   sleep/wakeup, `QLock`/`RWLock` with `Sleepable`, `rendezvous`.
+6. User mode: `lib/abi`, the syscall entry, copy-in/copy-out, `settls`.
+7. Segments, demand paging, ELF `exec`, `exits`/`await`, and the boot
+   archive.
+8. Chan/Dev core: `Dev`, `Chan`, `Qid`, `Dir`, `Pgrp`/`Fgrp`/`Egrp`, the
+   mount table, `bind`/`mount`; `#/ #c #e #d #r #P`.
+9. `rfork` with copy-on-write; `qio`/`Block`; `#|` and `#s`.
+10. Notes, `#p`, `alarm`, `nsec`, `semacquire`/`tsemacquire`, `segattach`.
+11. `#M` with a first 9P codec (`lib/9p`).
+12. The exit test: `init` and the user test programs, in CI on both arches.
+
+User test programs are small `no_std` Rust binaries built by `xtask`
+against `lib/abi` (no `libr` until P3). Hardware runs wait for slice 12.
 
 ## P3: Userland bootstrap
 

@@ -1,13 +1,13 @@
-//! Early memory management: direct-map translation, a bump frame
-//! allocator over the boot memory map, an MMIO mapping window, and kernel
-//! stacks with guard space below them.
+//! Memory management: the physical frame allocator (`lib/frames`, a
+//! buddy allocator over the boot memory map's free RAM), an MMIO mapping
+//! window, and kernel stacks with guard space below them.
 //!
-//! This is bring-up scaffolding. P2 replaces the frame allocator with the
-//! real one and the boot page tables with the kernel's own.
+//! The page tables are still 9boot's; the kernel's own come later in P2.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use bootinfo::{BootInfo, Region, RegionKind, phys_to_virt};
+use bootinfo::{BootInfo, HHDM_BASE, Region, RegionKind, phys_to_virt};
+use frames::Frames;
 
 use crate::arch;
 use crate::port::lock::SpinLock;
@@ -53,34 +53,11 @@ pub(crate) enum MapKind {
     UserReadWrite,
 }
 
-#[derive(Debug)]
-struct FrameAlloc {
-    regions: &'static [Region],
-    index: usize,
-    next: u64,
-}
+/// Never hand out memory below 1 MiB: amd64 needs it for the AP start-up
+/// trampoline, and some firmware is touchy about it.
+const FLOOR: u64 = 0x10_0000;
 
-impl FrameAlloc {
-    /// Never hand out memory below 1 MiB: amd64 needs it for the AP
-    /// start-up trampoline, and some firmware is touchy about it.
-    const FLOOR: u64 = 0x10_0000;
-
-    fn alloc(&mut self) -> Option<u64> {
-        while let Some(r) = self.regions.get(self.index) {
-            if r.kind == RegionKind::Usable {
-                let start = self.next.max(r.start).max(Self::FLOOR).next_multiple_of(PAGE);
-                if start + PAGE <= r.end() {
-                    self.next = start + PAGE;
-                    return Some(start);
-                }
-            }
-            self.index += 1;
-        }
-        None
-    }
-}
-
-static FRAMES: SpinLock<Option<FrameAlloc>> = SpinLock::new(None);
+static FRAMES: SpinLock<Frames> = SpinLock::new(Frames::new(HHDM_BASE));
 static MMIO_NEXT: AtomicU64 = AtomicU64::new(MMIO_BASE);
 static STACK_NEXT: AtomicU64 = AtomicU64::new(STACK_BASE);
 static MEMORY: SpinLock<&'static [Region]> = SpinLock::new(&[]);
@@ -95,13 +72,21 @@ unsafe extern "C" {
 }
 
 pub(crate) fn init(info: &'static BootInfo) {
-    *FRAMES.lock() = Some(FrameAlloc {
-        regions: info.memory(),
-        index: 0,
-        next: 0,
-    });
+    let mut frames = FRAMES.lock();
+    for r in info.memory().iter().filter(|r| r.kind == RegionKind::Usable) {
+        // SAFETY: usable RAM is free once the kernel runs, and 9boot's
+        // direct map covers it at `HHDM_BASE + phys`.
+        unsafe { frames.add(r.start.max(FLOOR), r.end()) };
+    }
+    drop(frames);
     *MEMORY.lock() = info.memory();
     KERNEL_PHYS.store(info.kernel_phys, Ordering::Relaxed);
+}
+
+/// Free and total pages, and the number of arenas they are in.
+pub(crate) fn frame_counts() -> (u64, u64, usize) {
+    let f = FRAMES.lock();
+    (f.free_pages(), f.total_pages(), f.arenas())
 }
 
 /// The physical address of `va`, which must be inside the kernel image.
@@ -112,10 +97,29 @@ pub(crate) fn kernel_phys(va: u64) -> u64 {
 
 /// Allocates one zeroed physical page.
 pub(crate) fn alloc_frame() -> Option<u64> {
-    let frame = FRAMES.lock().as_mut()?.alloc()?;
-    // SAFETY: the frame is usable RAM, inside the direct map, and ours.
-    unsafe { core::ptr::write_bytes(phys_to_virt(frame) as *mut u8, 0, PAGE_BYTES) };
+    alloc_frames(0)
+}
+
+/// Allocates `2^order` zeroed, contiguous physical pages, aligned to their
+/// size.
+pub(crate) fn alloc_frames(order: usize) -> Option<u64> {
+    let frame = FRAMES.lock().alloc(order)?;
+    // SAFETY: the block is usable RAM, inside the direct map, and ours.
+    unsafe { core::ptr::write_bytes(phys_to_virt(frame) as *mut u8, 0, PAGE_BYTES << order) };
     Some(frame)
+}
+
+/// Frees what [`alloc_frames`] returned. Freeing anything else is a kernel
+/// bug, and panics.
+///
+/// # Safety
+///
+/// Nothing may use the pages afterwards, through any mapping.
+pub(crate) unsafe fn free_frames(phys: u64, order: usize) {
+    // SAFETY: the caller's contract.
+    if let Err(e) = unsafe { FRAMES.lock().free(phys, order) } {
+        panic!("mm: bad free of {phys:#x} order {order}: {e:?}");
+    }
 }
 
 /// Finds `n` free, contiguous pages below 1 MiB (which the frame allocator
@@ -130,7 +134,7 @@ pub(crate) fn low_pages(n: u64) -> Option<u64> {
         .filter(|r| r.kind == RegionKind::Usable)
         .find_map(|r| {
             let start = r.start.max(PAGE).next_multiple_of(PAGE);
-            let end = r.end().min(FrameAlloc::FLOOR);
+            let end = r.end().min(FLOOR);
             (start + want <= end).then_some(start)
         })
 }
@@ -192,7 +196,7 @@ pub(crate) fn map_phys(phys: u64, len: u64, kind: MapKind) -> Option<u64> {
 pub(crate) mod ktests {
     use bootinfo::phys_to_virt;
 
-    use super::{MAP, MapKind, PAGE, alloc_frame, alloc_stack};
+    use super::{MAP, MapKind, PAGE, alloc_frame, alloc_frames, alloc_stack, frame_counts, free_frames};
     use crate::arch;
     use crate::port::ktest::TestResult;
     use crate::port::lock::SpinLock;
@@ -217,6 +221,32 @@ pub(crate) mod ktests {
             *mapped = true;
         }
         Ok(USER_PAGE)
+    }
+
+    /// A freed block is counted back, and a block of any order comes
+    /// zeroed and aligned to its size.
+    pub(crate) fn frames_free_and_align() -> TestResult {
+        const ORDER: usize = 4;
+        let before = frame_counts().0;
+        let block = alloc_frames(ORDER).ok_or("no memory for a block")?;
+        if block % (PAGE << ORDER) != 0 {
+            return Err("block not aligned to its size".into());
+        }
+        let bytes = super::PAGE_BYTES << ORDER;
+        // SAFETY: the block is ours and in the direct map.
+        let zeroed = unsafe { core::slice::from_raw_parts(phys_to_virt(block) as *const u8, bytes) };
+        if zeroed.iter().any(|&b| b != 0) {
+            return Err("block not zeroed".into());
+        }
+        // Dirty it, so the next allocation of it shows the zeroing.
+        // SAFETY: as above.
+        unsafe { core::ptr::write_bytes(phys_to_virt(block) as *mut u8, 0xa5, bytes) };
+        // SAFETY: nothing else has the block.
+        unsafe { free_frames(block, ORDER) };
+        if frame_counts().0 != before {
+            return Err("free count not restored".into());
+        }
+        Ok(())
     }
 
     /// A new stack is mapped and writable, and the page below it faults.

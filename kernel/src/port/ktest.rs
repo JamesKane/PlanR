@@ -44,6 +44,7 @@ const TESTS: &[(&str, TestFn)] = &[
         "trap: user page guarded from the kernel",
         trap::ktests::user_page_guarded,
     ),
+    ("mm: frames free and align", mm::ktests::frames_free_and_align),
     ("mm: kernel stack has a guard page", mm::ktests::stack_has_guard),
     ("console: text drawn on the screen", console::ktests::screen_shows_text),
     (

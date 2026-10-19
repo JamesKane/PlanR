@@ -218,6 +218,12 @@ fn report_memory(info: &BootInfo) {
         info.kernel_phys,
         info.kernel_size
     );
+    let (free, total, arenas) = mm::frame_counts();
+    println!(
+        "memory: frames {} MiB free of {} MiB in {arenas} arenas",
+        (free * mm::PAGE) >> 20,
+        (total * mm::PAGE) >> 20
+    );
 }
 
 #[panic_handler]

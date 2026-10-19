@@ -5,71 +5,39 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## State
 
-- **Phase:** P1 (boot and kernel bring-up). Slices 1–11 are done and
-  committed, one commit per slice:
-  1. `5905e4d` 9boot loads the kernel; it boots on amd64 and arm64.
-  2. `a2cb1f7` trap vectors, fault fixups, backtraces, in-kernel tests.
-  3. `eb0f819` interrupt controllers, timers, the clock.
-  4. `7e920c9` SMP bring-up on both architectures.
-  5. `142373e` framebuffer console and persistent log ring.
-  6. `a4ee281` CPU protections: SMEP/SMAP/UMIP on amd64, PAN on arm64.
-     BTI is deferred; see below.
-  7. `ef81e22` MCFG, PPTT and IORT parsing in `lib/acpi` (`tables.rs`, `pptt.rs`,
-     `iort.rs`), with host tests and a boot-report summary.
-  8. `b80bb23` PIT fallback for TSC calibration (`drivers/pit.rs`);
-     `tsc=pit` forces it.
-  9. `faacfe1` Symbolized backtraces: `xtask` writes a demangled symbol table
-     (`lib/ksyms`, `xtask/src/demangle.rs`) into a block `link.ld`
-     reserves.
-  10. `7e61597` Stack-overflow reports on both arches (arm64 vectors test bit 16 of
-      the frame address and switch to an overflow stack); the boot CPU
-      moves to a guarded kernel stack.
-  11. `8aba1b4` ACPI corpus: `oracle/acpi-corpus` holds the QEMU q35 and
-      virt tables (`cargo xtask acpidump`), checked by `lib/acpi`'s corpus
-      test. The Ryzen (`ryzen-x870e`) and Orange Pi (`opi6p`) sets
-      followed in the next commit.
-- **Tree:** clean. `cargo xtask ci` is green: fmt, pedantic clippy with
+- **Phase:** P2 (kernel core), started 2026-10-18. The slice plan is in
+  `docs/ROADMAP.md` under P2. Done so far:
+  1. Frame allocator: `lib/frames` (binary buddy, orders up to 1 GiB,
+     free lists threaded through free pages, one state byte per page in
+     each arena's first pages). `mm::alloc_frame`, `alloc_frames(order)`
+     (zeroed) and `free_frames`; a bad free panics.
+- **P1** is done apart from BTI, which waits on the toolchain. Its slices
+  and the board results are in `docs/ROADMAP.md` and in git history
+  (`5905e4d`..`96d70d8`).
+- **Tree:** `cargo xtask ci` is green: fmt, pedantic clippy with
   `-D warnings`, the dependency check, host tests, and every QEMU boot
   test on every profile.
-- **The plan of record** is `docs/ROADMAP.md`. Its P1 section lists what
-  each slice did and, under **Remaining**, what is left.
 
 ## Next steps
 
-P1 is done apart from BTI, which waits on the toolchain. Both reference
-boards pass the hardware check, and the results are recorded below. Next
-is P2 (see `docs/ROADMAP.md`).
+Slice 2, the kernel heap: a `#[global_allocator]` of ours on top of
+`mm::alloc_frames` (size classes for small objects, whole blocks for
+large ones), then `extern crate alloc` in the kernel. After that, slice 3
+(`trait Mmu`), and so on down the ROADMAP list. Each slice gets its own
+commit after `cargo xtask ci`, and this file is updated with it.
 
-**Reference boards** (procedure in `docs/HARDWARE.md`, "Booting Plan R on
-a board"):
-   - **Orange Pi 6 Plus: passed on 2026-10-18** with `scripts/hwcheck.ini`.
-     It entered at EL2 and ran at EL1, with PAN on, 12 of 12 CPUs online,
-     the DBG2 PL011 console chosen, and the 1920×1080 framebuffer at
-     scale 1. The log ring attached and all 17 in-kernel tests passed.
-     Serial output itself is unobserved (no USB-TTL adapter yet).
-   - **Log ring on the Orange Pi: not possible.** RAM is cleared on every
-     reset, even PSCI `SYSTEM_RESET2` (warm). The `hwreset.ini` run found
-     the ring and all 12 canary pages zeroed, so this is a board
-     limitation (`docs/HARDWARE.md`). The serial header is that board's
-     post-mortem console. The test path built for it stays:
-     - 9boot's BootNext second boot, with a marker in `last.log` against
-       loops;
-     - the lost-ring and canary report;
-     - the warm PSCI reset;
-     - the ring cache flush.
-   - **Ryzen: passed on 2026-10-18** with `hwcheck.ini`, after the AMI
-     ExitBootServices fix (see below). It showed:
-     - SMEP, SMAP and UMIP on, and 24 of 24 CPUs online;
-     - the local APIC in xAPIC mode, as the firmware leaves it, and two
-       I/O APICs;
-     - the TSC at 4691 MHz, calibrated against the HPET, with the APIC
-       timer one-shot (no TSC-deadline);
-     - the RTX 4070's 1920×1080 framebuffer at 0xf800000000;
-     - all 21 in-kernel tests passing.
-     The log ring survives too (`hwreset.ini`): the FADT reset (SMI command,
-     port 0xB2 ← 0xBE) keeps RAM, and the second boot saved the first
-     boot's whole log to `\planr\last.log`. This is the Ryzen's
-     post-mortem path, since it has no serial.
+**Reference boards** (`docs/HARDWARE.md`, "Booting Plan R on a board"):
+no runs until P2's exit test. P1 results, for reference:
+   - **Orange Pi 6 Plus: passed on 2026-10-18** with `scripts/hwcheck.ini`:
+     EL2 entry, PAN, 12 of 12 CPUs, DBG2 PL011 console, 1920×1080
+     framebuffer, 17 of 17 in-kernel tests. It clears RAM on every reset
+     (even warm PSCI `SYSTEM_RESET2`), so it has no log ring; its serial
+     header is the post-mortem console (no USB-TTL adapter yet).
+   - **Ryzen: passed on 2026-10-18** with `hwcheck.ini`: SMEP/SMAP/UMIP,
+     24 of 24 CPUs, xAPIC as the firmware leaves it, two I/O APICs, TSC
+     4691 MHz via HPET, RTX 4070 framebuffer at 0xf800000000, 21 of 21
+     tests. The log ring survives the FADT reset (`hwreset.ini`), which is
+     its post-mortem path.
 
 ## Things to know
 
@@ -114,6 +82,13 @@ a board"):
 - **Panic backtraces stop after one frame:** the prebuilt `core` has no
   frame pointers, so the chain breaks in the panic machinery. Trap
   backtraces are unaffected.
+- **Frames:** usable RAM below 1 MiB (`mm::FLOOR`) is never handed out;
+  `mm::low_pages` finds the amd64 AP trampoline there. Frames may now come
+  from anywhere, including above 4 GiB. The `Boot` and `AcpiReclaimable`
+  regions are not yet given to the allocator: that waits for the
+  kernel's own page tables (slice 3) and copies of what it needs. The
+  per-page state byte has spare bits, but CoW refcounts (slice 9) will
+  need a separate array.
 - **Kernel stacks** come only from `mm::alloc_stack`, in 128 KiB slots.
   arm64's overflow check relies on every stack an exception can arrive on
   following that layout and being `mm::STACK_PAGES` long. A future thread
