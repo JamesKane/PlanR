@@ -1,7 +1,7 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19: P3 slice 1 (console input) is done.
+2026-10-19: P3 slices 1 and 2 (console input, libr base) are done.
 
 ## State
 
@@ -406,6 +406,38 @@ Where work stands, for picking it up in a new session. Last updated
      - Caveat: Linux terminals send DEL for Backspace, so under
        `cargo xtask qemu` Backspace interrupts; use ^H to erase, as on
        Plan 9.
+  2. libr base (`lib/r`, now host-tested too: `#![cfg_attr(not(test),
+     no_std)]`, with `_start`, `main!`'s hook, the panic handler and the
+     global allocator left out of tests):
+     - `heap`: the kernel's `lib/heap` size classes over `Blocks`, page
+       blocks (powers of two, aligned) carved from the bss end with
+       `brk`. Freed blocks go on per-order free lists, never merged or
+       given back; a larger free block is split before the break moves;
+       the aligned gap below a new block is cut into free blocks.
+       `Arena` is the allocator; the `#[global_allocator]` wraps it in a
+       spin lock (yielding after 100 spins) because `RFMEM` children
+       share the heap. `realloc` stays in place within a size class.
+       `r::heap::top()` is the break as the heap has moved it.
+     - `io`: `Read`/`Write` traits (`write_all`), `File(fd)`, `STDIN`,
+       `STDOUT`, `STDERR`, and impls for `&[u8]` and `Vec<u8>`.
+     - `print`: `print!`, `println!`, `eprint!`, `eprintln!` (errors
+       ignored) and `fprint!(fd, …)` (a `Result`): formatted into 1 KiB
+       and written in one piece per KiB, as Plan 9's `print`. Verbs as
+       types: `Quoted` (`%q`), `RcQuoted` (adds `needsrcquote`'s
+       characters), `Text` (bytes as UTF-8), `Rerr` (`%r`, via the new
+       `rerrstr`). `Error` is `Display`; `Error::from_text` is public.
+     - `arg`: `Opts`, Plan 9's `ARGBEGIN` (runes as flags, `--` and `-`
+       end, `arg()` is `ARGF`, `rest()`, `argv0()`).
+     - `utf`: `decode` (Rust's validity rules; a bad byte is one
+       `RUNE_ERROR`), `full_rune`, `runes`, `rune_offsets`, `utf_len`,
+       `utf_rune`, `utf_rrune`.
+     - `bio`: `Bin` (`getc`, `ungetc`, `getrune`, `line(delim)` with no
+       length limit, `read`, `offset`) and `Bout` (`write`, `putc`,
+       `putrune`, `print`, `flush`, flush on drop).
+     - `cmd/utest/tlibr` (in `init`'s list, run with options): flags,
+       collections, a 3 MiB block, the break unmoved over 1000 rounds of
+       freeing, two `RFMEM` processes churning the shared heap (it fails
+       with the lock removed), and `print!`/`Bout`/`Bin` through a pipe.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -415,10 +447,11 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-P3 slice 2, libr base: a user heap (`#[global_allocator]` on `brk`),
-`print!`/`fprint!` on `core::fmt` with helpers for `%q` and `%r`, an
-`ARGBEGIN` replacement, UTF-8/Rune, and `bio`. The P3 slices were
-agreed on 2026-10-19 (`docs/ROADMAP.md`; `srv` and `9fs` moved to P5).
+P3 slice 3, the libr system layer: directory reads, stat helpers,
+`cleanname`, the environment through `/env`, exec with a `$path` search,
+`wait`, `postnote`, time and date, `tokenize`, `getfields`, `quote`. The
+P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`; `srv` and `9fs`
+moved to P5).
 
 The oracle harness (slice 7) needs host plan9port, built by
 `scripts/install-plan9port.sh` (as the user, into `$PLAN9` or

@@ -7,11 +7,11 @@ license.workspace = true
 publish.workspace = true
 
 [lib]
-test = false
 bench = false
 
 [dependencies]
 abi = { path = "../abi" }
+heap = { path = "../heap" }
 
 [lints]
 workspace = true

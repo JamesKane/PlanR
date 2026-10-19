@@ -305,7 +305,7 @@ on Plan R and on host plan9port (see [TESTING.md](TESTING.md)).
    queue; Plan 9's line discipline in `#c/cons` (echo, backspace, ^U,
    ^D), `consctl` raw mode, DEL posting `interrupt` to the console's note
    group; a QEMU test that types on the serial line.
-2. libr base: a user heap (`#[global_allocator]` on `brk`), `print!` and
+2. ✅ libr base: a user heap (`#[global_allocator]` on `brk`), `print!` and
    `fprint!` on `core::fmt` with helpers for `%q` and `%r`, an
    `ARGBEGIN` replacement, UTF-8/Rune, `bio`.
 3. libr system layer: directory reads, stat helpers, `cleanname`, `/env`,

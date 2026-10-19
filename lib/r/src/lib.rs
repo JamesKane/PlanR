@@ -1,6 +1,7 @@
 //! libr: the Plan R user runtime. It will replace libc, lib9, bio and
-//! thread; for now it is what the first programs need: the start-up
-//! code, the system calls, and an exit on panic.
+//! thread. So far: the start-up code, the system calls, an exit on panic,
+//! the heap ([`heap`]), formatted output ([`print`]), options ([`arg`]),
+//! UTF-8 ([`utf`]) and buffered I/O ([`bio`], on [`io`]).
 //!
 //! The file calls take names as `&CStr` and give errors as [`Error`].
 //!
@@ -14,14 +15,30 @@
 //!
 //! `Ok` exits normally; `Err` exits with its text as the status.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 // An error is its text, as Plan 9's errstr gives it: ERRMAX bytes, kept by
 // value so a failed call needs no allocator.
 #![allow(clippy::result_large_err)]
 
-use core::arch::{asm, global_asm};
+extern crate alloc;
+
+pub mod arg;
+pub mod bio;
+pub mod heap;
+pub mod io;
+pub mod print;
+pub mod utf;
+
+use core::arch::asm;
+#[cfg(not(test))]
+use core::arch::global_asm;
 use core::ffi::CStr;
 use core::fmt;
+
+pub use arg::Opts;
+pub use bio::{Bin, Bout};
+pub use io::{File, Read, STDERR, STDIN, STDOUT, Write};
+pub use print::{Quoted, RcQuoted, Rerr, Text};
 
 pub use abi::{
     Access, BindFlags, Dir, ERRMAX, Failed, NoteHow, OpenFlags, OpenMode, Qid, RforkFlags, SegAttr, Sys, Ureg, Whence,
@@ -40,6 +57,7 @@ macro_rules! main {
     };
 }
 
+#[cfg(not(test))]
 unsafe extern "Rust" {
     /// Defined by [`main!`].
     safe fn __libr_main(args: Args) -> Result<(), &'static str>;
@@ -47,7 +65,7 @@ unsafe extern "Rust" {
 
 // The entry point: hand the start-up block (ADR 0002) to `start`, with the
 // stack aligned as a call leaves it and no frame record above.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(not(test), target_arch = "x86_64"))]
 global_asm!(
     ".section .text._start, \"ax\"",
     ".global _start",
@@ -59,7 +77,7 @@ global_asm!(
     start = sym start,
 );
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(not(test), target_arch = "aarch64"))]
 global_asm!(
     ".section .text._start, \"ax\"",
     ".global _start",
@@ -73,6 +91,7 @@ global_asm!(
 );
 
 /// Runs the program's main function on the arguments at `block`.
+#[cfg(not(test))]
 extern "C" fn start(block: *const u64) -> ! {
     // SAFETY: the kernel put argc and the argument pointers at `block`.
     let args = unsafe {
@@ -298,6 +317,16 @@ pub fn errstr(buf: &mut [u8]) -> Result<(), Failed> {
     unsafe { syscall(Sys::Errstr, [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0]) }.map(drop)
 }
 
+/// The process's error text, left as it was (Plan 9's `rerrstr`).
+#[must_use]
+pub fn rerrstr() -> Error {
+    let mut text = [0; ERRMAX];
+    let _ = errstr(&mut text);
+    let mut back = text;
+    let _ = errstr(&mut back);
+    Error { text }
+}
+
 /// The most arguments [`exec`] passes.
 pub const MAX_EXEC_ARGS: usize = 64;
 
@@ -321,7 +350,9 @@ pub fn exec(name: &CStr, argv: &[&CStr]) -> Error {
 }
 
 impl Error {
-    fn from_text(t: &[u8]) -> Error {
+    /// An error with text `t`, cut to fit.
+    #[must_use]
+    pub fn from_text(t: &[u8]) -> Error {
         let mut text = [0; ERRMAX];
         let n = t.len().min(ERRMAX - 1);
         text[..n].copy_from_slice(&t[..n]);
@@ -697,6 +728,7 @@ pub fn fauth(fd: Fd, aname: &CStr) -> Result<Fd, Error> {
     unsafe { call_n(Sys::Fauth, [fd as u64, ptr(aname), 0, 0, 0, 0]) }
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     let mut b = Buf::new();
