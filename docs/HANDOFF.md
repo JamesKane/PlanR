@@ -1002,12 +1002,64 @@ part 1 of the kernel audit against Plan 9's source (names, `chan.c`).
 
 ## Next steps
 
-P3 slice 11: `awk` and `diff`, ported from `../plan9/sys/src/cmd`
-(`awk`: its `awkgram.y` grammar, `run.c` interpreter and `re.c`;
-`diff`). Before or with it, the rest of the kernel's audit against
-`../plan9/sys/src/9/port` (part 1, names and `chan.c`, is done): the
-rest of `sysfile.c`, the devices, then `sysproc.c` and `proc.c`. The P3 slices were agreed on
-2026-10-19 (`docs/ROADMAP.md`; `srv` and `9fs` moved to P5).
+**Resume here.** Last commit: `fa77ac8` (kernel audit part 1, names),
+CI green. Two pieces of work are open; take them in this order unless
+the user says otherwise:
+
+1. **Kernel audit, part 2: the rest of `sysfile.c`**
+   (`../plan9/sys/src/9/port/sysfile.c` against
+   `kernel/src/port/sysfile.rs` and `chan.rs`). Differences already
+   found, each to port and to check with a user test or an
+   `oracle/expect` case:
+   - `read` of a directory: Plan 9 keeps the offset itself; a `pread`
+     of a plain directory at any other offset is `seek in directory`;
+     a union read ignores the offset (0 rewinds) and skips a member
+     whose open or read fails. Plan R's `Chan::read` gives `bad offset
+     in directory read` and stops at a member's error.
+   - `mountfix`: a directory read rewrites the entry of each mount point
+     to the stat of what is mounted there, keeping the name (and keeps
+     what overflows in `dirrock`). Plan R does not.
+   - `fdtochan`: read, write, seek and fwstat of a chan that carries a
+     mount (`CMSG`) are `inappropriate use of fd`; the open mode must
+     match exactly (`OTRUNC` against `OREAD`).
+   - `write` moves the offset before the device write and back by what
+     was not written.
+   - `seek`: a negative result is `negative i/o offset` (Plan R says
+     `negative seek offset`); whence 1 or 2 on a directory is `file is a
+     directory`; a stat that fails is `internal error: stat error in
+     seek`.
+   - `dup(old, new)`: `new` past the table plus 20 (`growfd`'s
+     `DELTAFD`) is `fd out of range or not open`.
+   - `fd2path` with a 0-byte buffer is not an error.
+   - `open`: only the low bits are checked (`openmode`: above `OEXEC`
+     is `bad arg in system call`).
+   - `wstat`/`fwstat`: `validstat` also checks the new name with
+     `validname` (no `/`).
+   - `mount` with a null spec is a bad address in Plan 9; Plan R takes
+     it as empty (decide: follow Plan 9, check libr's callers).
+2. **Kernel audit, part 3: the devices**, each `dev*.rs` against its
+   `dev*.c` (`devroot devcons devenv devproc devpipe devdup devsrv
+   devmnt`): permissions and errors on open (Plan 9's `#e` refuses a
+   directory opened to write with `permission denied`; Plan R says
+   `file is a directory`), `devstat`'s names for directories, `#p`'s
+   `trace` file and `procgen`, `#s`'s create and `OTRUNC`, `mntwalk`
+   when a server answers a walk with no qids (Plan 9 keeps the last
+   error text). Then **part 4**: `sysproc.c` and `proc.c` (rfork,
+   exec, exits, await, notes, errstr, segments).
+3. **P3 slice 11**: `awk` and `diff`, ported from `../plan9/sys/src/cmd`
+   (`awk`: its `awkgram.y` grammar, `run.c` interpreter and `re.c`;
+   `diff`). The user asked for the audit before or with it.
+
+Each piece is its own commit after `cargo xtask ci` is green (about 20
+minutes; run it in the background), with this file and, for a slice,
+the ROADMAP tick updated. Port from `../plan9`, not plan9port; when they
+differ, the case goes in `oracle/expect`, each line worked out from Plan
+9's source. Error texts in tests are Plan 9's: an error inside `namec`
+names the file (`'/x' file does not exist`), and a walk that stops
+partway is `'a/b' does not exist`.
+
+The P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`; `srv` and
+`9fs` moved to P5).
 
 plan9port is built on this host (2026-10-19, by
 `scripts/install-plan9port.sh`, in `~/plan9port`; `$PLAN9` is not set,
