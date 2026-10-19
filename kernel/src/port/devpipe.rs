@@ -157,9 +157,11 @@ impl Dev for PipeDev {
         let s = proc::sleepable().ok_or(EPERM)?;
         let r = pipe(c)?.q[1 - side(c)].write(&s, buf);
         if r.is_err()
+            && !c.is_transport()
             && let Some(me) = proc::current()
         {
-            // As in Plan 9: a writer that does not look at the error dies.
+            // As in Plan 9: a writer that does not look at the error dies,
+            // unless it is a mount's.
             note::post(&me, b"sys: write on closed pipe", note::From::User);
         }
         r

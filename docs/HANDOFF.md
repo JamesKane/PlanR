@@ -1,7 +1,7 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19, after P2 slice 10.
+2026-10-19, after P2 slice 11.
 
 ## State
 
@@ -299,6 +299,50 @@ Where work stands, for picking it up in a new session. Last updated
        sleeping and a spinning process, semaphores, attached segments
        and every `#p` file. `tproc` now expects the closed-pipe note to
        end the writer. A ktest checks `tsleep`.
+  11. 9P and `#M`:
+     - `lib/9p` (crate `ninep`): 9P2000's messages as `Tmsg` and `Rmsg`.
+       The decoder borrows strings and data from the buffer and refuses
+       anything malformed (size mismatch, short field, trailing bytes,
+       bad type, non-UTF-8, more than 16 walk elements), so the encoding
+       is canonical. The encoder writes into a slice (`size()` measures),
+       so the crate needs no allocator and user programs use it too.
+       Host tests include known bytes and a deterministic fuzz loop
+       (200,000 mutated and random messages: no panic, and whatever
+       decodes re-encodes to the same bytes).
+     - `port/devmnt.rs`: the session (`Mnt`) hangs off the transport
+       chan (`Chan::mux`, Plan 9's `c->mux`) and points back weakly;
+       every `Fid` holds the transport, so the session ends, and the
+       server sees end of file, when the last fid and descriptor go.
+       `Tversion` asks for `MSIZE` (32 KiB of data, so a message is one
+       pipe block). Chans that are only walked share a fid; open,
+       create and remove first clone one (`Twalk` with no names) unless
+       the chan's fid is its alone. `Fid`'s drop clunks, or, where it
+       may not sleep, queues the clunk for the session's next request.
+       Replies: no reader thread; the first waiter with no reader reads
+       the next message and delivers it by tag (Plan 9's `mountio`). A
+       note sends `Tflush`, waits for `Rflush` without being cut short,
+       and returns the reply if it came first, else "interrupted".
+       `ORCLOSE` goes to the server, and the chan keeps the mode without
+       it. Stats and directory entries get type `M` and the session's
+       devno (`mntdirfix`).
+     - Calls: `mount(fd, afd, old, flags, aname)` (fails after
+       `RFNOMNT`), `fversion` (returns the version's length, as Plan 9
+       does), `fauth`. `#M` cannot be attached by name. A pipe carrying
+       a session posts no "write on closed pipe" note (`CMSG`).
+     - `cmd/utest/t9p`: a toy server (no allocation) in a child, on a
+       pipe. The parent checks version and auth, stat and directory
+       entries, multi-element walks, the server's own error text, a
+       12 KB read across messages, create/write/`fwstat` rename/remove,
+       `ORCLOSE`, `OTRUNC`, a read the server holds while another process's
+       requests complete, a flush cut short by `alarm`, `RFNOMNT`, a
+       second mount through `#s` on the same session, that no fid is
+       left once everything is closed, and a server that exits (requests
+       fail with "i/o on hungup channel", and no note comes).
+     - `exec: programs' memory is freed` and `heap: empty slabs return`
+       now get three tries each. With `t9p`'s extra processes, each failed
+       once on arm64 `el2-nvhe`, by a single frame: a table grown for good,
+       or another CPU still freeing a dead process's memory. A real leak
+       fails every try.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -308,21 +352,23 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-Slice 11: `#M` with a first 9P codec (`lib/9p`).
-- `lib/9p`: 9P2000 `Tmsg`/`Rmsg` as Rust enums with a zero-copy
-  decoder and an encoder, host-tested (and fuzzed, as ARCHITECTURE.md
-  asks).
-- `#M` (`devmnt`): a mount driver over a chan (a pipe end, or a `#s`
-  service): `version`, `attach`, `walk`, `open`, `create`, `read`,
-  `write`, `clunk`, `remove`, `stat`, `wstat`, with tags so several
-  processes' requests are outstanding at once. Waiting for a reply
-  should be interruptible (`Rendez::sleep_intr`), and an interrupted
-  request sends `Tflush`, as Plan 9 does.
-- The `mount` system call (and `fversion`, `fauth` as far as needed). It
-  must check `Pgrp::noattach`.
-- `Dev::close` may sleep once `#M` exists: see "Never drop an open
-  `Chan` under a spin lock" below.
-- A toy 9P server in a user test program, mounted through a pipe.
+Slice 12: the P2 exit test (ROADMAP: "`init` from the boot archive
+runs, builds a namespace, and starts a set of user-mode test programs
+(fork, exec, pipe, bind/mount, notes, srv plus a toy 9P server). All of
+them pass on both architectures.")
+- An `init` in the boot archive, started as the first user process in
+  place of the kernel's `programs_run` ktest: it builds a name space
+  (`#c` on `/dev`, `#e` on `/env`, `#p` on `/proc`, `#s` on `/srv`, `#|`
+  …), then runs the test programs and reports their wait messages on
+  the console, with a line xtask's boot test can match.
+- In CI on both arches and every profile.
+- Then the hardware runs on both reference boards, under the rules in
+  the memory file and `docs/HARDWARE.md`.
+
+The slice 11 plan, for reference: `lib/9p` (enums, zero-copy decoder,
+encoder, fuzzed), `#M` with tags, interruptible replies and `Tflush`,
+the `mount` call checking `noattach`, `fversion`/`fauth`, and a toy 9P
+server test.
 
 The slice 10 plan, for reference: notes (`notify`/`noted`, a queue per
 process, delivery on the way out, `postnote` to a pid or note group,
@@ -361,9 +407,11 @@ no runs until P2's exit test. P1 results, for reference:
   `UserRegs` keeps it across switches with `TPIDR_EL0`. Without that, a
   preempted thread came back on another thread's stack pointer; the
   slice-6 test missed it because both its threads used one stack address.
-- **Never drop an open `Chan` under a spin lock:** `Dev::close` may
-  sleep once `#M` exists, so the groups take chans out under their locks
-  and drop them after. A fault no longer exits from the trap handler
+- **Never drop an open `Chan` under a spin lock:** a `#M` chan's last
+  drop clunks its fid, a 9P round trip. `devmnt` checks
+  `proc::sleepable()` and, where it may not sleep, leaves the clunk for
+  the session's next request. Still, the groups take chans out under
+  their locks and drop them after, so clunks are prompt. A fault no longer exits from the trap handler
   with interrupts off: it posts a note, and the process exits in
   `note::notify`, with interrupts on and nothing held.
 - **Notes, and what they do not cover yet:**
@@ -376,6 +424,17 @@ no runs until P2's exit test. P1 results, for reference:
   - Notes to kernel threads are refused.
   - `#p/n/ctl` takes only `kill`.
   - Timers run at tick resolution (10 ms).
+- **`#M` limits:**
+  - Walks go one element at a time: `chan::walk` calls `Dev::walk` per
+    element, so each is a `Twalk` and a fid. A multi-element `Dev`
+    walk would cut that down.
+  - A flush waits for `Rflush` without being cut short: a server that
+    never answers it holds the process, even against `kill`, until it
+    hangs up.
+  - An interrupted `Tversion` leaves the transport unusable.
+  - `fauth` gives the auth file, but nothing speaks an auth protocol
+    yet (`factotum` is P3+).
+  - Every attach is as `eve`.
 - **`rfork`'s group flags copy:** `RFNAMEG`, `RFFDG` and `RFENVG` give
   the child a copy; leaving them out shares the group (Plan 9's rule;
   `lib/abi` said otherwise until slice 9). `RFNOMNT` without `RFNAMEG`

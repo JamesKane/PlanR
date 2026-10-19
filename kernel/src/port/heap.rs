@@ -107,20 +107,24 @@ pub(crate) mod ktests {
     }
 
     /// Once everything allocated is freed, the slabs go back to the frame
-    /// allocator.
+    /// allocator. The count is the whole system's, which other CPUs may
+    /// be changing (freeing what dead processes ran in, say), so it gets
+    /// three tries: slabs kept would show on every one.
     pub(crate) fn slabs_return() -> TestResult {
         // Warm the class up, so its kept slab is already counted.
         drop(Box::new([0u8; 64]));
-        let before = mm::frame_counts().0;
-        let boxes: Vec<Box<[u8; 64]>> = (0..1000).map(|_| Box::new([1; 64])).collect();
-        if mm::frame_counts().0 >= before {
-            return Err("no slabs taken".into());
+        for _ in 0..3 {
+            let before = mm::frame_counts().0;
+            let boxes: Vec<Box<[u8; 64]>> = (0..1000).map(|_| Box::new([1; 64])).collect();
+            if mm::frame_counts().0 >= before {
+                return Err("no slabs taken".into());
+            }
+            drop(boxes);
+            if mm::frame_counts().0 == before {
+                return Ok(());
+            }
         }
-        drop(boxes);
-        if mm::frame_counts().0 != before {
-            return Err("slabs not returned".into());
-        }
-        Ok(())
+        Err("slabs not returned".into())
     }
 
     /// A large, strongly aligned request gets a block of its own.

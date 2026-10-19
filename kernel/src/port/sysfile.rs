@@ -1,7 +1,7 @@
 //! The system calls on files and name spaces (Plan 9's `sysfile.c`):
 //! `open`, `create`, `close`, `read`, `write`, `pread`, `pwrite`, `seek`,
 //! `stat`, `fstat`, `wstat`, `fwstat`, `remove`, `fd2path`, `dup`,
-//! `pipe`, `chdir`, `bind` and `unmount`.
+//! `pipe`, `chdir`, `bind`, `mount`, `unmount`, `fversion` and `fauth`.
 //!
 //! Data passes through a kernel buffer: a read gives at most [`IO_MAX`]
 //! bytes, and a write goes to the device in pieces that size.
@@ -13,10 +13,11 @@ use core::sync::atomic::Ordering;
 
 use abi::{Access, BindFlags, Dir, OpenFlags, OpenMode, Whence};
 
-use crate::port::chan::{self, Chan, last_elem};
+use crate::port::chan::{self, Chan, Walked, last_elem};
 use crate::port::dev::Dev;
+use crate::port::devmnt;
 use crate::port::devpipe::PIPE;
-use crate::port::error::{EBADARG, EBADCHAR, EBADSTAT, EBADUSEFD, EISDIR, ENOTDIR, ESHORTSTAT, Result};
+use crate::port::error::{EBADARG, EBADCHAR, EBADSTAT, EBADUSEFD, EISDIR, ENOATTACH, ENOTDIR, ESHORTSTAT, Result};
 use crate::port::pgrp::{self, NameSpace};
 use crate::port::uaccess;
 
@@ -329,4 +330,64 @@ pub(crate) fn unmount(name: u64, old: u64) -> Result<u64> {
     let old = chan::walk(&ns.names(), &old, false)?.chan;
     ns.pgrp().unmount(new.as_ref().map(|w| &w.chan), &old)?;
     Ok(0)
+}
+
+/// `mount(fd, afd, old, flags, aname)`: attaches to the 9P server on `fd`
+/// and mounts its tree `aname` (null for the default) on `old`, as `bind`
+/// would; `afd` is a file from `fauth`, or -1.
+pub(crate) fn mount(fd: u64, afd: u64, old: u64, flags: u64, aname: u64) -> Result<u64> {
+    let old = name_arg(old)?;
+    let aname = if aname == 0 { String::new() } else { name_arg(aname)? };
+    let flags = BindFlags::from_bits(flags).ok_or(EBADARG)?;
+    let ns = NameSpace::current()?;
+    if ns.pgrp().noattach() {
+        return Err(ENOATTACH.into());
+    }
+    let c = chan_of(fd)?;
+    let afile = if afd == u64::MAX { None } else { Some(chan_of(afd)?) };
+    let old = chan::walk(&ns.names(), &old, false)?.chan;
+    let root = devmnt::attach(&c, afile.as_deref(), &aname)?;
+    ns.pgrp().mount(
+        Walked {
+            chan: root,
+            union: None,
+        },
+        &old,
+        flags,
+    )?;
+    Ok(0)
+}
+
+/// `fversion(fd, msize, buf, n) -> n`: sets up the 9P session on `fd`,
+/// with messages of at most `msize` bytes (0 for the default) and the
+/// version in the `n` bytes at `buf` (empty for 9P2000), unless it has
+/// one; the session's version goes back to `buf`, if `n` is not 0.
+pub(crate) fn fversion(fd: u64, msize: u64, buf: u64, n: u64) -> Result<u64> {
+    let n = usize::try_from(n).map_err(|_| EBADARG)?.min(NAME_MAX);
+    let mut v = alloc::vec![0u8; n];
+    uaccess::copy_in(&mut v, buf)?;
+    if let Some(end) = v.iter().position(|&b| b == 0) {
+        v.truncate(end);
+    }
+    let v = String::from_utf8(v).map_err(|_| EBADARG)?;
+    let msize = u32::try_from(msize).map_err(|_| EBADARG)?;
+    let got = devmnt::fversion(&chan_of(fd)?, msize, &v)?;
+    if n > 0 {
+        if got.len() > n {
+            return Err("i/o count too small".into());
+        }
+        uaccess::copy_out(buf, got.as_bytes())?;
+    }
+    Ok(got.len() as u64)
+}
+
+/// `fauth(fd, aname) -> fd`: a file for authenticating to the 9P server
+/// on `fd`, for `mount` to pass on.
+pub(crate) fn fauth(fd: u64, aname: u64) -> Result<u64> {
+    let aname = if aname == 0 { String::new() } else { name_arg(aname)? };
+    if NameSpace::current()?.pgrp().noattach() {
+        return Err(ENOATTACH.into());
+    }
+    let a = devmnt::auth(&chan_of(fd)?, &aname)?;
+    Ok(pgrp::fgrp()?.add(a, false)? as u64)
 }

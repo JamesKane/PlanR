@@ -1,0 +1,13 @@
+[package]
+name = "ninep"
+description = "9P2000: the messages, with a zero-copy decoder and an encoder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+abi = { path = "../abi" }
+
+[lints]
+workspace = true

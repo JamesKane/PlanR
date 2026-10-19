@@ -48,6 +48,7 @@ dependencies = [
  "heap",
  "ksyms",
  "logring",
+ "ninep",
 ]
 
 [[package]]
@@ -69,6 +70,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ninep"
+version = "0.1.0"
+dependencies = [
+ "abi",
+]
+
+[[package]]
 name = "r"
 version = "0.1.0"
 dependencies = [
@@ -83,6 +91,8 @@ version = "0.1.0"
 name = "utest"
 version = "0.1.0"
 dependencies = [
+ "abi",
+ "ninep",
  "r",
 ]
 

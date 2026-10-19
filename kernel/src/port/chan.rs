@@ -51,6 +51,9 @@ pub(crate) struct Chan {
     /// The device's own state for the file, which chans walked from it
     /// share (Plan 9's `c->aux`): a pipe's queues, say.
     aux: Option<Arc<dyn Any + Send + Sync>>,
+    /// The 9P session it carries, once `fversion` or `mount` has set one
+    /// up (Plan 9's `c->mux`): it lasts as long as the chan does.
+    mux: SpinLock<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 /// How far through a union a directory read has got.
@@ -87,6 +90,7 @@ impl Chan {
             union: None,
             union_read: SpinLock::new(None),
             aux: None,
+            mux: SpinLock::new(None),
         }
     }
 
@@ -100,6 +104,28 @@ impl Chan {
     pub(crate) fn aux<T: Any>(&self) -> Option<&T> {
         let aux: &dyn Any = self.aux.as_deref()?;
         aux.downcast_ref()
+    }
+
+    /// The 9P session the chan carries, if it is a `T`.
+    pub(crate) fn mux<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        let m = self.mux.lock().clone()?;
+        m.downcast().ok()
+    }
+
+    /// Makes the chan carry session `m`, if it carries none yet.
+    pub(crate) fn set_mux(&self, m: Arc<dyn Any + Send + Sync>) {
+        self.mux.lock().get_or_insert(m);
+    }
+
+    /// True if the chan carries a session (Plan 9's `CMSG`): a failed
+    /// write is the session's to report, so a pipe posts no note for it.
+    pub(crate) fn is_transport(&self) -> bool {
+        self.mux.lock().is_some()
+    }
+
+    /// True if another chan holds the same device state.
+    pub(crate) fn aux_shared(&self) -> bool {
+        self.aux.as_ref().is_some_and(|a| Arc::strong_count(a) > 1)
     }
 
     /// The file `qid`, called `elem`, in this directory, unopened, with

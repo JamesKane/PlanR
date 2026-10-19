@@ -11,6 +11,7 @@ pub(crate) mod devarch;
 pub(crate) mod devcons;
 pub(crate) mod devdup;
 pub(crate) mod devenv;
+pub(crate) mod devmnt;
 pub(crate) mod devpipe;
 pub(crate) mod devproc;
 pub(crate) mod devroot;

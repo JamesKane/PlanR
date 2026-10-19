@@ -19,7 +19,7 @@ use abi::{Access, Dir, OpenFlags, OpenMode, Qid};
 
 use crate::port::chan::Chan;
 use crate::port::error::{EISDIR, ENONEXIST, EPERM, ESHORTSTAT, Result};
-use crate::port::{devarch, devcons, devdup, devenv, devpipe, devproc, devroot, devrtc, devsrv};
+use crate::port::{devarch, devcons, devdup, devenv, devmnt, devpipe, devproc, devroot, devrtc, devsrv};
 
 /// The host owner, who owns everything until there are other users.
 pub(crate) const EVE: &str = "eve";
@@ -65,7 +65,7 @@ pub(crate) trait Dev: Sync {
 }
 
 /// Every device, in the order `#c/drivers` lists them.
-pub(crate) fn all() -> [&'static dyn Dev; 9] {
+pub(crate) fn all() -> [&'static dyn Dev; 10] {
     [
         &devroot::ROOT,
         &devcons::CONS,
@@ -74,6 +74,7 @@ pub(crate) fn all() -> [&'static dyn Dev; 9] {
         &devpipe::PIPE,
         &devdup::DUP,
         &devsrv::SRV,
+        &devmnt::MNT,
         &devrtc::RTC,
         &devarch::ARCH,
     ]

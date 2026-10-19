@@ -217,6 +217,7 @@ pub(crate) mod ktests {
         ("/boot/tfile", &["tfile"], Want::Status("targs from env")),
         ("/boot/tproc", &["tproc"], Want::Normal),
         ("/boot/tnote", &["tnote"], Want::Normal),
+        ("/boot/t9p", &["t9p"], Want::Normal),
     ];
 
     /// Each child's pid and its wait message, as `await` formats it.
@@ -278,7 +279,7 @@ pub(crate) mod ktests {
     /// exec replaces a program, faults end one with a trap status, the
     /// file calls work on every device (`tfile`), and processes fork,
     /// share or copy their memory and groups, and talk through pipes and
-    /// `#s` (`tproc`).
+    /// `#s` (`tproc`), take notes (`tnote`) and mount a 9P server (`t9p`).
     pub(crate) fn programs_run() -> TestResult {
         if !crate::port::devroot::has("boot/tmem") {
             return Err("no boot archive with the test programs".into());
@@ -325,17 +326,23 @@ pub(crate) mod ktests {
     /// Running the programs again gives back every frame they took: their
     /// segments' frames and page tables all go back. Other CPUs free what
     /// their dead processes ran in a moment after the parent hears, so the
-    /// count is given a little while to come back.
+    /// count is given a little while to come back. A run that happens to
+    /// have more processes alive at once than any before may grow a table
+    /// for good (a frame, now and then), so it gets three tries: a leak
+    /// loses frames on every one.
     pub(crate) fn memory_freed() -> TestResult {
         // Once first, so the heap has grown to what a run needs.
         run_all()?;
-        let before = mm::frame_counts().0;
-        run_all()?;
-        if !clock::wait_until(|| mm::frame_counts().0 >= before, 2 * SECOND) {
+        let mut before = mm::frame_counts().0;
+        for _ in 0..3 {
+            run_all()?;
+            if clock::wait_until(|| mm::frame_counts().0 >= before, 2 * SECOND) {
+                return Ok(());
+            }
             let after = mm::frame_counts().0;
             crate::println!("ktest: {before} free frames before, {after} after");
-            return Err("programs' memory not freed".into());
+            before = after;
         }
-        Ok(())
+        Err("programs' memory not freed".into())
     }
 }

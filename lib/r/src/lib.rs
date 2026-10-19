@@ -662,6 +662,41 @@ pub fn unmount(name: Option<&CStr>, old: &CStr) -> Result<(), Error> {
     unsafe { call_n(Sys::Unmount, [name.map_or(0, ptr), ptr(old), 0, 0, 0, 0]) }.map(drop)
 }
 
+/// Attaches to the 9P server on `fd` and mounts its tree `aname` on
+/// `old`; `afd` is from [`fauth`], if the server wants authentication.
+pub fn mount(fd: Fd, afd: Option<Fd>, old: &CStr, flags: BindFlags, aname: &CStr) -> Result<(), Error> {
+    let afd = afd.map_or(u64::MAX, |a| a as u64);
+    // SAFETY: both names are NUL-terminated.
+    unsafe { call_n(Sys::Mount, [fd as u64, afd, ptr(old), flags.bits(), ptr(aname), 0]) }.map(drop)
+}
+
+/// Sets up the 9P session on `fd`, with messages of at most `msize` bytes
+/// (0 for the kernel's choice) in the version `buf` holds (empty for
+/// 9P2000); the session's version is left in `buf`, and its length
+/// returned.
+pub fn fversion(fd: Fd, msize: u32, buf: &mut [u8]) -> Result<usize, Error> {
+    // SAFETY: the kernel reads and writes at most `buf.len()` bytes.
+    unsafe {
+        call_n(
+            Sys::Fversion,
+            [
+                fd as u64,
+                u64::from(msize),
+                buf.as_mut_ptr() as u64,
+                buf.len() as u64,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+/// A file for authenticating to the 9P server on `fd`, for `aname`.
+pub fn fauth(fd: Fd, aname: &CStr) -> Result<Fd, Error> {
+    // SAFETY: `aname` is NUL-terminated.
+    unsafe { call_n(Sys::Fauth, [fd as u64, ptr(aname), 0, 0, 0, 0]) }
+}
+
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     let mut b = Buf::new();

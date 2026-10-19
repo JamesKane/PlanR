@@ -180,7 +180,7 @@ struct Built {
 /// it that go into `/boot`.
 const USER_PROGRAMS: &[(&str, &[&str])] = &[(
     "utest",
-    &["tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote"],
+    &["tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote", "t9p"],
 )];
 
 /// Builds the user programs for `arch` and packs them into the boot
@@ -405,7 +405,8 @@ fn write_images(built: &[Built], name: &str, config: &str) -> Result<Vec<PathBuf
 
 /// Crates with host unit tests (everything except the bare-metal binaries).
 const HOST_TESTED: &[&str] = &[
-    "abi", "acpi", "bootarc", "bootinfo", "elf", "fbtext", "frames", "heap", "ksyms", "logring", "uefi", "xtask",
+    "ninep", "abi", "acpi", "bootarc", "bootinfo", "elf", "fbtext", "frames", "heap", "ksyms", "logring", "uefi",
+    "xtask",
 ];
 
 fn with_packages(c: &mut Command, packages: &[&str]) {

@@ -49,7 +49,15 @@ path = "src/bin/tnote.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "t9p"
+path = "src/bin/t9p.rs"
+test = false
+bench = false
+
 [dependencies]
+abi = { path = "../../lib/abi" }
+ninep = { path = "../../lib/9p" }
 r = { path = "../../lib/r" }
 
 [lints]

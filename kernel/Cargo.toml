@@ -23,6 +23,7 @@ frames = { path = "../lib/frames" }
 heap = { path = "../lib/heap" }
 ksyms = { path = "../lib/ksyms" }
 logring = { path = "../lib/logring" }
+ninep = { path = "../lib/9p" }
 
 [lints]
 workspace = true
