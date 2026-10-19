@@ -35,6 +35,23 @@ Where work stands, for picking it up in a new session. Last updated
      only in `finish_switch`, run by the context switched to, so no other
      CPU can resume it half-saved. arm64 saves d8-d15 because its kernel
      target uses FP; amd64's is soft-float.
+  5. Scheduler (`port/proc.rs`, `port/qlock.rs`):
+     - Per-CPU queues by priority (20 levels, round robin within one).
+       `ready` puts a thread on the least loaded CPU and sends a wake IPI
+       if that CPU should switch now. Idle CPUs steal unwired threads.
+     - Preemption: `proc::tick` marks a CPU once the quantum (2 ticks) is
+       used up, and `proc::preempt` switches at IRQ exit (amd64 and arm64
+       trap handlers).
+     - `on_cpu` keeps a thread that is still switching out from being
+       resumed elsewhere.
+     - `Rendez::sleep(&Sleepable, cond)`, `wakeup` and `wakeup_all`;
+       `QLock`/`RwLock` hand the lock straight to the next waiter (FIFO);
+       `rendezvous(tag, value)` uses one global table until process
+       groups exist.
+     - The boot CPU now ends in `cpu::idle_loop`, like the APs, instead of
+       halting.
+     - Separately, `5487d7b`: arm64 trap frames now save q0-q31,
+       FPCR and FPSR.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -44,18 +61,20 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-Slice 5, the scheduler, building on `port/proc.rs`:
-- per-CPU run queues with priorities, in place of the global `READY`;
-- preemption from the clock tick, done on the way out of the interrupt,
-  never inside a handler with a spin lock held;
-- APs running threads from their idle loop;
-- sleep/wakeup (Plan 9 `Rendez`) and `QLock`/`RWLock` taking a
-  `Sleepable` token (`docs/DRIVER-MODEL.md`);
-- `rendezvous` in kernel form.
+Slice 6, user mode:
+- `lib/abi` (planr-abi): syscall numbers, typed arguments and flags, and
+  the result/error register pair (ADR 0002);
+- the syscall entry: `syscall`/`sysret` with the TSS `rsp0` and
+  `SWAPGS` on amd64, `svc #0` from EL0 on arm64;
+- copy-in/copy-out grown from `arch::probe_user_read`, with fault fixups;
+- `settls`: `FS` base, or `TPIDR_EL0`, saved per thread. The arm64
+  overflow path clobbers `TPIDR_EL0`, so it stays fatal or saves it
+  first;
+- a first user thread entered by hand (`iretq`/`eret` to EL0) that makes
+  a syscall.
 
-With preemption, the window between a switch's return and
-`finish_switch` must stay closed to interrupts. Each slice gets its own
-commit after `cargo xtask ci`, and this file is updated with it.
+User FP/SIMD state needs saving on switch too: amd64 user code will use
+SSE, unlike the kernel.
 
 **Reference boards** (`docs/HARDWARE.md`, "Booting Plan R on a board"):
 no runs until P2's exit test. P1 results, for reference:
@@ -113,6 +132,15 @@ no runs until P2's exit test. P1 results, for reference:
 - **Panic backtraces stop after one frame:** the prebuilt `core` has no
   frame pointers, so the chain breaks in the panic machinery. Trap
   backtraces are unaffected.
+- **Scheduler limits:**
+  - No priority aging: a busy high-priority thread starves lower ones on
+    its CPU, and a CPU's own context only runs when nothing is ready.
+  - No timed sleep yet (`tsleep`): that comes with `alarm` in slice 10.
+  - Tests that need their threads queued together spawn them with
+    interrupts off (`ktests::together`); otherwise a tick can preempt
+    the spawner after the first one.
+  - Locks that sleep take a `Sleepable`, which only a thread with
+    interrupts on can get.
 - **TLB shootdown rule:** never unmap or call `mmu::shootdown` with a
   `SpinLock` held. Spin locks hold interrupts off, so a CPU spinning on
   one cannot take the shootdown IPI. Change the tables under the lock,

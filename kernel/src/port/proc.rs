@@ -1,39 +1,88 @@
-//! Processes: for now, kernel threads, each with its own stack and saved
-//! context, and cooperative switching between them.
+//! Processes and the scheduler: kernel threads, each with its own stack
+//! and saved context, run from per-CPU queues by priority, preempted by
+//! the clock, and put to sleep and woken through [`Rendez`].
 //!
-//! A CPU starts out in its own context, the one it booted or was started
-//! in; it is no [`Proc`], and it runs only when no thread is ready, as an
-//! idle loop would. [`yield_now`] passes the CPU to the next ready thread
-//! and puts the current one at the back of the queue. A thread whose
-//! function returns is dead, and its stack is freed.
+//! **Own contexts.** A CPU starts out in its own context, the one it
+//! booted or was started in. It is no [`Proc`] and runs below every
+//! priority: only when nothing on the CPU is ready, as an idle loop would.
+//! It cannot sleep.
 //!
-//! Switching is careful about one thing. The thread being left is still
-//! running, on its own stack, until the switch has saved it. So it goes
-//! back on the ready queue (or, if dead, is freed) only from the context
-//! switched to, in [`finish_switch`]. Until then, no other CPU can take it.
+//! **Queues.** Each CPU has a queue per priority (Plan 9's twenty, highest
+//! first; round robin within one). A thread that becomes ready goes to the
+//! least loaded CPU, which gets a wake-up IPI if it is idle or running
+//! something of lower priority. An idle CPU takes work from other CPUs'
+//! queues. A *wired* thread stays on its CPU. There is no priority aging
+//! yet, so a busy high-priority thread starves lower ones on its CPU.
 //!
-//! The scheduler proper (preemption, per-CPU queues, priorities, sleep and
-//! wakeup) comes next and builds on this.
+//! **Preemption.** Every tick, a thread that has used its quantum is
+//! marked for rescheduling if something of at least its priority is
+//! ready. The switch happens on the way out of the interrupt, after the
+//! end-of-interrupt ([`preempt`]). Every spin lock holds interrupts off, so
+//! an interrupt never arrives while one is held, and preempting there is
+//! always safe. Interrupt handlers run on the interrupted thread's stack,
+//! which keeps the interrupted state until the thread resumes.
+//!
+//! **Switching.** A thread being left is still running on its own stack
+//! until the switch has saved it. So it goes back on a queue (or, if dead,
+//! is freed) only from the context switched to, in [`finish_switch`], and
+//! its `on_cpu` flag stays set until then. A thread woken while still
+//! switching out can be queued at once, but no CPU resumes it before
+//! `on_cpu` clears.
 
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::marker::PhantomData;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use crate::arch::{self, context::Context};
 use crate::port::cpu::{self, MAXCPU};
 use crate::port::lock::SpinLock;
 use crate::port::mm::Stack;
 
+/// Priorities, 0 (lowest) to `NPRI - 1`, as in Plan 9.
+pub(crate) const NPRI: usize = 20;
+/// Ordinary processes.
+pub(crate) const PRI_NORMAL: usize = 10;
+/// Kernel processes.
+pub(crate) const PRI_KPROC: usize = 13;
+/// Ticks a thread runs before it yields to its equals.
+const QUANTUM: u32 = 2;
+/// "Not wired to a CPU."
+const UNWIRED: usize = usize::MAX;
+
+/// What a process is doing.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum State {
+    /// On a run queue.
+    Ready,
+    Running,
+    /// Waiting to be woken ([`ready`]).
+    Sleeping,
+    /// Finished; freed once switched away from.
+    Dead,
+}
+
 /// A process: a thread of control with its own kernel stack.
 pub(crate) struct Proc {
     pid: u64,
     name: String,
+    pri: usize,
+    /// The CPU it must run on, or [`UNWIRED`].
+    wired: usize,
+    state: AtomicU8,
+    /// True from when a CPU starts running it until the context switched
+    /// to has saved it.
+    on_cpu: AtomicBool,
+    /// Where it last ran.
+    last_cpu: AtomicUsize,
     /// Saved while the process is not running.
     context: UnsafeCell<Context>,
-    stack: Stack,
+    /// Freed with the process.
+    _stack: Stack,
     /// What the thread runs; taken when it starts.
     entry: SpinLock<Option<Entry>>,
 }
@@ -41,8 +90,8 @@ pub(crate) struct Proc {
 type Entry = Box<dyn FnOnce() + Send>;
 
 // SAFETY: `context` is touched only by the CPU switching away from or to
-// the process, and the switch protocol (see the module comment) lets one
-// CPU at a time do so.
+// the process, and `on_cpu` keeps that to one CPU at a time (see the
+// module comment).
 unsafe impl Sync for Proc {}
 // SAFETY: as above; the entry closure is `Send`.
 unsafe impl Send for Proc {}
@@ -52,7 +101,8 @@ impl core::fmt::Debug for Proc {
         f.debug_struct("Proc")
             .field("pid", &self.pid)
             .field("name", &self.name)
-            .field("stack", &self.stack)
+            .field("pri", &self.pri)
+            .field("state", &self.state())
             .finish_non_exhaustive()
     }
 }
@@ -65,11 +115,90 @@ impl Proc {
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
+
+    pub(crate) fn state(&self) -> State {
+        match self.state.load(Ordering::Acquire) {
+            0 => State::Ready,
+            1 => State::Running,
+            2 => State::Sleeping,
+            _ => State::Dead,
+        }
+    }
+
+    fn set_state(&self, s: State) {
+        self.state.store(s as u8, Ordering::Release);
+    }
+}
+
+/// How to make a thread.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Spawn<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) pri: usize,
+    /// The CPU to keep it on, if any.
+    pub(crate) wired: Option<usize>,
+}
+
+impl<'a> Spawn<'a> {
+    /// A kernel process: [`PRI_KPROC`], not wired.
+    pub(crate) fn kproc(name: &'a str) -> Spawn<'a> {
+        Spawn {
+            name,
+            pri: PRI_KPROC,
+            wired: None,
+        }
+    }
 }
 
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
-/// Threads ready to run.
-static READY: SpinLock<VecDeque<Arc<Proc>>> = SpinLock::new(VecDeque::new());
+
+/// One CPU's ready threads, by priority.
+#[derive(Debug)]
+struct RunQueue {
+    q: [VecDeque<Arc<Proc>>; NPRI],
+}
+
+impl RunQueue {
+    const fn new() -> RunQueue {
+        RunQueue {
+            q: [const { VecDeque::new() }; NPRI],
+        }
+    }
+
+    /// The highest priority with a ready thread.
+    fn top(&self) -> Option<usize> {
+        (0..NPRI).rev().find(|&p| !self.q[p].is_empty())
+    }
+
+    /// Takes the first thread of the highest priority at least `min`,
+    /// skipping wired threads if `stealing`.
+    fn take(&mut self, min: usize, stealing: bool) -> Option<Arc<Proc>> {
+        (min..NPRI).rev().find_map(|p| {
+            let q = &mut self.q[p];
+            let i = q.iter().position(|t| !stealing || t.wired == UNWIRED)?;
+            q.remove(i)
+        })
+    }
+}
+
+static QUEUES: [SpinLock<RunQueue>; MAXCPU] = [const { SpinLock::new(RunQueue::new()) }; MAXCPU];
+/// Ready threads on each CPU's queue, read without its lock.
+static QUEUED: [AtomicUsize; MAXCPU] = [const { AtomicUsize::new(0) }; MAXCPU];
+/// The priority each CPU is running at, plus one; 0 for its own context.
+static RUNNING_PRI: [AtomicUsize; MAXCPU] = [const { AtomicUsize::new(0) }; MAXCPU];
+/// Set to make a CPU reschedule at its next interrupt exit.
+static NEED_RESCHED: [AtomicBool; MAXCPU] = [const { AtomicBool::new(false) }; MAXCPU];
+
+/// How the thread being left goes on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leave {
+    /// Back on this CPU's queue.
+    Requeue,
+    /// Asleep: whoever wakes it queues it.
+    Sleep,
+    /// Dead: freed.
+    Dead,
+}
 
 /// A CPU's switching state, touched only by that CPU with interrupts off.
 #[derive(Debug)]
@@ -78,10 +207,10 @@ struct Local {
     own: Context,
     /// The running thread, or `None` for the CPU's own context.
     current: Option<Arc<Proc>>,
-    /// The thread just left, to go back on the ready queue.
-    requeue: Option<Arc<Proc>>,
-    /// The thread just left for good, to be freed.
-    dead: Option<Arc<Proc>>,
+    /// The thread just left, and how it goes on.
+    left: Option<(Arc<Proc>, Leave)>,
+    /// Ticks left in the current thread's quantum.
+    quantum: u32,
 }
 
 /// Per-CPU [`Local`]s.
@@ -95,8 +224,8 @@ static LOCALS: Locals = Locals(
         UnsafeCell::new(Local {
             own: Context::EMPTY,
             current: None,
-            requeue: None,
-            dead: None,
+            left: None,
+            quantum: 0,
         })
     }; MAXCPU],
 );
@@ -105,26 +234,38 @@ static LOCALS: Locals = Locals(
 ///
 /// # Safety
 ///
-/// Interrupts are off, and the reference is not kept across a switch.
+/// Interrupts are off, and the reference is not kept across a switch (the
+/// thread may resume on another CPU).
 unsafe fn local() -> &'static mut Local {
     // SAFETY: the caller's contract: only this CPU uses its slot, and
     // nothing else on it can run until interrupts are back on.
     unsafe { &mut *LOCALS.0[cpu::current().index()].get() }
 }
 
-/// Makes a kernel thread that runs `f`, and puts it on the ready queue.
-pub(crate) fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> Option<Arc<Proc>> {
+/// Makes a kernel thread that runs `f`, and makes it ready.
+pub(crate) fn spawn(how: Spawn<'_>, f: impl FnOnce() + Send + 'static) -> Option<Arc<Proc>> {
+    assert!(how.pri < NPRI, "priority out of range");
     let stack = Stack::new()?;
     // SAFETY: the stack is new and ours.
     let context = unsafe { Context::new(stack.top(), thread_start, 0) };
+    let wired = how.wired.unwrap_or(UNWIRED);
     let p = Arc::new(Proc {
         pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
-        name: String::from(name),
+        name: String::from(how.name),
+        pri: how.pri,
+        wired,
+        state: AtomicU8::new(State::Sleeping as u8),
+        on_cpu: AtomicBool::new(false),
+        last_cpu: AtomicUsize::new(if wired == UNWIRED {
+            cpu::current().index()
+        } else {
+            wired
+        }),
         context: UnsafeCell::new(context),
-        stack,
+        _stack: stack,
         entry: SpinLock::new(Some(Box::new(f))),
     });
-    READY.lock().push_back(p.clone());
+    ready(p.clone());
     Some(p)
 }
 
@@ -137,93 +278,223 @@ pub(crate) fn current() -> Option<Arc<Proc>> {
     p
 }
 
-/// Passes the CPU to the next ready thread, if there is one, and returns
-/// when this context is next chosen. From a CPU's own context, that is
-/// once no thread is ready.
-pub(crate) fn yield_now() {
+/// Makes a sleeping (or new) thread ready: queues it on a CPU, and has
+/// that CPU reschedule if the thread should run there now. Does nothing if
+/// it is not asleep.
+pub(crate) fn ready(p: Arc<Proc>) {
+    if p.state
+        .compare_exchange(
+            State::Sleeping as u8,
+            State::Ready as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return;
+    }
+    let target = choose_cpu(&p);
+    let pri = p.pri;
     let pl = arch::splhi();
-    let next = READY.lock().pop_front();
-    if let Some(next) = next {
-        // SAFETY: interrupts are off.
-        let l = unsafe { local() };
-        let prev = l.current.take();
-        l.requeue.clone_from(&prev);
-        // SAFETY: `prev` is held in `requeue` until `finish_switch`, so its
-        // context stays valid while it is saved.
-        unsafe { switch_to(prev.as_deref(), next) };
+    enqueue(target, p);
+    let me = cpu::current().index();
+    if RUNNING_PRI[target].load(Ordering::Acquire) <= pri {
+        NEED_RESCHED[target].store(true, Ordering::Release);
+        if target != me
+            && let Some(c) = cpu::get(target)
+        {
+            arch::send_ipi(c, arch::WAKE_VECTOR);
+        }
     }
     arch::splx(pl);
-    finish_switch();
 }
 
-/// Ends the calling thread: switches to the next ready one, or to the
-/// CPU's own context, and has its stack freed there.
-fn exit() -> ! {
-    let _ = arch::splhi();
-    let next = READY.lock().pop_front();
-    // SAFETY: interrupts are off.
-    let l = unsafe { local() };
-    let me = l.current.take().expect("a CPU's own context cannot exit");
-    let from = me.context.get();
-    // Held until the next context frees it, so `from` stays valid while the
-    // switch saves into it.
-    l.dead = Some(me);
-    let to = match next {
-        Some(next) => {
-            let to = next.context.get().cast_const();
-            l.current = Some(next);
-            to
-        }
-        // The CPU's own context, saved when it last switched to a thread.
-        None => &raw const l.own,
-    };
-    // SAFETY: `to` is a saved or new context only this CPU resumes.
-    unsafe { arch::context::switch(from, to) };
-    unreachable!("a dead thread was resumed");
-}
-
-/// Switches from `prev` (or the CPU's own context) to `next`.
-///
-/// # Safety
-///
-/// Interrupts are off, and `prev` lives until the next context runs
-/// [`finish_switch`].
-unsafe fn switch_to(prev: Option<&Proc>, next: Arc<Proc>) {
-    // SAFETY: interrupts are off.
-    let l = unsafe { local() };
-    let from = match prev {
-        Some(p) => p.context.get(),
-        None => &raw mut l.own,
-    };
-    let to = next.context.get().cast_const();
-    l.current = Some(next);
-    // SAFETY: `to` is a saved or new context that only this CPU resumes,
-    // since `next` came off the ready queue; `from` lives on.
-    unsafe { arch::context::switch(from, to) };
-}
-
-/// Run in the context switched to: puts the thread left behind back on
-/// the ready queue, or frees it if it is dead. Interrupts must be on, or
-/// the stack's free (a TLB shootdown) could wait on a CPU waiting on this
-/// one.
-fn finish_switch() {
-    let pl = arch::splhi();
-    // SAFETY: interrupts are off, and the reference is dropped here.
-    let (requeue, dead) = unsafe {
-        let l = local();
-        (l.requeue.take(), l.dead.take())
-    };
-    if let Some(p) = requeue {
-        READY.lock().push_back(p);
+/// Where a ready thread should go: its wired CPU, or the online CPU with
+/// the least to do, preferring the one it last ran on.
+fn choose_cpu(p: &Proc) -> usize {
+    if p.wired != UNWIRED {
+        return p.wired;
     }
+    let last = p.last_cpu.load(Ordering::Relaxed);
+    let load = |i: usize| QUEUED[i].load(Ordering::Relaxed) + usize::from(RUNNING_PRI[i].load(Ordering::Relaxed) != 0);
+    cpu::online()
+        .map(cpu::Cpu::index)
+        .min_by_key(|&i| (load(i), i != last))
+        .unwrap_or(last)
+}
+
+fn enqueue(cpu: usize, p: Arc<Proc>) {
+    let pri = p.pri;
+    QUEUES[cpu].lock().q[pri].push_back(p);
+    QUEUED[cpu].fetch_add(1, Ordering::Relaxed);
+}
+
+/// The next thread for this CPU at priority `min` or above: from its own
+/// queue, else taken from another CPU's.
+fn pick(me: usize, min: usize) -> Option<Arc<Proc>> {
+    let mine = QUEUES[me].lock().take(min, false);
+    if let Some(p) = mine {
+        QUEUED[me].fetch_sub(1, Ordering::Relaxed);
+        return Some(p);
+    }
+    for c in cpu::online().map(cpu::Cpu::index).filter(|&c| c != me) {
+        if QUEUED[c].load(Ordering::Relaxed) == 0 {
+            continue;
+        }
+        let Some(mut q) = QUEUES[c].try_lock() else {
+            continue;
+        };
+        if let Some(p) = q.take(min, true) {
+            QUEUED[c].fetch_sub(1, Ordering::Relaxed);
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// True if this CPU has a thread it could run now.
+pub(crate) fn has_work() -> bool {
+    let me = cpu::current().index();
+    QUEUED[me].load(Ordering::Relaxed) != 0
+        || cpu::online().any(|c| c.index() != me && QUEUED[c.index()].load(Ordering::Relaxed) != 0)
+}
+
+/// Passes the CPU to a ready thread of at least the caller's priority, if
+/// there is one, and returns when this context runs again. From a CPU's
+/// own context, that is once nothing is ready.
+pub(crate) fn yield_now() {
+    let pl = arch::splhi();
+    let dead = reschedule(Leave::Requeue);
     arch::splx(pl);
     drop(dead);
 }
 
+/// Called on the way out of every interrupt, after its end-of-interrupt,
+/// with interrupts off: switches if this CPU was asked to.
+pub(crate) fn preempt() {
+    let me = cpu::current().index();
+    if NEED_RESCHED[me].swap(false, Ordering::AcqRel) {
+        // The interrupted code held no spin lock (see the module comment).
+        // A dead thread's free waits here with interrupts off, which
+        // `mmu::shootdown` allows.
+        drop(reschedule(Leave::Requeue));
+    }
+}
+
+/// The clock tick, in its interrupt: counts down the quantum and asks
+/// for a reschedule once it is used up and an equal is waiting.
+pub(crate) fn tick() {
+    let me = cpu::current().index();
+    // SAFETY: an interrupt handler runs with interrupts off.
+    let l = unsafe { local() };
+    let min = match &l.current {
+        Some(p) => {
+            l.quantum = l.quantum.saturating_sub(1);
+            if l.quantum > 0 {
+                return;
+            }
+            p.pri
+        }
+        None => 0,
+    };
+    let waiting = QUEUES[me].lock().top().is_some_and(|t| t >= min);
+    if waiting || (l.current.is_none() && has_work()) {
+        NEED_RESCHED[me].store(true, Ordering::Release);
+    }
+}
+
+/// Ends the calling thread.
+fn exit() -> ! {
+    let _ = arch::splhi();
+    drop(reschedule(Leave::Dead));
+    unreachable!("a dead thread was resumed");
+}
+
+/// Switches away from the current context, if `how` and the queues say
+/// so, and returns once it runs again, with the thread left behind by the
+/// switch into it, if dead, for the caller to drop with interrupts on.
+/// Interrupts must be off.
+fn reschedule(how: Leave) -> Option<Arc<Proc>> {
+    let me = cpu::current().index();
+    // SAFETY: interrupts are off; `l` is not used after the switch.
+    let l = unsafe { local() };
+    let min = match (&l.current, how) {
+        (Some(p), Leave::Requeue) => p.pri,
+        (None, Leave::Requeue) | (Some(_), _) => 0,
+        (None, _) => panic!("a CPU's own context cannot sleep or exit"),
+    };
+    let next = pick(me, min);
+    if let (Some(n), Some(c)) = (&next, &l.current)
+        && Arc::ptr_eq(n, c)
+    {
+        // Woken while going to sleep, and queued here: run on.
+        c.set_state(State::Running);
+        return None;
+    }
+    let (prev, to) = match next {
+        Some(next) => {
+            // Wait for the CPU that last ran it to finish saving it.
+            while next.on_cpu.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
+            next.on_cpu.store(true, Ordering::Relaxed);
+            next.set_state(State::Running);
+            next.last_cpu.store(me, Ordering::Relaxed);
+            RUNNING_PRI[me].store(next.pri + 1, Ordering::Release);
+            let to = next.context.get().cast_const();
+            l.quantum = QUANTUM;
+            (l.current.replace(next), to)
+        }
+        None if how == Leave::Requeue => return None,
+        None => {
+            RUNNING_PRI[me].store(0, Ordering::Release);
+            (l.current.take(), (&raw const l.own))
+        }
+    };
+    let from = match prev {
+        Some(p) => {
+            let from = p.context.get();
+            if how == Leave::Requeue {
+                p.set_state(State::Ready);
+            } else if how == Leave::Dead {
+                p.set_state(State::Dead);
+            }
+            l.left = Some((p, how));
+            from
+        }
+        None => &raw mut l.own,
+    };
+    // SAFETY: `to` is a context saved by a switch or made new, and only this
+    // CPU resumes it (`on_cpu`); `from` is held in `left` or is this CPU's
+    // own, so it stays valid while it is saved.
+    unsafe { arch::context::switch(from, to) };
+    finish_switch()
+}
+
+/// Run in the context switched to, interrupts off: finishes with the
+/// thread left behind. Returns it if it is dead, to be dropped (freeing
+/// its stack) once interrupts are back on.
+fn finish_switch() -> Option<Arc<Proc>> {
+    let me = cpu::current().index();
+    // SAFETY: interrupts are off, and the reference is dropped here.
+    let left = unsafe { local() }.left.take();
+    let (p, how) = left?;
+    p.on_cpu.store(false, Ordering::Release);
+    match how {
+        Leave::Requeue => {
+            enqueue(me, p);
+            None
+        }
+        Leave::Sleep => None,
+        Leave::Dead => Some(p),
+    }
+}
+
 /// Where a new thread starts, with interrupts off from the switch.
 extern "C" fn thread_start(_: usize) -> ! {
+    let dead = finish_switch();
     arch::spllo();
-    finish_switch();
+    drop(dead);
     let me = current().expect("a thread runs as itself");
     let f = me.entry.lock().take().expect("a thread starts once");
     drop(me);
@@ -231,85 +502,238 @@ extern "C" fn thread_start(_: usize) -> ! {
     exit()
 }
 
+/// Proof that the caller is a thread that may sleep: not a CPU's own
+/// context, not an interrupt handler, no spin lock held (interrupts on).
+/// Locks that sleep take one ([`crate::port::qlock`]).
+#[derive(Debug)]
+pub(crate) struct Sleepable {
+    /// Neither `Send` nor `Sync`: it belongs to the thread that made it.
+    _thread: PhantomData<*mut ()>,
+}
+
+/// A [`Sleepable`], if the caller may sleep.
+pub(crate) fn sleepable() -> Option<Sleepable> {
+    (arch::interrupts_enabled() && current().is_some()).then_some(Sleepable { _thread: PhantomData })
+}
+
+/// Where threads sleep until a condition holds (Plan 9's `Rendez`, which
+/// here may have several sleepers).
+#[derive(Debug)]
+pub(crate) struct Rendez {
+    sleepers: SpinLock<VecDeque<Arc<Proc>>>,
+}
+
+impl Rendez {
+    pub(crate) const fn new() -> Rendez {
+        Rendez {
+            sleepers: SpinLock::new(VecDeque::new()),
+        }
+    }
+
+    /// Sleeps until `cond` holds. `cond` is checked under the rendez's
+    /// lock, so a waker that makes it true and then calls
+    /// [`wakeup`](Rendez::wakeup) is never missed.
+    pub(crate) fn sleep(&self, _: &Sleepable, cond: impl Fn() -> bool) {
+        loop {
+            let pl = arch::splhi();
+            {
+                let mut s = self.sleepers.lock();
+                if cond() {
+                    drop(s);
+                    arch::splx(pl);
+                    return;
+                }
+                // SAFETY: interrupts are off; dropped before the switch.
+                let me = unsafe { local() }.current.clone().expect("a Sleepable proves a thread");
+                me.set_state(State::Sleeping);
+                s.push_back(me);
+            }
+            let dead = reschedule(Leave::Sleep);
+            arch::splx(pl);
+            drop(dead);
+        }
+    }
+
+    /// Wakes the first sleeper, if any; true if there was one.
+    pub(crate) fn wakeup(&self) -> bool {
+        let p = self.sleepers.lock().pop_front();
+        p.map(ready).is_some()
+    }
+
+    /// Wakes every sleeper and returns how many there were.
+    pub(crate) fn wakeup_all(&self) -> usize {
+        let all = core::mem::take(&mut *self.sleepers.lock());
+        let n = all.len();
+        all.into_iter().for_each(ready);
+        n
+    }
+}
+
+/// Puts the calling thread to sleep, having queued it somewhere a waker
+/// will find it, inside `queue` (run under the caller's lock, with
+/// interrupts off). For [`crate::port::qlock`].
+pub(crate) fn sleep_queued(_: &Sleepable, queue: impl FnOnce(Arc<Proc>)) {
+    let pl = arch::splhi();
+    // SAFETY: interrupts are off; dropped before the switch.
+    let me = unsafe { local() }.current.clone().expect("a Sleepable proves a thread");
+    me.set_state(State::Sleeping);
+    queue(me);
+    let dead = reschedule(Leave::Sleep);
+    arch::splx(pl);
+    drop(dead);
+}
+
+/// A meeting place for [`rendezvous`].
+#[derive(Debug)]
+struct Meet {
+    tag: u64,
+    value: u64,
+    /// The value handed back, once `done`.
+    reply: AtomicU64,
+    done: AtomicBool,
+    r: Rendez,
+}
+
+/// Threads waiting in [`rendezvous`]. One table for the whole system
+/// until process groups exist.
+static MEETS: SpinLock<alloc::vec::Vec<Arc<Meet>>> = SpinLock::new(alloc::vec::Vec::new());
+
+/// Plan 9's `rendezvous`: the first caller with `tag` waits, and the
+/// second wakes it; each returns the other's `value`.
+pub(crate) fn rendezvous(s: &Sleepable, tag: u64, value: u64) -> u64 {
+    let mut meets = MEETS.lock();
+    if let Some(i) = meets.iter().position(|m| m.tag == tag) {
+        let m = meets.swap_remove(i);
+        drop(meets);
+        m.reply.store(value, Ordering::Relaxed);
+        m.done.store(true, Ordering::Release);
+        m.r.wakeup();
+        return m.value;
+    }
+    let m = Arc::new(Meet {
+        tag,
+        value,
+        reply: AtomicU64::new(0),
+        done: AtomicBool::new(false),
+        r: Rendez::new(),
+    });
+    meets.push(m.clone());
+    drop(meets);
+    m.r.sleep(s, || m.done.load(Ordering::Acquire));
+    m.reply.load(Ordering::Relaxed)
+}
+
 /// Tests run by [`crate::port::ktest`].
 pub(crate) mod ktests {
     use alloc::sync::Arc;
     use alloc::vec::Vec;
+    use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-    use super::{current, spawn, yield_now};
+    use super::{PRI_NORMAL, Rendez, Spawn, current, rendezvous, sleepable, spawn, yield_now};
+    use crate::arch;
+    use crate::port::clock;
+    use crate::port::cpu;
     use crate::port::ktest::TestResult;
     use crate::port::lock::SpinLock;
     use crate::port::mm;
 
-    /// Three threads that yield between steps take turns, and the CPU's
-    /// own context resumes once all have finished.
+    const SECOND: u64 = 1_000_000_000;
+
+    /// A normal-priority thread wired to the calling CPU.
+    fn here(name: &str) -> Spawn<'_> {
+        Spawn {
+            name,
+            pri: PRI_NORMAL,
+            wired: Some(cpu::current().index()),
+        }
+    }
+
+    /// Runs `f` (spawning a test's threads) with interrupts off, so that
+    /// the calling context is not preempted until all are queued.
+    fn together<R>(f: impl FnOnce() -> R) -> R {
+        let pl = arch::splhi();
+        let r = f();
+        arch::splx(pl);
+        r
+    }
+
+    /// Waits, idling, until `n` has reached `want`.
+    fn wait_for(n: &AtomicUsize, want: usize) -> TestResult {
+        if clock::wait_until(|| n.load(Ordering::Acquire) >= want, 5 * SECOND) {
+            Ok(())
+        } else {
+            Err("threads did not finish within 5 s".into())
+        }
+    }
+
+    /// Three threads that yield between steps take turns: each step of
+    /// every thread happens before the step after next of any.
     pub(crate) fn threads_take_turns() -> TestResult {
         let log = Arc::new(SpinLock::new(Vec::new()));
-        for name in ["a", "b", "c"] {
-            let log = log.clone();
-            spawn(name, move || {
-                for step in 0..3 {
-                    let me = current().expect("running as a thread");
-                    log.lock().push((me.name().as_bytes()[0], step, me.pid()));
-                    drop(me);
-                    yield_now();
-                }
-            })
-            .ok_or("cannot spawn")?;
+        let done = Arc::new(AtomicUsize::new(0));
+        together(|| -> TestResult {
+            for name in ["a", "b", "c"] {
+                let (log, done) = (log.clone(), done.clone());
+                spawn(here(name), move || {
+                    for step in 0..4 {
+                        let me = current().expect("running as a thread");
+                        assert_eq!(me.name(), name, "current() is the running thread");
+                        log.lock().push((step, me.pid()));
+                        drop(me);
+                        yield_now();
+                    }
+                    done.fetch_add(1, Ordering::Release);
+                })
+                .ok_or("cannot spawn")?;
+            }
+            Ok(())
+        })?;
+        wait_for(&done, 3)?;
+        let log = log.lock().clone();
+        for (i, &(step, _)) in log.iter().enumerate() {
+            if log[i..].iter().any(|&(s, _)| s + 2 <= step) {
+                return Err("threads did not take turns".into());
+            }
         }
-        yield_now();
-        if current().is_some() {
-            return Err("the CPU's own context resumed as a thread".into());
-        }
-        let got: Vec<(u8, i32)> = log.lock().iter().map(|&(n, s, _)| (n, s)).collect();
-        let want: Vec<(u8, i32)> = (0..3).flat_map(|s| [(b'a', s), (b'b', s), (b'c', s)]).collect();
-        if got != want {
-            return Err("threads did not take turns".into());
-        }
-        let pids: Vec<u64> = log.lock().iter().take(3).map(|&(_, _, p)| p).collect();
-        if pids[0] == pids[1] || pids[1] == pids[2] || pids[0] == pids[2] {
+        let mut pids: Vec<u64> = log.iter().map(|&(_, p)| p).collect();
+        pids.sort_unstable();
+        pids.dedup();
+        if pids.len() != 3 {
             return Err("threads share a pid".into());
         }
         Ok(())
     }
 
-    /// Callee-saved registers, integer and floating point, survive a
-    /// switch: a thread computes across yields while others do the same.
+    /// Callee-saved registers, integer and floating point, survive
+    /// switches, voluntary and preempted.
     #[allow(clippy::cast_precision_loss)] // small seeds
     pub(crate) fn state_survives_switch() -> TestResult {
-        fn work(seed: u64) -> (u64, f64) {
+        fn work(seed: u64, yielding: bool) -> (u64, f64) {
             let (mut a, mut x) = (seed, seed as f64);
-            for _ in 0..50 {
+            for _ in 0..200_000 {
                 a = a.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                 x = x * 1.000_001 + 0.5;
-                yield_now();
-            }
-            (a, x)
-        }
-        fn expected(seed: u64) -> (u64, f64) {
-            let (mut a, mut x) = (seed, seed as f64);
-            for _ in 0..50 {
-                a = a.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-                x = x * 1.000_001 + 0.5;
+                if yielding && a.is_multiple_of(4096) {
+                    yield_now();
+                }
             }
             (a, x)
         }
         let results = Arc::new(SpinLock::new(Vec::new()));
-        for seed in 1..=4u64 {
-            let results = results.clone();
-            spawn("work", move || {
-                let r = work(seed);
+        let done = Arc::new(AtomicUsize::new(0));
+        let n = cpu::online().count() * 2 + 2;
+        for seed in 1..=n as u64 {
+            let (results, done) = (results.clone(), done.clone());
+            spawn(Spawn::kproc("work"), move || {
+                let r = work(seed, seed % 2 == 0);
                 results.lock().push((seed, r));
+                done.fetch_add(1, Ordering::Release);
             })
             .ok_or("cannot spawn")?;
         }
-        yield_now();
-        let got = results.lock().clone();
-        if got.len() != 4 {
-            return Err("not every thread finished".into());
-        }
-        for (seed, r) in got {
-            if r != expected(seed) {
+        wait_for(&done, n)?;
+        for &(seed, r) in results.lock().iter() {
+            if r != work(seed, false) {
                 return Err("a thread's registers changed across a switch".into());
             }
         }
@@ -319,19 +743,148 @@ pub(crate) mod ktests {
     /// Dead threads' stacks go back: running many threads leaves the free
     /// frame count where it was.
     pub(crate) fn dead_threads_freed() -> TestResult {
-        // Once first, so the heap classes, the ready queue and the stack slot
-        // list have grown to what the run needs.
-        for _ in 0..20 {
-            spawn("warm", || {}).ok_or("cannot spawn")?;
-        }
-        yield_now();
+        let run = || -> TestResult {
+            let done = Arc::new(AtomicUsize::new(0));
+            together(|| -> TestResult {
+                for _ in 0..20 {
+                    let done = done.clone();
+                    spawn(here("short"), move || {
+                        done.fetch_add(1, Ordering::Release);
+                    })
+                    .ok_or("cannot spawn")?;
+                }
+                Ok(())
+            })?;
+            wait_for(&done, 20)?;
+            // The last thread's stack is freed by whoever runs after it.
+            while super::has_work() {
+                yield_now();
+            }
+            yield_now();
+            Ok(())
+        };
+        // Once first, so the heap classes, the queues and the stack slot list
+        // have grown to what the run needs.
+        run()?;
         let before = mm::frame_counts().0;
-        for _ in 0..20 {
-            spawn("short", || {}).ok_or("cannot spawn")?;
-        }
-        yield_now();
+        run()?;
         if mm::frame_counts().0 != before {
             return Err("dead threads' memory not freed".into());
+        }
+        Ok(())
+    }
+
+    /// Threads that never yield still share one CPU: the clock preempts
+    /// them.
+    pub(crate) fn clock_preempts() -> TestResult {
+        let counts: Arc<[AtomicU64; 3]> = Arc::new([const { AtomicU64::new(0) }; 3]);
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicUsize::new(0));
+        let pl = arch::splhi();
+        for i in 0..3 {
+            let (counts, stop, done) = (counts.clone(), stop.clone(), done.clone());
+            spawn(here("spin"), move || {
+                let end = clock::now_ns() + SECOND / 2;
+                while !stop.load(Ordering::Acquire) {
+                    counts[i].fetch_add(1, Ordering::Relaxed);
+                    // The last to see every count move ends the test.
+                    if counts.iter().all(|c| c.load(Ordering::Relaxed) > 0) || clock::now_ns() > end {
+                        stop.store(true, Ordering::Release);
+                    }
+                }
+                done.fetch_add(1, Ordering::Release);
+            })
+            .ok_or("cannot spawn")?;
+        }
+        arch::splx(pl);
+        wait_for(&done, 3)?;
+        if counts.iter().any(|c| c.load(Ordering::Relaxed) == 0) {
+            return Err("a spinning thread never ran".into());
+        }
+        Ok(())
+    }
+
+    /// The higher priority runs first.
+    pub(crate) fn priority_first() -> TestResult {
+        let order = Arc::new(SpinLock::new(Vec::new()));
+        let done = Arc::new(AtomicUsize::new(0));
+        together(|| -> TestResult {
+            for pri in [PRI_NORMAL, PRI_NORMAL + 2, PRI_NORMAL + 1] {
+                let (order, done) = (order.clone(), done.clone());
+                let how = Spawn { pri, ..here("pri") };
+                spawn(how, move || {
+                    order.lock().push(pri);
+                    done.fetch_add(1, Ordering::Release);
+                })
+                .ok_or("cannot spawn")?;
+            }
+            Ok(())
+        })?;
+        wait_for(&done, 3)?;
+        if *order.lock() != [PRI_NORMAL + 2, PRI_NORMAL + 1, PRI_NORMAL] {
+            return Err("not run in priority order".into());
+        }
+        Ok(())
+    }
+
+    /// A sleeper wakes when another thread makes its condition true, on
+    /// whichever CPUs they land.
+    pub(crate) fn sleep_and_wakeup() -> TestResult {
+        struct Shared {
+            r: Rendez,
+            turn: AtomicUsize,
+        }
+        const ROUNDS: usize = 200;
+        let s = Arc::new(Shared {
+            r: Rendez::new(),
+            turn: AtomicUsize::new(0),
+        });
+        let done = Arc::new(AtomicUsize::new(0));
+        // Two threads pass the turn back and forth.
+        for me in 0..2 {
+            let (s, done) = (s.clone(), done.clone());
+            spawn(Spawn::kproc("pingpong"), move || {
+                let sl = sleepable().expect("a thread may sleep");
+                for _ in 0..ROUNDS {
+                    s.r.sleep(&sl, || s.turn.load(Ordering::Acquire) % 2 == me);
+                    s.turn.fetch_add(1, Ordering::AcqRel);
+                    s.r.wakeup_all();
+                }
+                done.fetch_add(1, Ordering::Release);
+            })
+            .ok_or("cannot spawn")?;
+        }
+        wait_for(&done, 2)?;
+        if s.turn.load(Ordering::Acquire) != 2 * ROUNDS {
+            return Err("turns lost".into());
+        }
+        Ok(())
+    }
+
+    /// Two threads meet at a tag and swap values.
+    pub(crate) fn rendezvous_swaps() -> TestResult {
+        let got = Arc::new([const { AtomicU64::new(0) }; 2]);
+        let done = Arc::new(AtomicUsize::new(0));
+        for i in 0..2 {
+            let (got, done) = (got.clone(), done.clone());
+            spawn(Spawn::kproc("meet"), move || {
+                let sl = sleepable().expect("a thread may sleep");
+                got[i].store(rendezvous(&sl, 0x7a9, 100 + i as u64), Ordering::Relaxed);
+                done.fetch_add(1, Ordering::Release);
+            })
+            .ok_or("cannot spawn")?;
+        }
+        wait_for(&done, 2)?;
+        if got[0].load(Ordering::Relaxed) != 101 || got[1].load(Ordering::Relaxed) != 100 {
+            return Err("values not swapped".into());
+        }
+        Ok(())
+    }
+
+    /// A CPU's own context cannot get a [`super::Sleepable`].
+    pub(crate) fn own_context_not_sleepable() -> TestResult {
+        if sleepable().is_some() {
+            return Err("own context got a Sleepable".into());
         }
         Ok(())
     }

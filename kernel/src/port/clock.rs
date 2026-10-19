@@ -9,7 +9,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::arch;
-use crate::port::cpu;
+use crate::port::{cpu, proc};
 
 /// Ticks per second, as in Plan 9.
 pub(crate) const HZ: u64 = 100;
@@ -80,6 +80,7 @@ pub(crate) fn tick() {
     }
     local.next.store(next, Ordering::Relaxed);
     arch::timer_at(next);
+    proc::tick();
 }
 
 pub(crate) fn ticks() -> u64 {

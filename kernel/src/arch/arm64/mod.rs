@@ -208,6 +208,14 @@ pub(crate) fn splx(pl: Pl) {
     unsafe { asm!("msr daif, {}", in(reg) pl.0, options(nomem, nostack)) };
 }
 
+/// True if IRQs are unmasked.
+pub(crate) fn interrupts_enabled() -> bool {
+    let daif: u64;
+    // SAFETY: reads DAIF.
+    unsafe { asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack)) };
+    daif & (1 << 7) == 0
+}
+
 /// Unmasks IRQs.
 pub(crate) fn spllo() {
     // SAFETY: the vectors and the GIC are set up.

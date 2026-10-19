@@ -149,8 +149,8 @@ extern "C" fn boot_main(info: usize) -> ! {
         None => {}
     }
     report_interrupts();
-    println!("P1 bring-up complete; halting");
-    arch::halt()
+    println!("kernel: boot complete; idling");
+    cpu::idle_loop(cpu::current())
 }
 
 /// `test=reset`: the first boot of a fresh log ring resets warm; the next

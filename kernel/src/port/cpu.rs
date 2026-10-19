@@ -6,14 +6,14 @@
 //! [`Cpu`] through an architecture register: the `GS` base on amd64,
 //! `TPIDR_EL1` on arm64.
 //!
-//! Until the scheduler exists an application processor sits in
-//! [`idle_loop`], taking clock ticks and running whatever [`call`] hands it.
+//! A CPU's own context ends in [`idle_loop`], taking clock ticks, running
+//! whatever [`call`] hands it, and running threads (`port/proc.rs`).
 
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use crate::arch;
 use crate::port::acpi::System;
-use crate::port::clock;
+use crate::port::{clock, proc};
 use crate::println;
 
 /// The most CPUs the kernel will run.
@@ -157,15 +157,21 @@ pub(crate) fn ap_main(cpu: &'static Cpu) -> ! {
     idle_loop(cpu)
 }
 
-/// Runs calls as they arrive and otherwise waits for interrupts.
-fn idle_loop(cpu: &Cpu) -> ! {
+/// A CPU's own context once it has started: runs calls as they arrive,
+/// and threads while any are ready, and otherwise waits for interrupts.
+pub(crate) fn idle_loop(cpu: &Cpu) -> ! {
     loop {
         // With interrupts off between the check and the wait, a wake-up
         // IPI sent in between stays pending and ends the wait at once.
         let _ = arch::splhi();
         let f = cpu.call.swap(core::ptr::null_mut(), Ordering::Acquire);
         if f.is_null() {
-            arch::idle();
+            if proc::has_work() {
+                arch::spllo();
+                proc::yield_now();
+            } else {
+                arch::idle();
+            }
             continue;
         }
         arch::spllo();

@@ -218,6 +218,14 @@ pub(crate) fn splx(pl: Pl) {
     }
 }
 
+/// True if interrupts are on.
+pub(crate) fn interrupts_enabled() -> bool {
+    let flags: u64;
+    // SAFETY: reads RFLAGS; the stack use is balanced.
+    unsafe { asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags)) };
+    flags & RFLAGS_IF != 0
+}
+
 /// Enables interrupts.
 pub(crate) fn spllo() {
     // SAFETY: the trap vectors and the local APIC are set up.

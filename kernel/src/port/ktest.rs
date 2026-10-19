@@ -5,7 +5,7 @@
 //! `cargo xtask test` reads the console.
 
 use crate::arch;
-use crate::port::{clock, console, cpu, heap, intr, mm, mmu, proc, trap};
+use crate::port::{clock, console, cpu, heap, intr, mm, mmu, proc, qlock, trap};
 use crate::println;
 
 /// Why a test did not pass.
@@ -48,9 +48,19 @@ const TESTS: &[(&str, TestFn)] = &[
     ("mm: kernel stack has a guard page", mm::ktests::stack_has_guard),
     ("mm: freed stacks are reused", mm::ktests::stacks_free),
     ("mmu: kernel text translates", mmu::ktests::image_translates),
+    (
+        "proc: own context cannot sleep",
+        proc::ktests::own_context_not_sleepable,
+    ),
     ("proc: threads take turns", proc::ktests::threads_take_turns),
+    ("proc: higher priority runs first", proc::ktests::priority_first),
+    ("proc: the clock preempts", proc::ktests::clock_preempts),
     ("proc: state survives a switch", proc::ktests::state_survives_switch),
     ("proc: dead threads are freed", proc::ktests::dead_threads_freed),
+    ("proc: sleep and wakeup", proc::ktests::sleep_and_wakeup),
+    ("proc: rendezvous swaps values", proc::ktests::rendezvous_swaps),
+    ("qlock: excludes", qlock::ktests::qlock_excludes),
+    ("qlock: rwlock excludes", qlock::ktests::rwlock_excludes),
     ("mmu: address spaces are separate", mmu::ktests::spaces_are_separate),
     ("heap: collections allocate", heap::ktests::collections_work),
     ("heap: empty slabs return", heap::ktests::slabs_return),

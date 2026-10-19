@@ -582,6 +582,8 @@ pub(crate) fn shootdown(cpus: u64, va: u64, pages: u64) {
     if others == 0 {
         return;
     }
+    // Not preemptible while it holds the one shootdown slot.
+    let pl = arch::splhi();
     while SHOOT_BUSY
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
@@ -610,6 +612,7 @@ pub(crate) fn shootdown(cpus: u64, va: u64, pages: u64) {
         panic!("mmu: TLB shootdown: CPU {late:?} did not answer (spin lock held?)");
     }
     SHOOT_BUSY.store(false, Ordering::Release);
+    arch::splx(pl);
 }
 
 /// The shootdown IPI's handler, also polled by CPUs waiting in

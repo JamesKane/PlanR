@@ -13,4 +13,5 @@ pub(crate) mod lock;
 pub(crate) mod mm;
 pub(crate) mod mmu;
 pub(crate) mod proc;
+pub(crate) mod qlock;
 pub(crate) mod trap;

@@ -466,6 +466,7 @@ extern "C" fn trap(f: &mut TrapFrame) {
             if !super::interrupt() {
                 trap::fatal(&format_args!("unhandled IRQ"), f, f.elr, f.x[29]);
             }
+            crate::port::proc::preempt();
         }
         Exception::Breakpoint(_) => {
             trap::count_breakpoint();

@@ -516,6 +516,7 @@ extern "C" fn trap(f: &mut TrapFrame) {
             if !super::interrupt(v) {
                 trap::fatal(&ex, f, f.rip, f.rbp);
             }
+            crate::port::proc::preempt();
         }
         Exception::PageFault { .. } | Exception::GeneralProtection(_) => match trap::fixup(f.rip) {
             Some(resume) => f.rip = resume,

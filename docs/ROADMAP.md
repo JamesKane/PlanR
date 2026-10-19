@@ -259,8 +259,9 @@ plus a toy 9P server). All of them pass on both architectures.
 4. ✅ Threads (`port/proc.rs`): kernel-thread `Proc`s on freeable
    `mm::Stack`s, the context switch on both arches, and cooperative
    round-robin `yield_now`.
-5. Scheduler: preemptive SMP, per-CPU run queues and priorities;
-   sleep/wakeup, `QLock`/`RWLock` with `Sleepable`, `rendezvous`.
+5. ✅ Scheduler: preemptive SMP, per-CPU run queues with Plan 9's 20
+   priorities, work stealing and wired threads; `Rendez` sleep/wakeup,
+   `QLock`/`RwLock` taking `Sleepable`, and `rendezvous`.
 6. User mode: `lib/abi`, the syscall entry, copy-in/copy-out, `settls`.
 7. Segments, demand paging, ELF `exec`, `exits`/`await`, and the boot
    archive.
