@@ -10,7 +10,7 @@ mod smp;
 mod trap;
 
 pub(crate) use smp::{hwid, send_ipi, start_cpus};
-pub(crate) use trap::{CpuLocal, breakpoint, copy_in, copy_out, frame_pointer, probe_read, probe_user_read};
+pub(crate) use trap::{CpuLocal, breakpoint, copy_in, copy_out, frame_pointer, probe_read, probe_user_read, snapshot};
 
 use core::arch::{asm, global_asm};
 

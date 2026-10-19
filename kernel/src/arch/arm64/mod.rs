@@ -11,6 +11,25 @@ mod trap;
 pub(crate) use smp::{hwid, send_ipi, start_cpus};
 pub(crate) use trap::{CpuLocal, breakpoint, copy_in, copy_out, frame_pointer, probe_read, probe_user_read};
 
+/// What another CPU was doing; arm64 has no NMI to stop one with, so
+/// there is never one.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Snapshot {
+    pub(crate) pc: u64,
+    pub(crate) fp: u64,
+}
+
+impl core::fmt::Display for Snapshot {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "pc {:#x}", self.pc)
+    }
+}
+
+/// Would stop another CPU to see what it is doing: not on arm64.
+pub(crate) fn snapshot(_: &crate::port::cpu::Cpu, _: u64) -> Option<Snapshot> {
+    None
+}
+
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 

@@ -44,6 +44,7 @@ const LVT_NMI: u32 = 0b100 << 8;
 const LVT_LEVEL: u32 = 1 << 15;
 const LVT_ACTIVE_LOW: u32 = 1 << 13;
 const LVT_TSC_DEADLINE: u32 = 0b10 << 17;
+const ICR_NMI: u32 = 0b100 << 8;
 const ICR_INIT: u32 = 0b101 << 8;
 const ICR_STARTUP: u32 = 0b110 << 8;
 const ICR_PENDING: u32 = 1 << 12;
@@ -123,6 +124,18 @@ pub(crate) fn self_ipi(vector: u8) {
 /// Sends fixed interrupt `vector` to the CPU with APIC ID `dest`.
 pub(crate) fn ipi(dest: u32, vector: u8) {
     send(u32::from(vector) | ICR_ASSERT, dest);
+}
+
+/// Sends a non-maskable interrupt to the CPU with APIC ID `dest`.
+pub(crate) fn send_nmi(dest: u32) {
+    send(ICR_NMI | ICR_ASSERT, dest);
+}
+
+/// This CPU's task priority, and its in-service and requested vectors
+/// from 0xe0 up (bit `n` is vector `0xe0 + n`), where the kernel's own
+/// interrupts are.
+pub(crate) fn top_vectors() -> (u32, u32, u32) {
+    (read(TPR), read(0x170), read(0x270))
 }
 
 /// Sends INIT to `dest`, which resets it into waiting for a start-up IPI.

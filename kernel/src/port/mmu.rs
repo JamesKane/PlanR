@@ -669,11 +669,38 @@ pub(crate) fn shootdown(cpus: u64, va: u64, pages: u64) {
         SHOOTDOWN_TIMEOUT_NS,
     );
     if !done {
-        let late = (0..MAXCPU).find(|&i| SHOOT_ASKED[i].load(Ordering::Acquire));
-        panic!("mmu: TLB shootdown: CPU {late:?} did not answer (spin lock held?)");
+        unanswered();
     }
     SHOOT_BUSY.store(false, Ordering::Release);
     arch::splx(pl);
+}
+
+/// Reports a shootdown some CPUs did not answer: this CPU's call chain,
+/// then, for each of them, what it was doing when stopped (where the
+/// architecture can stop it), and powers off.
+fn unanswered() -> ! {
+    // Nothing here allocates or locks: a CPU that does not answer may
+    // hold what that would need.
+    let late = |c: &&cpu::Cpu| SHOOT_ASKED[c.index()].load(Ordering::Acquire);
+    let mut snaps = [None; MAXCPU];
+    for c in cpu::online().filter(late) {
+        snaps[c.index()] = Some(arch::snapshot(c, 100_000_000));
+    }
+    if crate::port::console::begin_panic() {
+        crate::println!("{}: mmu: TLB shootdown: CPUs did not answer", crate::PANIC_MARKER);
+        crate::port::trap::backtrace(None, arch::frame_pointer());
+        for (i, s) in snaps.iter().enumerate() {
+            match s {
+                Some(Some(s)) => {
+                    crate::println!("CPU {i}: {s}");
+                    crate::port::trap::backtrace(Some(s.pc), s.fp);
+                }
+                Some(None) => crate::println!("CPU {i}: did not answer, and could not be stopped to see why"),
+                None => {}
+            }
+        }
+    }
+    arch::exit(arch::ExitCode::Failure)
 }
 
 /// The shootdown IPI's handler, also polled by CPUs waiting in

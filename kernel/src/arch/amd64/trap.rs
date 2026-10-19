@@ -27,7 +27,7 @@
 use core::arch::{asm, global_asm};
 use core::cell::UnsafeCell;
 use core::fmt;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use abi::Ureg;
 
@@ -738,6 +738,8 @@ extern "C" fn trap(f: &mut TrapFrame) {
             f.rip,
             f.rbp,
         ),
+        // Asked for by `snapshot`.
+        Exception::Nmi if take_snapshot(f) => {}
         // Not the user code's doing, wherever they arrive.
         Exception::Nmi | Exception::MachineCheck | Exception::DoubleFault => trap::fatal(&ex, f, f.rip, f.rbp),
         // A page of a segment, touched for the first time.
@@ -961,4 +963,84 @@ pub(crate) fn frame_pointer() -> u64 {
     // SAFETY: reads a register.
     unsafe { asm!("mov {}, rbp", out(reg) fp, options(nomem, nostack)) };
     fp
+}
+
+/// What another CPU was doing when [`snapshot`] stopped it, for reporting
+/// one that does not answer.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Snapshot {
+    pub(crate) pc: u64,
+    pub(crate) fp: u64,
+    sp: u64,
+    flags: u64,
+    cs: u64,
+    tpr: u32,
+    isr: u32,
+    irr: u32,
+}
+
+impl fmt::Display for Snapshot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let on = if self.flags & RFLAGS_IF != 0 { "on" } else { "off" };
+        write!(
+            f,
+            "rip {:#x} rsp {:#x} rflags {:#x} (interrupts {on}) cs {:#x}; \
+             APIC TPR {:#x}, vectors from 0xe0: in service {:#010x}, requested {:#010x}",
+            self.pc, self.sp, self.flags, self.cs, self.tpr, self.isr, self.irr
+        )
+    }
+}
+
+const RFLAGS_IF: u64 = 1 << 9;
+
+/// Per CPU: a snapshot is wanted, and the one taken.
+static SNAP_WANTED: [AtomicBool; MAXCPU] = [const { AtomicBool::new(false) }; MAXCPU];
+static SNAP_DONE: [AtomicBool; MAXCPU] = [const { AtomicBool::new(false) }; MAXCPU];
+static SNAP: [[AtomicU64; 7]; MAXCPU] = [const { [const { AtomicU64::new(0) }; 7] }; MAXCPU];
+
+/// Stops `c` with an NMI, which no masking holds off, and returns what it
+/// was doing, if it says within `timeout_ns`.
+pub(crate) fn snapshot(c: &Cpu, timeout_ns: u64) -> Option<Snapshot> {
+    let i = c.index();
+    SNAP_DONE[i].store(false, Ordering::Release);
+    SNAP_WANTED[i].store(true, Ordering::Release);
+    super::apic::send_nmi(u32::try_from(c.hwid()).ok()?);
+    if !crate::port::clock::spin_until(|| SNAP_DONE[i].load(Ordering::Acquire), timeout_ns) {
+        return None;
+    }
+    let v: [u64; 7] = core::array::from_fn(|k| SNAP[i][k].load(Ordering::Acquire));
+    #[allow(clippy::cast_possible_truncation)] // stored from u32s
+    Some(Snapshot {
+        pc: v[0],
+        fp: v[1],
+        sp: v[2],
+        flags: v[3],
+        cs: v[4],
+        tpr: (v[5] >> 32) as u32,
+        isr: v[5] as u32,
+        irr: v[6] as u32,
+    })
+}
+
+/// In the NMI handler: records this CPU's state if [`snapshot`] asked.
+fn take_snapshot(f: &TrapFrame) -> bool {
+    let me = cpu::current().index();
+    if !SNAP_WANTED[me].swap(false, Ordering::AcqRel) {
+        return false;
+    }
+    let (tpr, isr, irr) = super::apic::top_vectors();
+    let v = [
+        f.rip,
+        f.rbp,
+        f.rsp,
+        f.rflags,
+        f.cs,
+        u64::from(tpr) << 32 | u64::from(isr),
+        u64::from(irr),
+    ];
+    for (k, x) in v.into_iter().enumerate() {
+        SNAP[me][k].store(x, Ordering::Release);
+    }
+    SNAP_DONE[me].store(true, Ordering::Release);
+    true
 }

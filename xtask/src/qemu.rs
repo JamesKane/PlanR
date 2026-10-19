@@ -126,6 +126,19 @@ pub(crate) fn log_path(arch: Arch, test: &str, profile: &Profile) -> PathBuf {
 /// Lines not echoed to the terminal: table dump bytes.
 const QUIET: &str = "acpidump: = ";
 
+/// The ways in to a test that hangs: `PLANR_MONITOR=path` puts QEMU's
+/// monitor on a Unix socket (`info registers -a` shows every CPU without
+/// stopping the guest), and `PLANR_GDB=port` starts a gdb stub.
+fn debug_hooks(c: &mut Command) {
+    match std::env::var("PLANR_MONITOR") {
+        Ok(path) => c.args(["-monitor", &format!("unix:{path},server,nowait")]),
+        Err(_) => c.args(["-monitor", "none"]),
+    };
+    if let Ok(port) = std::env::var("PLANR_GDB") {
+        c.args(["-gdb", &format!("tcp:127.0.0.1:{port}")]);
+    }
+}
+
 /// Boots `img` headless, types `input` as the console asks for it, and
 /// checks the console and QEMU's exit status against `expect`, within
 /// `timeout_secs`.
@@ -141,11 +154,8 @@ pub(crate) fn run_test(
     timeout_secs: u64,
 ) -> Result<(), String> {
     let mut c = command(arch, profile, img, m)?;
-    c.args(["-display", "none", "-serial", "stdio", "-monitor", "none"]);
-    // `PLANR_GDB=port` lets gdb attach to a test that hangs.
-    if let Ok(port) = std::env::var("PLANR_GDB") {
-        c.args(["-gdb", &format!("tcp:127.0.0.1:{port}")]);
-    }
+    c.args(["-display", "none", "-serial", "stdio"]);
+    debug_hooks(&mut c);
     let stdin = if input.is_empty() {
         Stdio::null()
     } else {

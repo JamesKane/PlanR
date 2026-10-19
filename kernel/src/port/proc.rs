@@ -46,7 +46,10 @@
 //! is freed) only from the context switched to, in [`finish_switch`], and
 //! its `on_cpu` flag stays set until then. A thread woken while still
 //! switching out can be queued at once, but no CPU resumes it before
-//! `on_cpu` clears.
+//! `on_cpu` clears. Only a CPU's own context waits for that: a CPU that
+//! is leaving a thread holds that thread's flag, so two of them each
+//! waiting for the other's thread would wait for ever. It puts the thread
+//! back and goes on as if nothing were ready.
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -911,7 +914,7 @@ fn reschedule(how: Leave) -> Reaped {
         (None, Leave::Requeue) | (Some(_), _) => 0,
         (None, _) => panic!("a CPU's own context cannot sleep or exit"),
     };
-    let next = pick(me, min);
+    let mut next = pick(me, min);
     if let (Some(n), Some(c)) = (&next, &l.current)
         && Arc::ptr_eq(n, c)
     {
@@ -919,9 +922,18 @@ fn reschedule(how: Leave) -> Reaped {
         c.set_state(State::Running);
         return None;
     }
+    if l.current.is_some()
+        && let Some(n) = next.take_if(|n| n.on_cpu.load(Ordering::Acquire))
+    {
+        // Still being saved elsewhere: this CPU's own context waits for
+        // it (see the module comment), or a later switch takes it.
+        enqueue(me, n);
+        NEED_RESCHED[me].store(true, Ordering::Release);
+    }
     let (prev, to) = match next {
         Some(next) => {
-            // Wait for the CPU that last ran it to finish saving it.
+            // Wait for the CPU that last ran it to finish saving it, which
+            // only this CPU's own context comes to.
             while next.on_cpu.load(Ordering::Acquire) {
                 core::hint::spin_loop();
             }

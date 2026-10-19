@@ -650,15 +650,20 @@ P1 results, for reference:
   - Notes to kernel threads are refused.
   - `#p/n/ctl` takes only `kill`.
   - Timers run at tick resolution (10 ms).
-- **An arm64 hang, seen once (2026-10-19, slice 5):** the first boot
-  test with `trc` in it timed out in `memory_freed`'s first `init -q`
-  (60 s; `trc` never reached its 11th case), and the SMP tests after it
-  found a CPU whose clock had stopped and calls refused: a CPU wedged
-  with interrupts masked, most likely a kernel spin-lock deadlock under
-  many forks, pipes and waits at once. It did not come back in 14 more
-  arm64 boot tests and two full CI runs. If it does, rerun with
-  `PLANR_GDB=1234` and attach `gdb build/…/kernel` (`target remote
-  :1234`, `thread apply all bt`) to see where each CPU is.
+- **A scheduler deadlock, fixed 2026-10-19:** two CPUs, each leaving a
+  thread (to sleep, with interrupts off), could each pick the other's
+  thread, woken meanwhile and queued on the other CPU, and wait for ever
+  for its `on_cpu` flag, which the other held. It showed as the arm64 hang
+  seen once in slice 5, and in `legacy-apic` (about 1 run in 3 once rc's
+  tests grew) as a timeout or "TLB shootdown: CPU 1 did not answer". Now
+  only a CPU's own context waits for `on_cpu` (`proc::reschedule`); a CPU
+  leaving a thread puts a busy one back and goes on as if nothing were
+  ready. To look at a hang: `PLANR_MONITOR=/path/sock cargo xtask test …`
+  puts QEMU's monitor on a socket (`info registers -a` shows every CPU
+  without stopping the guest; the gdb stub made this bug vanish), and a
+  shootdown nobody answers now stops the late CPUs with an NMI (amd64)
+  and prints where each was, its interrupt flag and its APIC's in-service
+  and requested vectors. `PLANR_GDB=port` still gives a gdb stub.
 - **`ramfs` limits:** one process answers every request in order, so a
   slow request holds up the rest (none are slow yet); `DMEXCL` is kept
   in the mode but not enforced; every attach is as `eve` (see `#M`), so
