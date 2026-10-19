@@ -1,8 +1,8 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19: P3 slices 1 to 3 (console input, libr base, libr system
-layer) are done.
+2026-10-19: P3 slices 1 to 4 (console input, libr base, libr system
+layer, the 9P server framework and `ramfs`) are done.
 
 ## State
 
@@ -464,6 +464,57 @@ layer) are done.
        `/dev`, a wstat error passed through, the environment, `exec`
        through `$path`, notes to a process and a group, `getpid`, and
        `ctime`/`localtime` with a zone.
+  4. The 9P server framework and `ramfs`:
+     - `lib/9p` gains a `server` feature (needs `alloc`; the kernel's
+       codec still does not), with three modules, host-tested end to end
+       through encoded messages:
+       - `srv`: `trait Fs` (attach, walk one name, open, create, read,
+         `dirent` by index, write, stat, wstat, remove, a `clunk` hook;
+         `File` is the fid's handle, cloned with the fid) and `Srv`,
+         which owns the fid table and the protocol: version and msize
+         (a new `Tversion` clunks everything), unknown and duplicate
+         fids, walks that clone or move a fid and answer partially
+         (an error only if the first name fails), no walk or reopen of
+         an open fid, directories opened only to read, read/write
+         against the open mode, directory reads packed whole-entry and
+         offset-checked, `ORCLOSE` at clunk, `Tremove` clunking even when
+         it fails. Requests are answered in order, one at a time, so
+         `Tflush` just answers. `serve(&mut impl Transport)` reads whole
+         messages from any byte stream until end of file; `set_chatty`
+         traces them. `Stat` is an owned `Dir`.
+       - `tree`: `Tree<T>`, Plan 9's `lib9p` file trees: `Rc` nodes, so a
+         removed file stays readable and writable through fids that hold
+         it. It enforces `hasperm` (other, group, owner bits OR-ed),
+         search permission to walk, write on the directory to create,
+         remove and rename, `OTRUNC` and `ORCLOSE` permissions, the
+         directory's mask on a new file's permissions, a new file's group
+         from its directory, and `wstat`'s all-or-nothing rules (rename
+         to no sibling's name, length only of files with write
+         permission, mode/mtime/gid only by the owner, no file↔directory
+         change, never the owner).
+       - `ram`: `RamFs`, the tree with `Vec<u8>` contents (`DMAPPEND`,
+         holes of zeros, a 256 MiB cap per file).
+     - `cmd/ramfs` (`/boot/ramfs`): `ramfs [-Di] [-m mtpt] [-s | -S
+       srvname]`, as Plan 9's. It forks the server (`RFNAMEG|RFNOTEG|
+       RFNOWAIT`, so it sees no mount of itself and nobody waits for it),
+       posts and mounts the client end (`MREPL|MCREATE`, `/tmp` unless
+       `-s`/`-S` without `-m`), and exits; the server exits when the
+       session's last reference goes. `-i` serves descriptors 0 and 1.
+       Files belong to `#c/user`. User programs outside `cmd/utest` need
+       its `build.rs` (libr's link script); without it the kernel
+       refuses them with "exec header invalid".
+     - `init` runs `ramfs` in its own name space before the tests, and
+       checks a file in `/tmp`.
+     - `cmd/utest/tramfs` (in `init`'s list): write/pread/pwrite, create
+       truncating, `OEXCL`, `chmod` then "permission denied",
+       `dirwstat` rename and truncate (the first real wstat), 600
+       entries read with `dirreadall`, a 1 MiB file in odd-sized
+       writes, a removed file still open, `ORCLOSE`, two writers at
+       once, and a second `ramfs -S tramfs -m /n` mounted again from
+       `/srv` on `/mnt` (one tree, apart from `/tmp`; no creation there
+       without `MCREATE`), then unmounted.
+     - A server that never exits fails `memory_freed` (about 1000
+       frames lost per run, checked by breaking it on purpose).
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -473,9 +524,10 @@ layer) are done.
 
 ## Next steps
 
-P3 slice 4: our lib9p server framework (a fid table, request dispatch,
-file trees) on `lib/9p`'s codec, and `ramfs`, which `init` mounts on
-`/tmp`. The P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`;
+P3 slice 5: `rc`, part 1: the lexer, a recursive-descent parser for
+rc's grammar, and the interpreter (commands, pipelines, redirections,
+`& ; && || !`, lists, `^`, `$#`, `$"`, quoting, globbing, `if`/`if not`/
+`for`/`while`/`switch`/`~`, functions, the core builtins). The P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`;
 `srv` and `9fs` moved to P5).
 
 The oracle harness (slice 7) needs host plan9port, built by
@@ -556,6 +608,11 @@ P1 results, for reference:
   - Notes to kernel threads are refused.
   - `#p/n/ctl` takes only `kill`.
   - Timers run at tick resolution (10 ms).
+- **`ramfs` limits:** one process answers every request in order, so a
+  slow request holds up the rest (none are slow yet); `DMEXCL` is kept
+  in the mode but not enforced; every attach is as `eve` (see `#M`), so
+  the group and other permission bits are exercised only by the host
+  tests.
 - **`#M` limits:**
   - Walks go one element at a time: `chan::walk` calls `Dev::walk` per
     element, so each is a `Twalk` and a fid. A multi-element `Dev`

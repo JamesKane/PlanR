@@ -185,10 +185,11 @@ struct Built {
 /// it that go into `/boot`.
 const USER_PROGRAMS: &[(&str, &[&str])] = &[
     ("init", &["init"]),
+    ("ramfs", &["ramfs"]),
     (
         "utest",
         &[
-            "tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote", "t9p", "tcons", "tlibr", "tsys",
+            "tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote", "t9p", "tcons", "tlibr", "tsys", "tramfs",
         ],
     ),
 ];

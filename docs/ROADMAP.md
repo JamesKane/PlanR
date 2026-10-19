@@ -311,7 +311,7 @@ on Plan R and on host plan9port (see [TESTING.md](TESTING.md)).
 3. ✅ libr system layer: directory reads, stat helpers, `cleanname`, `/env`,
    exec with a `$path` search, `wait`, `postnote`, time and date,
    `tokenize`, `getfields`, `quote`.
-4. Our lib9p server framework (fid table, dispatch, file trees) on
+4. ✅ Our lib9p server framework (fid table, dispatch, file trees) on
    `lib/9p`'s codec; `ramfs`, mounted by `init` on `/tmp`.
 5. `rc`, part 1: lexer, recursive-descent parser for rc's grammar, the
    interpreter: commands, pipelines, redirections, `& ; && || !`, lists,

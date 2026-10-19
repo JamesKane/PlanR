@@ -1,0 +1,21 @@
+[package]
+name = "ramfs"
+description = "A file system held in memory, served over 9P"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autobins = false
+
+[[bin]]
+name = "ramfs"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+ninep = { path = "../../lib/9p", features = ["server"] }
+r = { path = "../../lib/r" }
+
+[lints]
+workspace = true

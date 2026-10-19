@@ -25,7 +25,17 @@
 
 #![cfg_attr(not(test), no_std)]
 
+#[cfg(any(test, feature = "server"))]
+extern crate alloc;
+
 use core::fmt;
+
+#[cfg(any(test, feature = "server"))]
+pub mod ram;
+#[cfg(any(test, feature = "server"))]
+pub mod srv;
+#[cfg(any(test, feature = "server"))]
+pub mod tree;
 
 pub use abi::{QIDSZ, Qid};
 

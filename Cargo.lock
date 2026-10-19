@@ -93,6 +93,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ramfs"
+version = "0.1.0"
+dependencies = [
+ "ninep",
+ "r",
+]
+
+[[package]]
 name = "uefi"
 version = "0.1.0"
 

@@ -1,6 +1,6 @@
 //! The first user process. It builds the name space, as Plan 9's
 //! `/lib/namespace` would, opens the console as descriptors 0, 1 and 2,
-//! then runs the test programs from the boot archive at once, each with a
+//! mounts a `ramfs` on `/tmp`, then runs the test programs from the boot archive at once, each with a
 //! copy of its name space, environment and descriptors, and checks how
 //! each one exits. It prints a line for each program (only failures with
 //! `-q`) and a summary; it exits normally only if every program passed.
@@ -66,6 +66,7 @@ const PROGRAMS: &[(&CStr, &[&CStr], Want)] = &[
         Want::Normal,
     ),
     (c"/boot/tsys", &[c"tsys"], Want::Normal),
+    (c"/boot/tramfs", &[c"tramfs"], Want::Normal),
 ];
 
 /// The programs `-i` runs.
@@ -147,7 +148,7 @@ impl core::fmt::Display for Joined<'_> {
 
 /// Builds the name space, opens the console as 0, 1 and 2, and checks the
 /// binds took: the console and clock in `/dev`, this process in `/proc`,
-/// and `/env` taking a new file.
+/// and `/env` taking a new file. Then mounts a `ramfs` on `/tmp`.
 fn namespace() -> Check {
     for &(new, old, flags) in NAMESPACE {
         r::bind(new, old, flags).map_err(|_| "a bind failed")?;
@@ -170,7 +171,43 @@ fn namespace() -> Check {
     ensure(r::write(fd, b"started") == Ok(7), "cannot write to /env")?;
     r::close(fd).map_err(|_| "close failed")?;
     r::remove(c"/env/init").map_err(|_| "cannot remove from /env")?;
-    ensure(r::open(c"/fd/0ctl", READ).is_ok(), "/fd lacks 0ctl")
+    ensure(r::open(c"/fd/0ctl", READ).is_ok(), "/fd lacks 0ctl")?;
+    tmp()
+}
+
+/// Runs `ramfs`, in this name space, which it mounts on `/tmp`, and checks
+/// that a file there keeps what is written to it.
+fn tmp() -> Check {
+    let pid = match r::rfork(F::PROC | F::FDG) {
+        Err(_) => return Err("rfork failed"),
+        Ok(0) => {
+            let e = r::exec(c"/boot/ramfs", &[c"ramfs"]);
+            let mut why = r::Buf::new();
+            why.put(b"init: exec failed: ");
+            why.put(e.as_bytes());
+            r::exits(Some(why.as_bytes()))
+        }
+        Ok(pid) => pid,
+    };
+    let mut text = [0u8; 256];
+    let mut msg = [0u8; 256];
+    let n = r::await_child(&mut text).map_err(|_| "await found no ramfs")?;
+    let (who, _, m) = abi::parse_waitmsg(&text[..n], &mut msg).ok_or("bad wait message")?;
+    if who != pid || m != 0 {
+        say(b"init: ramfs: ");
+        say(&msg[..m]);
+        say(b"\n");
+        return Err("ramfs failed");
+    }
+    let fd = r::create(c"/tmp/init", WRITE, 0o664).map_err(|_| "cannot create in /tmp")?;
+    ensure(r::write(fd, b"started") == Ok(7), "cannot write to /tmp")?;
+    r::close(fd).map_err(|_| "close failed")?;
+    let mut buf = [0u8; 16];
+    ensure(
+        read_file(c"/tmp/init", &mut buf)? == 7 && &buf[..7] == b"started",
+        "/tmp lost what was written",
+    )?;
+    r::remove(c"/tmp/init").map_err(|_| "cannot remove from /tmp")
 }
 
 fn read_file(name: &CStr, buf: &mut [u8]) -> Result<usize, &'static str> {
