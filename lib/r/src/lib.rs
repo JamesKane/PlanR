@@ -23,7 +23,7 @@ use core::arch::{asm, global_asm};
 use core::ffi::CStr;
 use core::fmt;
 
-pub use abi::{Access, BindFlags, Dir, ERRMAX, Failed, OpenFlags, OpenMode, Qid, Sys, Whence, dirs};
+pub use abi::{Access, BindFlags, Dir, ERRMAX, Failed, OpenFlags, OpenMode, Qid, RforkFlags, Sys, Whence, dirs};
 
 /// Makes `$f`, a `fn(Args) -> Result<(), &'static str>`, the program's
 /// main function.
@@ -370,8 +370,31 @@ pub fn await_child(buf: &mut [u8]) -> Result<usize, Error> {
     }
 }
 
+/// Makes a new process, or changes the caller's, as `flags` say: the
+/// child's pid in the parent, 0 in the child.
+pub fn rfork(flags: RforkFlags) -> Result<u64, Error> {
+    // SAFETY: the child returns here too, with a copy of the stack.
+    unsafe { syscall(Sys::Rfork, [flags.bits(), 0, 0, 0, 0, 0]) }.or_else(failed)
+}
+
+/// Waits for another process of the rendezvous group to call with `tag`;
+/// returns its `value`.
+pub fn rendezvous(tag: u64, value: u64) -> Result<u64, Error> {
+    // SAFETY: no memory is involved.
+    unsafe { syscall(Sys::Rendezvous, [tag, value, 0, 0, 0, 0]) }.or_else(failed)
+}
+
 /// A file descriptor.
 pub type Fd = usize;
+
+/// A new pipe: what is written to one descriptor is read from the other.
+pub fn pipe() -> Result<[Fd; 2], Error> {
+    let mut fds = [0u64; 2];
+    // SAFETY: the kernel writes the two words.
+    unsafe { syscall(Sys::Pipe, [fds.as_mut_ptr() as u64, 0, 0, 0, 0, 0]) }.or_else(failed)?;
+    #[allow(clippy::cast_possible_truncation)] // descriptors
+    Ok(fds.map(|f| f as Fd))
+}
 
 /// Makes call `n` with `a` and gives its value as a count or descriptor.
 ///

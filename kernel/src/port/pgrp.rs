@@ -1,22 +1,25 @@
 //! A process's groups: its name space's mount table ([`Pgrp`]), its file
-//! descriptors ([`Fgrp`]), and, with its environment (`devenv::Egrp`),
-//! the [`Files`] that hold them for the process.
+//! descriptors ([`Fgrp`]), and, with its environment (`devenv::Egrp`) and
+//! rendezvous group (`proc::Rgrp`), the [`Files`] that hold them for the
+//! process.
 //!
-//! Each group can be shared by several processes (`rfork`, from slice 9),
-//! so each locks itself. A lock is a spin lock held only to look or swap:
+//! Each group can be shared by several processes, as `rfork` leaves them
+//! ([`Files::fork`]), so each locks itself. A lock is a spin lock held only to look or swap:
 //! nothing that might sleep, closing a chan included, happens under one.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use abi::BindFlags;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use abi::{BindFlags, RforkFlags};
 
 use crate::port::chan::{Chan, Names, Walked};
 use crate::port::devenv::Egrp;
 use crate::port::devroot;
 use crate::port::error::{EBADFD, EMOUNT, ENOFD, ENONS, EUNMOUNT, Result};
 use crate::port::lock::SpinLock;
-use crate::port::proc;
+use crate::port::proc::{self, Rgrp};
 
 /// A directory in a union: what is mounted, and whether creates in the
 /// union go to it.
@@ -37,6 +40,9 @@ struct Mhead {
 #[derive(Debug)]
 pub(crate) struct Pgrp {
     mounts: SpinLock<Vec<Mhead>>,
+    /// `RFNOMNT`: no attaching devices by `#` name but a few, and no
+    /// mounts.
+    noattach: AtomicBool,
 }
 
 impl Pgrp {
@@ -44,7 +50,30 @@ impl Pgrp {
     pub(crate) fn new() -> Arc<Pgrp> {
         Arc::new(Pgrp {
             mounts: SpinLock::new(Vec::new()),
+            noattach: AtomicBool::new(false),
         })
+    }
+
+    /// A copy of the table, for `rfork(RFNAMEG)`.
+    fn copy(&self) -> Arc<Pgrp> {
+        let mounts = self
+            .mounts
+            .lock()
+            .iter()
+            .map(|m| Mhead {
+                from: m.from.unopened(),
+                members: m.members.clone(),
+            })
+            .collect();
+        Arc::new(Pgrp {
+            mounts: SpinLock::new(mounts),
+            noattach: AtomicBool::new(self.noattach()),
+        })
+    }
+
+    /// True once `RFNOMNT` has been asked for.
+    pub(crate) fn noattach(&self) -> bool {
+        self.noattach.load(Ordering::Relaxed)
     }
 
     /// What is mounted on `c`, if it is a mount point.
@@ -190,6 +219,25 @@ impl Fgrp {
             .ok_or_else(|| EBADFD.into())
     }
 
+    /// The chan open on `fd`, and whether it is closed on exec.
+    pub(crate) fn get_fd(&self, fd: u64) -> Result<(Arc<Chan>, bool)> {
+        let fds = self.fds.lock();
+        usize::try_from(fd)
+            .ok()
+            .and_then(|i| fds.get(i))
+            .and_then(Option::as_ref)
+            .map(|f| (f.chan.clone(), f.cexec))
+            .ok_or_else(|| EBADFD.into())
+    }
+
+    /// A copy of the table, its descriptors holding the same chans, for
+    /// `rfork(RFFDG)`.
+    fn copy(&self) -> Arc<Fgrp> {
+        Arc::new(Fgrp {
+            fds: SpinLock::new(self.fds.lock().clone()),
+        })
+    }
+
     /// Closes `fd`, returning its chan for the caller to drop, outside the
     /// lock.
     pub(crate) fn close(&self, fd: u64) -> Result<Arc<Chan>> {
@@ -247,6 +295,7 @@ pub(crate) struct Files {
     pub(crate) pgrp: Arc<Pgrp>,
     pub(crate) fgrp: Arc<Fgrp>,
     pub(crate) egrp: Arc<Egrp>,
+    pub(crate) rgrp: Arc<Rgrp>,
     /// `/`, the root device's root, and the current directory, both
     /// unopened and as walked, before the mount table is followed.
     pub(crate) slash: Chan,
@@ -263,9 +312,58 @@ impl Files {
             pgrp: Pgrp::new(),
             fgrp: Fgrp::new(),
             egrp: Egrp::new(),
+            rgrp: Arc::new(Rgrp::new()),
             dot: slash.renamed("/"),
             slash,
         })
+    }
+
+    /// The files of a child of `rfork`, or the caller's own after an
+    /// `rfork` without `RFPROC`: each group shared, copied (`RFNAMEG`,
+    /// `RFFDG`, `RFENVG`) or fresh (`RFCNAMEG`, `RFCFDG`, `RFCENVG`,
+    /// `RFREND`), as `flags` say. A fresh name space keeps `/` and the
+    /// current directory, and whether attaches are allowed. Never drops a
+    /// chan, so it may run under the files' lock.
+    pub(crate) fn fork(&self, flags: RforkFlags) -> Files {
+        let pgrp = if flags.contains(RforkFlags::CNAMEG) {
+            let p = Pgrp::new();
+            p.noattach.store(self.pgrp.noattach(), Ordering::Relaxed);
+            p
+        } else if flags.contains(RforkFlags::NAMEG) {
+            self.pgrp.copy()
+        } else {
+            self.pgrp.clone()
+        };
+        if flags.contains(RforkFlags::NOMNT) {
+            pgrp.noattach.store(true, Ordering::Relaxed);
+        }
+        let fgrp = if flags.contains(RforkFlags::CFDG) {
+            Fgrp::new()
+        } else if flags.contains(RforkFlags::FDG) {
+            self.fgrp.copy()
+        } else {
+            self.fgrp.clone()
+        };
+        let egrp = if flags.contains(RforkFlags::CENVG) {
+            Egrp::new()
+        } else if flags.contains(RforkFlags::ENVG) {
+            self.egrp.copy()
+        } else {
+            self.egrp.clone()
+        };
+        let rgrp = if flags.contains(RforkFlags::REND) {
+            Arc::new(Rgrp::new())
+        } else {
+            self.rgrp.clone()
+        };
+        Files {
+            pgrp,
+            fgrp,
+            egrp,
+            rgrp,
+            slash: self.slash.unopened(),
+            dot: self.dot.unopened(),
+        }
     }
 }
 
@@ -325,4 +423,9 @@ pub(crate) fn fgrp() -> Result<Arc<Fgrp>> {
 /// The calling process's environment.
 pub(crate) fn egrp() -> Result<Arc<Egrp>> {
     with_files(|f| f.egrp.clone())
+}
+
+/// The calling process's rendezvous group.
+pub(crate) fn rgrp() -> Result<Arc<Rgrp>> {
+    with_files(|f| f.rgrp.clone())
 }

@@ -370,6 +370,10 @@ planr_trap_vectors:
     je 1f
     clac
 1:  call {trap}
+    // Also where a child of rfork first leaves for user mode, with its
+    // frame at the top of its stack (`resume_user`).
+    .global planr_trap_exit
+planr_trap_exit:
 .Ltrap_exit:
     popq %r15
     popq %r14
@@ -542,9 +546,10 @@ impl PfError {
 }
 
 /// True if the fault at `addr` was on a page not yet mapped in a segment
-/// of the running process, which is now mapped: retry the access.
+/// of the running process, or a write to a copy-on-write page, and the
+/// page is now mapped as the access needs: retry it.
 fn demand_page(addr: u64, error: PfError) -> bool {
-    error.not_present() && segment::fault(addr, error.access())
+    (error.not_present() || error.access() == Access::Write) && segment::fault(addr, error.access())
 }
 
 impl fmt::Display for PfError {
@@ -728,6 +733,56 @@ extern "C" fn syscall(f: &mut TrapFrame) -> bool {
     // sysret faults in ring 0 on a non-canonical rip, so keep it to the
     // user half proper.
     f.rip < uaccess::USER_TOP
+}
+
+/// The bytes of the frame a system call builds at the top of the kernel
+/// stack.
+const USER_FRAME_BYTES: u64 = size_of::<TrapFrame>() as u64;
+
+/// Copies the user frame of the system call being made, at the top of the
+/// kernel stack ending at `from`, to the top of the one ending at `to`,
+/// made to return 0 with no error; returns the bytes it takes there.
+///
+/// # Safety
+///
+/// The calling thread is in a system call from user mode on the stack
+/// ending at `from`; the stack ending at `to` is mapped and unused.
+pub(crate) unsafe fn fork_frame(from: u64, to: u64) -> u64 {
+    let dst = (to - USER_FRAME_BYTES) as *mut TrapFrame;
+    // SAFETY: the caller's contract: the entry built the frame at the top
+    // of `from`, and the other stack has room for it.
+    let f = unsafe {
+        core::ptr::copy_nonoverlapping((from - USER_FRAME_BYTES) as *const TrapFrame, dst, 1);
+        &mut *dst
+    };
+    f.rax = 0;
+    f.rdx = 0;
+    f.rflags = (f.rflags & USER_FLAGS) | USER_RFLAGS;
+    f.rcx = f.rip;
+    f.r11 = f.rflags;
+    USER_FRAME_BYTES
+}
+
+/// Leaves for user mode through the trap exit, with the frame
+/// [`fork_frame`] wrote at the top of the stack ending at `top`.
+///
+/// # Safety
+///
+/// `top` is the top of the calling thread's kernel stack, nothing on it
+/// below the frame is needed any more, and the frame's addresses are in
+/// the active space.
+pub(crate) unsafe fn resume_user(top: u64) -> ! {
+    // SAFETY: the caller's contract; the exit swaps GS for ring 3 and
+    // returns by iretq.
+    unsafe {
+        asm!(
+            "cli",
+            "mov rsp, {}",
+            "jmp planr_trap_exit",
+            in(reg) top - USER_FRAME_BYTES,
+            options(noreturn),
+        );
+    }
 }
 
 // Reads a word, recovering from any fault through a fixup entry.

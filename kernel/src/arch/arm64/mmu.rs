@@ -51,6 +51,7 @@ impl Mmu for Native {
             MapKind::KernelText => (ATTR_NORMAL << 2) | SH_INNER | AP_READ_ONLY | UXN,
             MapKind::WriteCombining => (ATTR_NORMAL_NC << 2) | SH_INNER | PXN | UXN,
             MapKind::UserReadWrite => (ATTR_NORMAL << 2) | SH_INNER | AP_EL0 | NG | PXN | UXN,
+            MapKind::UserReadOnly => (ATTR_NORMAL << 2) | SH_INNER | AP_EL0 | AP_READ_ONLY | NG | PXN | UXN,
             MapKind::UserText => (ATTR_NORMAL << 2) | SH_INNER | AP_EL0 | AP_READ_ONLY | NG | PXN,
         };
         phys | VALID | AF | attrs | if block { 0 } else { TABLE_OR_PAGE }

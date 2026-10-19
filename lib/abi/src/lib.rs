@@ -399,19 +399,21 @@ impl OpenMode {
 }
 
 flags! {
-    /// What `rfork` gives the child or changes in the caller.
+    /// What `rfork` gives the child or changes in the caller. A group that
+    /// no flag names is shared.
     RforkFlags {
-        /// Share the name space.
+        /// A copy of the name space.
         NAMEG = 1 << 0,
-        /// Share the environment.
+        /// A copy of the environment.
         ENVG = 1 << 1,
-        /// Share the file descriptors.
+        /// A copy of the file descriptors.
         FDG = 1 << 2,
         /// Start a new note group.
         NOTEG = 1 << 3,
         /// Make a new process (else change the caller).
         PROC = 1 << 4,
-        /// Share data and bss rather than copy them.
+        /// Share data and bss rather than copy them; the stack is always
+        /// copied.
         MEM = 1 << 5,
         /// Do not report the child's exit to the parent.
         NOWAIT = 1 << 6,

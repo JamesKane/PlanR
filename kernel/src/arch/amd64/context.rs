@@ -102,17 +102,21 @@ const CR0_MP: u64 = 1 << 1;
 const CR0_EM: u64 = 1 << 2;
 const CR0_TS: u64 = 1 << 3;
 const CR0_NE: u64 = 1 << 5;
+const CR0_WP: u64 = 1 << 16;
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
 
 /// Lets user code use x87 and SSE on the calling CPU, with `fxsave` and
-/// `fxrstor`. UEFI leaves them on already; this makes sure.
+/// `fxrstor`, and makes the kernel's own writes honour read-only pages
+/// (CR0.WP), which copy-on-write needs of its user copies. UEFI leaves
+/// them on already; this makes sure.
 pub(crate) fn init_cpu() {
     let cr0: u64;
     // SAFETY: reads CR0.
     unsafe { asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack)) };
-    let cr0 = (cr0 | CR0_MP | CR0_NE) & !(CR0_EM | CR0_TS);
-    // SAFETY: only the FPU bits change; the kernel uses no FPU state.
+    let cr0 = (cr0 | CR0_MP | CR0_NE | CR0_WP) & !(CR0_EM | CR0_TS);
+    // SAFETY: only the FPU bits and WP change; the kernel uses no FPU
+    // state and never writes a read-only page of its own.
     unsafe {
         asm!("mov cr0, {}", in(reg) cr0, options(nostack));
         cpu::write_cr4(cpu::read_cr4() | CR4_OSFXSR | CR4_OSXMMEXCPT);
@@ -167,6 +171,15 @@ impl UserRegs {
             asm!("fxrstor64 [{}]", in(reg) &raw const self.fx, options(nostack, preserves_flags));
             cpu::wrmsr(IA32_FS_BASE, self.tls);
         }
+    }
+
+    /// A copy holding the calling CPU's user state, which belongs to the
+    /// running thread: what a child of `rfork` starts with. Interrupts
+    /// are off.
+    pub(crate) fn snapshot(&self) -> UserRegs {
+        let mut u = self.clone();
+        u.save();
+        u
     }
 
     /// Sets the thread pointer, here and in the calling CPU. `tls` must
@@ -227,6 +240,8 @@ pub(crate) unsafe fn enter_user(pc: u64, sp: u64, arg: u64, top: u64) -> ! {
         );
     }
 }
+
+pub(crate) use super::trap::{fork_frame, resume_user};
 
 /// Sets the stack the calling CPU enters the kernel on from user mode,
 /// for the thread it is switching to.

@@ -21,13 +21,14 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::any::Any;
 use core::fmt;
 use core::sync::atomic::AtomicU64;
 
 use abi::{Access, OpenFlags, OpenMode, Qid};
 
 use crate::port::dev::{self, Dev};
-use crate::port::error::{EBADCHAR, EBADOFFSET, EBADSHARP, EEXIST, ENOCREATE, ENONEXIST, ENOTDIR, Result};
+use crate::port::error::{EBADCHAR, EBADOFFSET, EBADSHARP, EEXIST, ENOATTACH, ENOCREATE, ENONEXIST, ENOTDIR, Result};
 use crate::port::lock::SpinLock;
 use crate::port::pgrp::{Mount, Pgrp};
 
@@ -47,6 +48,9 @@ pub(crate) struct Chan {
     pub(crate) union: Option<Arc<[Mount]>>,
     /// Where a read of the union has got to.
     union_read: SpinLock<Option<UnionRead>>,
+    /// The device's own state for the file, which chans walked from it
+    /// share (Plan 9's `c->aux`): a pipe's queues, say.
+    aux: Option<Arc<dyn Any + Send + Sync>>,
 }
 
 /// How far through a union a directory read has got.
@@ -82,17 +86,35 @@ impl Chan {
             offset: AtomicU64::new(0),
             union: None,
             union_read: SpinLock::new(None),
+            aux: None,
         }
     }
 
-    /// The file `qid`, called `elem`, in this directory, unopened.
+    /// The chan with `aux` as its device state.
+    pub(crate) fn with_aux(mut self, aux: Arc<dyn Any + Send + Sync>) -> Chan {
+        self.aux = Some(aux);
+        self
+    }
+
+    /// The device state, if it is a `T`.
+    pub(crate) fn aux<T: Any>(&self) -> Option<&T> {
+        let aux: &dyn Any = self.aux.as_deref()?;
+        aux.downcast_ref()
+    }
+
+    /// The file `qid`, called `elem`, in this directory, unopened, with
+    /// the same device state.
     pub(crate) fn child(&self, qid: Qid, elem: &str) -> Chan {
-        Chan::new(self.dev, self.devno, qid, join(&self.name, elem))
+        let mut c = Chan::new(self.dev, self.devno, qid, join(&self.name, elem));
+        c.aux.clone_from(&self.aux);
+        c
     }
 
     /// The same file, unopened, called `name`.
     pub(crate) fn renamed(&self, name: &str) -> Chan {
-        Chan::new(self.dev, self.devno, self.qid, String::from(name))
+        let mut c = Chan::new(self.dev, self.devno, self.qid, String::from(name));
+        c.aux.clone_from(&self.aux);
+        c
     }
 
     /// The same file, unopened, with the same name.
@@ -293,10 +315,16 @@ fn start(ns: &Names<'_>, name: &str) -> Result<(Chan, String)> {
     if let Some(rest) = full.strip_prefix('/') {
         return Ok((ns.slash.renamed("/"), String::from(rest)));
     }
-    // A device: `#` and its letter, then the attach specifier.
+    // A device: `#` and its letter, then the attach specifier. After
+    // `RFNOMNT` only the devices that give access to nothing new remain,
+    // as in Plan 9.
     let end = full.find('/').unwrap_or(full.len());
     let mut chars = full[1..end].chars();
-    let d = chars.next().and_then(dev::find).ok_or(EBADSHARP)?;
+    let dc = chars.next().ok_or(EBADSHARP)?;
+    if ns.pgrp.noattach() && !"|decp".contains(dc) {
+        return Err(ENOATTACH.into());
+    }
+    let d = dev::find(dc).ok_or(EBADSHARP)?;
     let root = d.attach(chars.as_str())?.renamed(&full[..end]);
     let rest = full.get(end + 1..).unwrap_or("");
     Ok((root, String::from(rest)))

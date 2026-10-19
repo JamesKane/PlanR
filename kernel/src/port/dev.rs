@@ -19,7 +19,7 @@ use abi::{Access, Dir, OpenFlags, OpenMode, Qid};
 
 use crate::port::chan::Chan;
 use crate::port::error::{EISDIR, ENONEXIST, EPERM, ESHORTSTAT, Result};
-use crate::port::{devarch, devcons, devdup, devenv, devroot, devrtc};
+use crate::port::{devarch, devcons, devdup, devenv, devpipe, devroot, devrtc, devsrv};
 
 /// The host owner, who owns everything until there are other users.
 pub(crate) const EVE: &str = "eve";
@@ -65,12 +65,14 @@ pub(crate) trait Dev: Sync {
 }
 
 /// Every device, in the order `#c/drivers` lists them.
-pub(crate) fn all() -> [&'static dyn Dev; 6] {
+pub(crate) fn all() -> [&'static dyn Dev; 8] {
     [
         &devroot::ROOT,
         &devcons::CONS,
         &devenv::ENV,
+        &devpipe::PIPE,
         &devdup::DUP,
+        &devsrv::SRV,
         &devrtc::RTC,
         &devarch::ARCH,
     ]
@@ -180,8 +182,8 @@ fn needs(mode: OpenMode) -> u32 {
 }
 
 /// Checks that the host owner may open a file with permissions `perm` in
-/// `mode`, and that a directory is only read, then marks `c` open.
-pub(crate) fn open_checked(c: Chan, mode: OpenMode, perm: u32) -> Result<Arc<Chan>> {
+/// `mode`, and that a directory is only read.
+pub(crate) fn check_open(c: &Chan, mode: OpenMode, perm: u32) -> Result<()> {
     if c.qid.is_dir() && (mode.access != Access::Read || mode.flags.contains(OpenFlags::TRUNC)) {
         return Err(EISDIR.into());
     }
@@ -189,6 +191,12 @@ pub(crate) fn open_checked(c: Chan, mode: OpenMode, perm: u32) -> Result<Arc<Cha
     if (perm >> 6) & need != need {
         return Err(EPERM.into());
     }
+    Ok(())
+}
+
+/// [`check_open`], then marks `c` open.
+pub(crate) fn open_checked(c: Chan, mode: OpenMode, perm: u32) -> Result<Arc<Chan>> {
+    check_open(&c, mode, perm)?;
     Ok(c.opened(mode))
 }
 

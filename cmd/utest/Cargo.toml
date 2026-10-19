@@ -37,6 +37,12 @@ path = "src/bin/tfile.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "tproc"
+path = "src/bin/tproc.rs"
+test = false
+bench = false
+
 [dependencies]
 r = { path = "../../lib/r" }
 

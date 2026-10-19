@@ -213,6 +213,7 @@ pub(crate) mod ktests {
         ("/boot/tfault", &["tfault", "brk"], Want::Trap),
         ("/boot/tfault", &["tfault", "stack"], Want::Trap),
         ("/boot/tfile", &["tfile"], Want::Status("targs from env")),
+        ("/boot/tproc", &["tproc"], Want::Normal),
     ];
 
     /// Each child's pid and its wait message, as `await` formats it.
@@ -271,8 +272,10 @@ pub(crate) mod ktests {
 
     /// Programs from the boot archive run, exit and are awaited: data,
     /// bss, stack and brk pages appear on first touch, arguments arrive,
-    /// exec replaces a program, faults end one with a trap status, and
-    /// the file calls work on every device (`tfile`).
+    /// exec replaces a program, faults end one with a trap status, the
+    /// file calls work on every device (`tfile`), and processes fork,
+    /// share or copy their memory and groups, and talk through pipes and
+    /// `#s` (`tproc`).
     pub(crate) fn programs_run() -> TestResult {
         if !crate::port::devroot::has("boot/tmem") {
             return Err("no boot archive with the test programs".into());

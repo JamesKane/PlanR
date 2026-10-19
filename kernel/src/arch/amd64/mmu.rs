@@ -58,6 +58,7 @@ impl Mmu for Native {
             MapKind::KernelText => 0,
             MapKind::WriteCombining => WRITABLE | WRITE_THROUGH | NO_EXECUTE,
             MapKind::UserReadWrite => WRITABLE | USER | NO_EXECUTE,
+            MapKind::UserReadOnly => USER | NO_EXECUTE,
             MapKind::UserText => USER,
         };
         phys | PRESENT | attrs | if block { HUGE } else { 0 }

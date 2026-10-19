@@ -11,9 +11,9 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use abi::{ERRMAX, Failed, Sys};
+use abi::{ERRMAX, Failed, RforkFlags, Sys};
 
-use crate::port::error::{EBADARG, Error};
+use crate::port::error::{EBADARG, ENOMEM, Error};
 use crate::port::pgrp::{self, NameSpace};
 use crate::port::proc;
 use crate::port::segment::SegError;
@@ -48,9 +48,12 @@ pub(crate) fn dispatch(number: u64, args: [u64; abi::MAX_ARGS]) -> [u64; 2] {
         Some(Sys::Remove) => sysfile::remove(a0),
         Some(Sys::Fd2path) => sysfile::fd2path(a0, a1, a2),
         Some(Sys::Dup) => sysfile::dup(a0, a1),
+        Some(Sys::Pipe) => sysfile::pipe(a0),
         Some(Sys::Chdir) => sysfile::chdir(a0),
         Some(Sys::Bind) => sysfile::bind(a0, a1, a2),
         Some(Sys::Unmount) => sysfile::unmount(a0, a1),
+        Some(Sys::Rfork) => rfork(a0),
+        Some(Sys::Rendezvous) => rendezvous(a0, a1),
         Some(Sys::Errstr) => errstr(args[0], args[1]),
         Some(Sys::Exits) => exits(args[0]),
         Some(Sys::Exec) => exec(args[0], args[1]),
@@ -103,6 +106,45 @@ fn exits(msg: u64) -> SysResult {
         uaccess::copy_in_str(msg, ERRMAX - 1).unwrap_or_else(|_| b"exits: bad address".to_vec())
     };
     proc::exits(status)
+}
+
+/// `rfork(flags) -> pid`: a new process, which shares or copies each of
+/// the caller's resources as `flags` say and returns 0; without `RFPROC`,
+/// changes the caller's own instead.
+fn rfork(flags: u64) -> SysResult {
+    use RforkFlags as F;
+    let flags = F::from_bits(flags).ok_or(EBADARG)?;
+    let both = |a: F, b: F| flags.contains(a) && flags.contains(b);
+    if both(F::FDG, F::CFDG) || both(F::NAMEG, F::CNAMEG) || both(F::ENVG, F::CENVG) {
+        return Err(Error::from(EBADARG));
+    }
+    if !flags.contains(F::PROC) {
+        if flags.contains(F::MEM) || flags.contains(F::NOWAIT) {
+            return Err(Error::from(EBADARG));
+        }
+        let old = pgrp::with_files(|f| {
+            let new = f.fork(flags);
+            core::mem::replace(f, new)
+        })?;
+        drop(old);
+        if flags.contains(F::NOTEG) {
+            me().new_noteg();
+        }
+        return Ok(0);
+    }
+    let mem = me().memory().ok_or(EBADARG)?;
+    let mem = alloc::sync::Arc::new(mem.fork(flags.contains(F::MEM)).ok_or(ENOMEM)?);
+    let files = pgrp::with_files(|f| f.fork(flags))?;
+    let child = proc::fork(mem, files, !flags.contains(F::NOWAIT), flags.contains(F::NOTEG)).ok_or(ENOMEM)?;
+    Ok(child.pid())
+}
+
+/// `rendezvous(tag, value) -> value`: waits for another process of the
+/// rendezvous group to call with `tag`, and returns its `value`.
+fn rendezvous(tag: u64, value: u64) -> SysResult {
+    let rgrp = pgrp::rgrp()?;
+    let s = proc::sleepable().expect("a system call may sleep");
+    Ok(rgrp.rendezvous(&s, tag, value))
 }
 
 /// `exec(name, argv)`: replaces the thread's program, closing the

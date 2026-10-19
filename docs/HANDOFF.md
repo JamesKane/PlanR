@@ -1,7 +1,7 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19, after P2 slice 8.
+2026-10-19, after P2 slice 9.
 
 ## State
 
@@ -46,8 +46,8 @@ Where work stands, for picking it up in a new session. Last updated
        resumed elsewhere.
      - `Rendez::sleep(&Sleepable, cond)`, `wakeup` and `wakeup_all`;
        `QLock`/`RwLock` hand the lock straight to the next waiter (FIFO);
-       `rendezvous(tag, value)` uses one global table until process
-       groups exist.
+       `rendezvous(tag, value)` used one global table until slice 9
+       gave each process a rendezvous group.
      - The boot CPU now ends in `cpu::idle_loop`, like the APs, instead of
        halting.
      - Separately, `5487d7b`: arm64 trap frames now save q0-q31,
@@ -179,6 +179,64 @@ Where work stands, for picking it up in a new session. Last updated
        read in.
      - libr wraps the new calls. `cmd/utest/tfile` exercises them on
        every device, then runs `targs` from a copy in `#e`.
+  9. `rfork` with copy-on-write, `qio`, `#|` and `#s`:
+     - `port/segment.rs`: a segment is now an `Arc`, shared by every
+       memory it belongs to (text always, data and bss with `RFMEM`), and
+       keeps the spaces mapping it (`Weak<Space>`) so a page it replaces
+       or gives up is cleared from all of them. A page is an
+       `Arc<Frame>` plus a copy-on-write bit; the frame is freed when
+       the last page holding it goes. `Memory::fork` shares the text (and
+       data and bss for `RFMEM`) and copies the rest: the copy holds the
+       same frames and every writable page of both is made read-only and
+       copy-on-write, then the parent's spaces are flushed. A write fault
+       copies the frame if anything else holds it, else takes it back.
+       Faults now reach `segment::fault` for writes to present pages too
+       (amd64 protection faults, arm64 permission faults), from user mode
+       and from kernel user copies; CR0.WP is now set, so the kernel's
+       own copies fault on read-only pages too. A frame's replacement
+       clears every space first (break-before-make on arm64, whose TLB
+       maintenance is broadcast, so it can happen under the lock) and is
+       flushed once the locks are dropped (`Pending`).
+     - `port/mmu.rs`: `MapKind::UserReadOnly`, and `Space::clear`
+       (unmap without the shootdown), `protect`, `translate`, `flush`
+       and `flush_here`.
+     - `rfork` (`port/syscall.rs`): Plan 9's flags and checks.
+       `Files::fork` shares each group, copies it (`RFNAMEG`, `RFFDG`,
+       `RFENVG`) or starts it fresh (`RFCNAMEG`, `RFCFDG`, `RFCENVG`,
+       `RFREND`); without `RFPROC` it replaces the caller's. `RFNOMNT`
+       sets the `Pgrp`'s `noattach`: `#` names other than `|decp` then
+       fail with "mount/attach disallowed" (mount, in slice 11, must
+       check it too). `RFNOWAIT` children have no parent and ppid 0;
+       `RFNOTEG` gives a new note id (`Proc::noteid`, for slice 10).
+     - `proc::fork`: the child's kernel stack starts with a copy of the
+       parent's system call frame, set to return 0
+       (`arch::context::fork_frame`), and its first switch leaves through
+       the trap exit (`resume_user`; `planr_trap_exit` and
+       `planr_trap_return` are now global). Its user registers are a
+       `UserRegs::snapshot` of the parent's live ones. `make` takes a
+       `Birth`.
+     - `Rgrp` replaces the global rendezvous table; the call is
+       `rendezvous`.
+     - `port/qio.rs`: Plan 9's queues. A write is cut into blocks of at
+       most 64 KiB, a read takes at most one block (the rest stays, or
+       is dropped on a message queue), writers wait at the limit and are
+       woken below half of it, `hangup` lets readers drain then get end
+       of file (and an error after three), `close` drops what is queued.
+       Readers and writers each queue on a `QLock`.
+     - `Chan` has `aux`, the device's state for a file, which walked and
+       renamed chans share (`with_aux`, `aux::<T>()`).
+     - `#|` (`devpipe`): each attach is a new pipe, 256 KiB each way;
+       closing one end's last open chan hangs up the other's reads and
+       its own writes, and once both are closed the pipe reopens. The
+       `pipe` call opens both ends `ORDWR`. `#s` (`devsrv`): one global
+       registry; create, post a descriptor by writing its number, open to
+       get the posted chan, remove. `dev::check_open` is `open_checked`
+       without marking the chan open.
+     - libr: `rfork`, `pipe`, `rendezvous`. `cmd/utest/tproc` checks
+       copy-on-write both ways, `RFMEM` (shared data and bss, own stack,
+       and a grandchild's copy of a shared segment), pipe boundaries, end
+       of file, hangup errors, 1 MiB through a pipe, `#s`, rendezvous,
+       each group flag, `RFNOMNT`, `RFNOWAIT` and exec in a forked child.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -188,36 +246,34 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-Slice 9: `rfork` with copy-on-write, `qio`/`Block`, `#|` and `#s`.
-- `rfork`: share or copy each part of `Files` as the flags say (`NAMEG`
-  shares the `Pgrp`, `CNAMEG` starts clean, a copy clones the mount
-  heads; likewise `FDG`/`CFDG` and `ENVG`/`CENVG`); `NOMNT` (refuse
-  `#` names but a few, as Plan 9 does); `REND`, a rendezvous group in
-  place of the global table; `NOWAIT`; `NOTEG`, recorded for slice 10.
-- Copy-on-write for data, bss and stack on `RFPROC` without `RFMEM`: a
-  page stays shared read-only until written, and the write fault copies
-  it. `RFMEM` shares the `Memory` (an `Arc` already); text is shared.
-- `qio`: Plan 9's queues of `Block`s with flow control, sleeping on
-  `Rendez`. Then `#|` (pipes: two data files, and the `pipe` call) and
-  `#s` (`/srv`: post a descriptor by name). These need per-file state
-  on a chan, as Plan 9's `c->aux` holds.
+Slice 10: notes, `#p`, `alarm`, `nsec`, `semacquire`/`tsemacquire`,
+`segattach`.
+- Notes: `notify`/`noted`, a note queue per process, delivery on the
+  way out of the kernel (a user frame for the handler, as Plan 9's
+  `notify` builds), `postnote` to a pid or note group (`noteid`, kept
+  since slice 9). Sleeps must become interruptible: `Rendez::sleep`
+  needs a way to return early for a note, and `qio`, `rendezvous` and
+  `await` an error for it ("interrupted"). The pipe write that fails on
+  a hung-up pipe also posts "sys: write on closed pipe".
+- `#p`: per-process `ctl`, `note`, `notepg`, `status`, `ns`, `fd`,
+  `args`, `wait`, `mem`/`segment` as far as they are cheap.
+- `alarm` and timed sleep (`tsleep`), which `sleep` and `tsemacquire`
+  then use instead of yielding in a loop. `nsec` from `devrtc`.
+- `semacquire`/`tsemacquire`/`semrelease` on user words (read and
+  written outside spin locks, as Plan 9 notes).
+- `segattach`/`segdetach`/`segfree` for shared segments: the shared
+  segment model from slice 9 (segments as `Arc`s with their spaces)
+  should carry them; detaching must clear the segment from the space.
 
-The slice 8 plan, for reference:
-- `Dev` (Plan 9's `Dev` table as a trait: attach, walk, stat, open,
-  create, read, write, remove, wstat), `Chan`, `Qid`, and `Dir` with
-  Plan 9's stat encoding (likely in `lib/abi` or a small new crate,
-  since `lib/9p` needs it in slice 11).
-- `Pgrp` (the mount table, `bind` with `BindFlags`), `Fgrp` (file
-  descriptors), `Egrp`; `walk` through mounts and unions.
-- Calls: `open`, `create`, `close`, `read`, `write`, `pread`, `pwrite`,
-  `seek`, `stat`, `fstat`, `wstat`, `fwstat`, `remove`, `fd2path`,
-  `dup`, `chdir`, `bind`; `mount` waits for `#M` (slice 11).
-- Devices: `#/` (the boot archive as a tree, replacing `exec`'s direct
-  lookup in `port/archive.rs`), `#c` (cons), `#e` (env), `#d` (dup), `#r`
-  (rtc), `#P` (arch).
-- `exec` then opens its file through the name space. Segment images are
-  `&'static [u8]` today, which only the archive can give; a file from
-  anywhere else needs an owned image (or a page source) instead.
+The slice 9 plan, for reference:
+- `rfork`: share or copy each part of `Files` as the flags say
+  (`NAMEG` copies the `Pgrp`, `CNAMEG` starts clean, neither shares it;
+  likewise `FDG`/`CFDG` and `ENVG`/`CENVG`); `NOMNT`; `REND`; `NOWAIT`;
+  `NOTEG`, recorded for slice 10.
+- Copy-on-write for data, bss and stack on `RFPROC` without `RFMEM`;
+  `RFMEM` shares data and bss (not the stack, as in Plan 9); text is
+  shared.
+- `qio`, then `#|` and `#s`, with per-file state on a chan.
 
 **Reference boards** (`docs/HARDWARE.md`, "Booting Plan R on a board"):
 no runs until P2's exit test. P1 results, for reference:
@@ -255,6 +311,15 @@ no runs until P2's exit test. P1 results, for reference:
   and drop them after. The exception is `exit` from `user_trap`, which
   runs with interrupts off. That is fine for slice 8's devices, but it
   will need a proper context once closes can sleep.
+- **`rfork`'s group flags copy:** `RFNAMEG`, `RFFDG` and `RFENVG` give
+  the child a copy; leaving them out shares the group (Plan 9's rule;
+  `lib/abi` said otherwise until slice 9). `RFNOMNT` without `RFNAMEG`
+  sets `noattach` on the shared name space, the parent's too.
+- **Copy-on-write and the TLB:** a page's frame is replaced only after
+  every space mapping it is cleared, and the old frame is freed only
+  after the flush (`segment::Pending`). A fault on a page the segment
+  already maps (another CPU changed it, or it was read-only until now)
+  just fixes the faulting space's entry and flushes this CPU.
 - **`..` is lexical,** as in Plan 9: `chdir("..")` from a bound
   directory goes to the parent of its name, not of what is bound there.
 - **User programs on amd64 are soft-float,** like the kernel: they build
@@ -331,8 +396,8 @@ no runs until P2's exit test. P1 results, for reference:
   `mm::low_pages` finds the amd64 AP trampoline there. Frames may now come
   from anywhere, including above 4 GiB. The `Boot` and `AcpiReclaimable`
   regions are not yet given to the allocator (see below). The
-  per-page state byte has spare bits, but CoW refcounts (slice 9) will
-  need a separate array.
+  per-page state byte has spare bits; copy-on-write counts holders with
+  an `Arc` per page instead (`segment::Frame`).
 - **Kernel stacks** come only from `mm::alloc_stack`, in 128 KiB slots.
   arm64's overflow check relies on every stack an exception can arrive on
   following that layout and being `mm::STACK_PAGES` long. A future thread

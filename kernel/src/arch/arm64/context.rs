@@ -150,6 +150,15 @@ impl UserRegs {
         }
     }
 
+    /// A copy holding the calling CPU's user state, which belongs to the
+    /// running thread: what a child of `rfork` starts with. Interrupts
+    /// are off.
+    pub(crate) fn snapshot(&self) -> UserRegs {
+        let mut u = self.clone();
+        u.save();
+        u
+    }
+
     /// Sets the thread pointer, here and in the calling CPU.
     pub(crate) fn set_tls(&mut self, tls: u64) {
         self.tls = tls;
@@ -251,6 +260,8 @@ pub(crate) unsafe fn enter_user(pc: u64, sp: u64, arg: u64, top: u64) -> ! {
         );
     }
 }
+
+pub(crate) use super::trap::{fork_frame, resume_user};
 
 /// Nothing to do: an exception from EL0 is taken on `SP_EL1`, which is
 /// the top of the thread's kernel stack whenever it is in user mode

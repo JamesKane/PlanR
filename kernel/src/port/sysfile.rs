@@ -1,7 +1,7 @@
 //! The system calls on files and name spaces (Plan 9's `sysfile.c`):
 //! `open`, `create`, `close`, `read`, `write`, `pread`, `pwrite`, `seek`,
 //! `stat`, `fstat`, `wstat`, `fwstat`, `remove`, `fd2path`, `dup`,
-//! `chdir`, `bind` and `unmount`.
+//! `pipe`, `chdir`, `bind` and `unmount`.
 //!
 //! Data passes through a kernel buffer: a read gives at most [`IO_MAX`]
 //! bytes, and a write goes to the device in pieces that size.
@@ -11,9 +11,11 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use abi::{BindFlags, Dir, OpenFlags, OpenMode, Whence};
+use abi::{Access, BindFlags, Dir, OpenFlags, OpenMode, Whence};
 
 use crate::port::chan::{self, Chan, last_elem};
+use crate::port::dev::Dev;
+use crate::port::devpipe::PIPE;
 use crate::port::error::{EBADARG, EBADCHAR, EBADSTAT, EBADUSEFD, EISDIR, ENOTDIR, ESHORTSTAT, Result};
 use crate::port::pgrp::{self, NameSpace};
 use crate::port::uaccess;
@@ -260,6 +262,36 @@ pub(crate) fn fd2path(fd: u64, buf: u64, n: u64) -> Result<u64> {
 pub(crate) fn dup(old: u64, new: u64) -> Result<u64> {
     let new = (new != u64::MAX).then_some(new);
     Ok(pgrp::fgrp()?.dup(old, new)? as u64)
+}
+
+/// `pipe(fds)`: a new pipe, its two ends open for reading and writing on
+/// two new descriptors, which go to `fds` as two words.
+pub(crate) fn pipe(fds: u64) -> Result<u64> {
+    uaccess::check(fds, 16)?;
+    let rw = OpenMode {
+        access: Access::ReadWrite,
+        flags: OpenFlags::empty(),
+    };
+    let dir = PIPE.attach("")?;
+    let a = PIPE.open(PIPE.walk(&dir, "data")?, rw)?;
+    let b = PIPE.open(PIPE.walk(&dir, "data1")?, rw)?;
+    let fgrp = pgrp::fgrp()?;
+    let fa = fgrp.add(a, false)?;
+    let fb = match fgrp.add(b, false) {
+        Ok(fb) => fb,
+        Err(e) => {
+            drop(fgrp.close(fa as u64));
+            return Err(e);
+        }
+    };
+    let mut words = [0u8; 16];
+    words[..8].copy_from_slice(&(fa as u64).to_ne_bytes());
+    words[8..].copy_from_slice(&(fb as u64).to_ne_bytes());
+    if let Err(e) = uaccess::copy_out(fds, &words) {
+        drop((fgrp.close(fa as u64), fgrp.close(fb as u64)));
+        return Err(e.into());
+    }
+    Ok(0)
 }
 
 /// `chdir(name)`

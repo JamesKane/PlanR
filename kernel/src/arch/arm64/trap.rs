@@ -180,7 +180,11 @@ global_asm!(
     "    str x3, [x0, #520]",
     "    mov x0, sp",
     "    bl {trap}",
-    // The handler may have changed elr (to resume elsewhere).
+    // Also where a child of rfork first leaves for EL0, with its frame at
+    // the top of its stack (`resume_user`). The handler may have changed
+    // elr (to resume elsewhere).
+    ".global planr_trap_return",
+    "planr_trap_return:",
     "    ldp x30, x2, [sp, #240]",
     "    ldr x3, [sp, #256]",
     "    msr elr_el1, x2",
@@ -448,7 +452,8 @@ fn overflow(f: &mut TrapFrame) -> ! {
 }
 
 /// True if `ex` was a translation fault on a page not yet mapped in a
-/// segment of the running process, which is now mapped: retry the access.
+/// segment of the running process, or a write to a copy-on-write page,
+/// and the page is now mapped as the access needs: retry it.
 fn demand_page(ex: Exception) -> bool {
     match ex {
         Exception::DataAbort {
@@ -456,6 +461,11 @@ fn demand_page(ex: Exception) -> bool {
             fault: Fault::Translation(_),
             write,
         } => segment::fault(addr, if write { Access::Write } else { Access::Read }),
+        Exception::DataAbort {
+            addr,
+            fault: Fault::Permission(_),
+            write: true,
+        } => segment::fault(addr, Access::Write),
         Exception::InstructionAbort {
             addr,
             fault: Fault::Translation(_),
@@ -517,6 +527,52 @@ fn syscall(f: &mut TrapFrame) {
     let _ = super::splhi();
     f.x[0] = value;
     f.x[1] = error;
+}
+
+/// Copies the user frame of the system call being made, at the top of the
+/// kernel stack ending at `from`, to the top of the one ending at `to`,
+/// made to return 0 with no error; returns the bytes it takes there.
+///
+/// # Safety
+///
+/// The calling thread is in a system call from EL0 on the stack ending at
+/// `from`; the stack ending at `to` is mapped and unused.
+pub(crate) unsafe fn fork_frame(from: u64, to: u64) -> u64 {
+    let size = FRAME_BYTES as u64;
+    let dst = (to - size) as *mut TrapFrame;
+    // SAFETY: the caller's contract: an exception from EL0 is taken at the
+    // top of the stack, and the other stack has room for the frame.
+    let f = unsafe {
+        core::ptr::copy_nonoverlapping((from - size) as *const TrapFrame, dst, 1);
+        &mut *dst
+    };
+    f.x[0] = 0;
+    f.x[1] = 0;
+    f.sp = to;
+    size
+}
+
+/// Leaves for EL0 through the trap exit, with the frame [`fork_frame`]
+/// wrote at the top of the stack ending at `top`.
+///
+/// # Safety
+///
+/// `top` is the top of the calling thread's kernel stack, nothing on it
+/// below the frame is needed any more, and the frame's addresses are in
+/// the active space.
+pub(crate) unsafe fn resume_user(top: u64) -> ! {
+    // SAFETY: the caller's contract. With every exception masked, the exit
+    // restores the frame and erets, leaving sp at `top` for the next
+    // exception from EL0.
+    unsafe {
+        asm!(
+            "msr daifset, #0xf",
+            "mov sp, {}",
+            "b planr_trap_return",
+            in(reg) top - FRAME_BYTES as u64,
+            options(noreturn),
+        );
+    }
 }
 
 /// Nothing per CPU: an exception from EL0 is taken on `SP_EL1` as it was

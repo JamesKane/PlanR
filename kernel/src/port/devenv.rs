@@ -22,7 +22,7 @@ const NAME_MAX: usize = 127;
 /// The most variables.
 const VARS_MAX: usize = 1024;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Var {
     name: String,
     value: Vec<u8>,
@@ -43,6 +43,14 @@ impl Egrp {
         Arc::new(Egrp {
             vars: SpinLock::new(Vec::new()),
             next: AtomicU64::new(1),
+        })
+    }
+
+    /// A copy, for `rfork(RFENVG)`.
+    pub(crate) fn copy(&self) -> Arc<Egrp> {
+        Arc::new(Egrp {
+            vars: SpinLock::new(self.vars.lock().clone()),
+            next: AtomicU64::new(self.next.load(Ordering::Relaxed)),
         })
     }
 }

@@ -124,6 +124,9 @@ pub(crate) struct Proc {
     parent: Option<Weak<Proc>>,
     /// The parent's pid, or 0.
     ppid: u64,
+    /// Its note group: its own pid, its parent's group, or a new one
+    /// (`RFNOTEG`). Notes arrive in slice 10.
+    noteid: AtomicU64,
     children: SpinLock<Children>,
     /// Woken when a child exits.
     child_exited: Rendez,
@@ -156,6 +159,9 @@ enum Entry {
     Kernel(Box<dyn FnOnce() + Send>),
     /// A user thread's first instruction, stack pointer and argument.
     User { pc: u64, sp: u64, arg: u64 },
+    /// A child of `rfork`, returning from the system call with the user
+    /// frame at the top of its stack.
+    Fork,
 }
 
 // SAFETY: `context` and `user` are touched only by the CPU running the
@@ -208,9 +214,21 @@ impl Proc {
         &self.errstr
     }
 
-    /// The parent's pid, or 0 if it had none.
+    /// The parent's pid, or 0 if it had none (or was not to hear of its
+    /// exit).
     pub(crate) fn ppid(&self) -> u64 {
         self.ppid
+    }
+
+    /// Its note group.
+    pub(crate) fn noteid(&self) -> u64 {
+        self.noteid.load(Ordering::Relaxed)
+    }
+
+    /// Starts a new note group (`RFNOTEG`).
+    pub(crate) fn new_noteg(&self) {
+        self.noteid
+            .store(NEXT_PID.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
     }
 
     /// A user thread's name space and files.
@@ -338,7 +356,16 @@ unsafe fn local() -> &'static mut Local {
 
 /// Makes a kernel thread that runs `f`, and makes it ready.
 pub(crate) fn spawn(how: Spawn<'_>, f: impl FnOnce() + Send + 'static) -> Option<Arc<Proc>> {
-    make(how, None, None, None, Entry::Kernel(Box::new(f)))
+    let b = Birth {
+        mem: None,
+        files: None,
+        parent: None,
+        noteid: None,
+        user: UserRegs::INITIAL,
+        entry: Entry::Kernel(Box::new(f)),
+        reserved: 0,
+    };
+    Some(make(how, Stack::new()?, b))
 }
 
 /// Makes a user thread in `mem`, with `files`, that starts at `pc` with
@@ -352,23 +379,75 @@ pub(crate) fn spawn_user(
     sp: u64,
     arg: u64,
 ) -> Option<Arc<Proc>> {
-    make(how, Some(mem), Some(files), current(), Entry::User { pc, sp, arg })
+    let b = Birth {
+        mem: Some(mem),
+        files: Some(files),
+        parent: current(),
+        noteid: None,
+        user: UserRegs::INITIAL,
+        entry: Entry::User { pc, sp, arg },
+        reserved: 0,
+    };
+    Some(make(how, Stack::new()?, b))
 }
 
-fn make(
-    how: Spawn<'_>,
+/// Makes a child of the calling user thread, in a system call, as `rfork`
+/// does, and makes it ready: in `mem`, with `files`, it returns from the
+/// call with 0 and the caller's registers otherwise. Its parent hears of
+/// its exit if `wait`; it starts a note group of its own if `noteg`.
+pub(crate) fn fork(mem: Arc<Memory>, files: Files, wait: bool, noteg: bool) -> Option<Arc<Proc>> {
+    let me = current().filter(|p| p.is_user)?;
+    let stack = Stack::new()?;
+    // SAFETY: a system call entered at the top of the caller's stack; the
+    // child's is new and ours.
+    let reserved = unsafe { arch::context::fork_frame(me.stack.top(), stack.top()) };
+    let pl = arch::splhi();
+    // SAFETY: only this CPU, running the thread, touches `user`, and
+    // interrupts are off.
+    let user = unsafe { (*me.user.get()).snapshot() };
+    arch::splx(pl);
+    let name = me.name();
+    let how = Spawn {
+        name: &name,
+        pri: me.pri,
+        wired: None,
+    };
+    let b = Birth {
+        mem: Some(mem),
+        files: Some(files),
+        noteid: (!noteg).then(|| me.noteid()),
+        parent: wait.then_some(me),
+        user,
+        entry: Entry::Fork,
+        reserved,
+    };
+    Some(make(how, stack, b))
+}
+
+/// What a new thread is made with.
+struct Birth {
     mem: Option<Arc<Memory>>,
     files: Option<Files>,
+    /// Who hears when it exits.
     parent: Option<Arc<Proc>>,
+    /// Its note group, if not a new one.
+    noteid: Option<u64>,
+    user: UserRegs,
     entry: Entry,
-) -> Option<Arc<Proc>> {
+    /// Bytes at the top of the stack already in use: a forked child's
+    /// user frame.
+    reserved: u64,
+}
+
+fn make(how: Spawn<'_>, stack: Stack, b: Birth) -> Arc<Proc> {
     assert!(how.pri < NPRI, "priority out of range");
-    let stack = Stack::new()?;
-    // SAFETY: the stack is new and ours.
-    let context = unsafe { Context::new(stack.top(), thread_start, 0) };
+    // SAFETY: the stack is new and ours, and nothing else uses what lies
+    // below `reserved`.
+    let context = unsafe { Context::new(stack.top() - b.reserved, thread_start, 0) };
     let wired = how.wired.unwrap_or(UNWIRED);
+    let pid = NEXT_PID.fetch_add(1, Ordering::Relaxed);
     let p = Arc::new(Proc {
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        pid,
         name: SpinLock::new(String::from(how.name)),
         pri: how.pri,
         wired,
@@ -381,15 +460,16 @@ fn make(
         }),
         context: UnsafeCell::new(context),
         stack,
-        entry: SpinLock::new(Some(entry)),
-        is_user: mem.is_some(),
-        mem: SpinLock::new(mem),
-        user: UnsafeCell::new(UserRegs::INITIAL),
+        entry: SpinLock::new(Some(b.entry)),
+        is_user: b.mem.is_some(),
+        mem: SpinLock::new(b.mem),
+        user: UnsafeCell::new(b.user),
         errstr: SpinLock::new(Vec::new()),
         status: SpinLock::new(None),
-        files: SpinLock::new(files),
-        parent: parent.as_ref().map(Arc::downgrade),
-        ppid: parent.as_ref().map_or(0, |p| p.pid),
+        files: SpinLock::new(b.files),
+        parent: b.parent.as_ref().map(Arc::downgrade),
+        ppid: b.parent.as_ref().map_or(0, |p| p.pid),
+        noteid: AtomicU64::new(b.noteid.unwrap_or(pid)),
         children: SpinLock::new(Children {
             live: 0,
             exited: VecDeque::new(),
@@ -397,11 +477,11 @@ fn make(
         child_exited: Rendez::new(),
         started_ns: clock::now_ns(),
     });
-    if let Some(parent) = parent {
+    if let Some(parent) = b.parent {
         parent.children.lock().live += 1;
     }
     ready(p.clone());
-    Some(p)
+    p
 }
 
 /// The thread running on this CPU, if any.
@@ -772,6 +852,9 @@ extern "C" fn thread_start(_: usize) -> ! {
         // SAFETY: nothing on this stack is needed again; the switch to
         // this thread activated `space`, where `pc` and `sp` are.
         Entry::User { pc, sp, arg } => unsafe { arch::context::enter_user(pc, sp, arg, top) },
+        // SAFETY: `fork` wrote the frame at the top of the stack, above
+        // all this thread has used; the switch activated its space.
+        Entry::Fork => unsafe { arch::context::resume_user(top) },
     }
 }
 
@@ -856,7 +939,7 @@ pub(crate) fn sleep_queued(_: &Sleepable, queue: impl FnOnce(Arc<Proc>)) {
     drop(dead);
 }
 
-/// A meeting place for [`rendezvous`].
+/// A meeting place for [`Rgrp::rendezvous`].
 #[derive(Debug)]
 struct Meet {
     tag: u64,
@@ -867,33 +950,45 @@ struct Meet {
     r: Rendez,
 }
 
-/// Threads waiting in [`rendezvous`]. One table for the whole system
-/// until process groups exist.
-static MEETS: SpinLock<alloc::vec::Vec<Arc<Meet>>> = SpinLock::new(alloc::vec::Vec::new());
+/// A rendezvous group: the processes whose tags meet in
+/// [`rendezvous`](Rgrp::rendezvous). Children share their parent's unless
+/// `rfork(RFREND)` starts a new one.
+#[derive(Debug)]
+pub(crate) struct Rgrp {
+    meets: SpinLock<Vec<Arc<Meet>>>,
+}
 
-/// Plan 9's `rendezvous`: the first caller with `tag` waits, and the
-/// second wakes it; each returns the other's `value`.
-pub(crate) fn rendezvous(s: &Sleepable, tag: u64, value: u64) -> u64 {
-    let mut meets = MEETS.lock();
-    if let Some(i) = meets.iter().position(|m| m.tag == tag) {
-        let m = meets.swap_remove(i);
-        drop(meets);
-        m.reply.store(value, Ordering::Relaxed);
-        m.done.store(true, Ordering::Release);
-        m.r.wakeup();
-        return m.value;
+impl Rgrp {
+    pub(crate) const fn new() -> Rgrp {
+        Rgrp {
+            meets: SpinLock::new(Vec::new()),
+        }
     }
-    let m = Arc::new(Meet {
-        tag,
-        value,
-        reply: AtomicU64::new(0),
-        done: AtomicBool::new(false),
-        r: Rendez::new(),
-    });
-    meets.push(m.clone());
-    drop(meets);
-    m.r.sleep(s, || m.done.load(Ordering::Acquire));
-    m.reply.load(Ordering::Relaxed)
+
+    /// Plan 9's `rendezvous`: the first caller with `tag` waits, and the
+    /// second wakes it; each returns the other's `value`.
+    pub(crate) fn rendezvous(&self, s: &Sleepable, tag: u64, value: u64) -> u64 {
+        let mut meets = self.meets.lock();
+        if let Some(i) = meets.iter().position(|m| m.tag == tag) {
+            let m = meets.swap_remove(i);
+            drop(meets);
+            m.reply.store(value, Ordering::Relaxed);
+            m.done.store(true, Ordering::Release);
+            m.r.wakeup();
+            return m.value;
+        }
+        let m = Arc::new(Meet {
+            tag,
+            value,
+            reply: AtomicU64::new(0),
+            done: AtomicBool::new(false),
+            r: Rendez::new(),
+        });
+        meets.push(m.clone());
+        drop(meets);
+        m.r.sleep(s, || m.done.load(Ordering::Acquire));
+        m.reply.load(Ordering::Relaxed)
+    }
 }
 
 /// Tests run by [`crate::port::ktest`].
@@ -902,7 +997,7 @@ pub(crate) mod ktests {
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-    use super::{PRI_NORMAL, Rendez, Spawn, current, rendezvous, sleepable, spawn, yield_now};
+    use super::{PRI_NORMAL, Rendez, Rgrp, Spawn, current, sleepable, spawn, yield_now};
     use crate::arch;
     use crate::port::clock;
     use crate::port::cpu;
@@ -1136,13 +1231,14 @@ pub(crate) mod ktests {
 
     /// Two threads meet at a tag and swap values.
     pub(crate) fn rendezvous_swaps() -> TestResult {
+        static RG: Rgrp = Rgrp::new();
         let got = Arc::new([const { AtomicU64::new(0) }; 2]);
         let done = Arc::new(AtomicUsize::new(0));
         for i in 0..2 {
             let (got, done) = (got.clone(), done.clone());
             spawn(Spawn::kproc("meet"), move || {
                 let sl = sleepable().expect("a thread may sleep");
-                got[i].store(rendezvous(&sl, 0x7a9, 100 + i as u64), Ordering::Relaxed);
+                got[i].store(RG.rendezvous(&sl, 0x7a9, 100 + i as u64), Ordering::Relaxed);
                 done.fetch_add(1, Ordering::Release);
             })
             .ok_or("cannot spawn")?;

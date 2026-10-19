@@ -207,6 +207,24 @@ impl Table {
         Native::is_valid(e).then(|| Native::address(e))
     }
 
+    /// Changes the kind of the page at `va`, keeping its frame; true if it
+    /// was mapped. The caller flushes if the new kind allows less.
+    fn protect(&mut self, va: u64, kind: MapKind) -> bool {
+        let Ok(slot) = self.slot(va, 12, false) else {
+            return false;
+        };
+        // SAFETY: `slot` is an entry in a live table.
+        unsafe {
+            let e = *slot;
+            if !Native::is_valid(e) {
+                return false;
+            }
+            *slot = Native::leaf(Native::address(e), kind, false);
+        }
+        Native::publish();
+        true
+    }
+
     /// The physical address `va` maps to.
     pub(crate) fn translate(&mut self, va: u64) -> Option<u64> {
         let mut t = self.root;
@@ -418,6 +436,46 @@ impl Space {
         let pa = self.table.lock().unmap(va)?;
         shootdown(self.active.load(Ordering::Acquire), va, 1);
         Some(pa)
+    }
+
+    /// Removes the page at `va` and returns what it mapped, without the
+    /// shootdown [`unmap`](Space::unmap) does, so it may be called under a
+    /// spin lock. Where TLB maintenance is broadcast (arm64), the entry is
+    /// flushed everywhere at once, which waits on no other CPU, so that a
+    /// new entry can follow (break-before-make). Elsewhere the caller must
+    /// [`flush`](Space::flush) once no spin lock is held, before the frame
+    /// is reused; until then other CPUs may still use the old entry.
+    pub(crate) fn clear(&self, va: u64) -> Option<u64> {
+        let pa = self.table.lock().unmap(va)?;
+        if Native::BROADCAST_FLUSH {
+            Native::flush_everywhere(va, 1);
+        }
+        Some(pa)
+    }
+
+    /// Changes the kind of the page at `va`, keeping its frame; true if it
+    /// was mapped. Other CPUs may use the old kind until a
+    /// [`flush`](Space::flush); this one until [`flush_here`](Space::flush_here).
+    pub(crate) fn protect(&self, va: u64, kind: MapKind) -> bool {
+        kind.is_user() && self.table.lock().protect(va, kind)
+    }
+
+    /// The frame mapped at `va`.
+    pub(crate) fn translate(&self, va: u64) -> Option<u64> {
+        self.table.lock().translate(va).map(|pa| pa & !(PAGE - 1))
+    }
+
+    /// Flushes `pages` pages at `va` from every CPU running in this space
+    /// (all of them if `pages` is `u64::MAX`). Must be called with no spin
+    /// lock held.
+    pub(crate) fn flush(&self, va: u64, pages: u64) {
+        shootdown(self.active.load(Ordering::Acquire), va, pages);
+    }
+
+    /// Flushes the page at `va` from the calling CPU only: for a fault on
+    /// an entry another CPU changed to allow more.
+    pub(crate) fn flush_here(va: u64) {
+        Native::flush_local(va, 1);
     }
 
     /// Makes this the calling CPU's address space.

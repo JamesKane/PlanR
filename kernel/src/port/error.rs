@@ -66,3 +66,6 @@ pub(crate) const EBADSPEC: &str = "bad attach specifier";
 pub(crate) const EBADOFFSET: &str = "bad offset in directory read";
 pub(crate) const ENONS: &str = "no name space";
 pub(crate) const ENOMEM: &str = "out of memory";
+pub(crate) const EHUNGUP: &str = "i/o on hungup channel";
+pub(crate) const ESHUTDOWN: &str = "device shut down";
+pub(crate) const ENOATTACH: &str = "mount/attach disallowed";
