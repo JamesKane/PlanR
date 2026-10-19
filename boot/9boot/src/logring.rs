@@ -42,7 +42,7 @@ pub(crate) fn setup(st: &SystemTable<Boot>, root: &File<'_>) -> Option<(LogRing,
     // Keep the previous ring's place if it is still free, so its contents
     // stay put while they are saved.
     let pages = usize::try_from(RING_BYTES / PAGE).ok()?;
-    let reserve = |a| bs.allocate_pages_at(MemoryType::Other(uefi_type::LOG), pages, a).ok();
+    let reserve = |a| bs.allocate_pages_at(crate::mem_type(uefi_type::LOG), pages, a).ok();
     let phys = match previous.and_then(|(a, _)| reserve(a)) {
         Some(a) => a,
         None => logring::place(&free).and_then(reserve).or_else(|| {

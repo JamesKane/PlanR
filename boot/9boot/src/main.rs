@@ -22,7 +22,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{self, Write};
 use core::panic::PanicInfo;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use bootinfo::{BootInfo, Framebuffer, HHDM_BASE, Region, Slice, phys_to_virt, uefi_type};
 use elf::{Elf, Machine};
@@ -142,15 +142,15 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
         Err(Status::NOT_FOUND) => Vec::new(),
         Err(e) => return Err(Error::Uefi("reading plan9.ini", e)),
     };
+    let exit_test = bootdebug(&config);
     let kernel_file = read_file(&root, KERNEL_PATH).ctx("reading kernel")?;
-    // Before anything else allocates much: the previous ring is in free
-    // memory until it is reserved.
     // A reset test: read its marker before `setup` saves over it.
     let reset_test = bootnext::config_is(&config, "test", "reset");
-    let exit_test = bootnext::config_is(&config, "bootdebug", "exittest");
     let pending = if reset_test { bootnext::pending(&root) } else { None };
     // What the old ring's memory holds, read before `setup` can reuse it.
     let before = pending.map(|p| (p.ring, bootnext::survey(st, &p)));
+    // Before anything else allocates much: the previous ring is in free
+    // memory until it is reserved.
     let log_ring = logring::setup(st, &root);
     if reset_test {
         match (log_ring, before) {
@@ -182,14 +182,14 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
 
     // Boot stack and the BootInfo block: [BootInfo][Region; capacity][config].
     let stack = bs
-        .allocate_pages(MemoryType::Other(uefi_type::BOOT), STACK_PAGES)
+        .allocate_pages(mem_type(uefi_type::BOOT), STACK_PAGES)
         .ctx("boot stack")?;
     let capacity = descriptors + MAP_SLACK;
     let regions_off = size_of::<BootInfo>().next_multiple_of(16);
     let config_off = regions_off + capacity * size_of::<Region>();
     let block_pages = (config_off + config.len()).div_ceil(PAGE_BYTES);
     let block = bs
-        .allocate_pages(MemoryType::Other(uefi_type::BOOT), block_pages)
+        .allocate_pages(mem_type(uefi_type::BOOT), block_pages)
         .ctx("boot info")?;
     // SAFETY: freshly allocated and identity-mapped.
     unsafe { core::ptr::write_bytes(block as *mut u8, 0, block_pages * PAGE_BYTES) };
@@ -254,7 +254,7 @@ fn load_kernel<'a>(st: &SystemTable<Boot>, file: &'a [u8]) -> Result<Kernel<'a>,
     let size = hi.next_multiple_of(PAGE) - lo;
     let pages = usize::try_from(size / PAGE).map_err(|_| Error::Kernel("too large"))?;
     let phys = bs
-        .allocate_pages(MemoryType::Other(uefi_type::KERNEL), pages)
+        .allocate_pages(mem_type(uefi_type::KERNEL), pages)
         .ctx("kernel memory")?;
     // SAFETY: freshly allocated, identity-mapped, `pages` pages.
     let mem = unsafe { core::slice::from_raw_parts_mut(phys as *mut u8, pages * PAGE_BYTES) };
@@ -372,6 +372,30 @@ pub(crate) fn read_file(root: &File<'_>, path: &str) -> uefi::Result<Vec<u8>> {
     let mut buf = vec![0u8; len];
     f.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+/// `bootdebug=loaderdata`: allocate everything as plain `EfiLoaderData`
+/// instead of Plan R's own types (`bootinfo::uefi_type`), as Linux's stub
+/// and FreeBSD's loader do. For diagnosing firmware that mishandles
+/// OS-defined memory types; the kernel cannot run so, since it no longer
+/// sees which memory is its own. Pair it with `bootdebug=exittest`.
+static PLAIN_TYPES: AtomicBool = AtomicBool::new(false);
+
+/// Applies `bootdebug=` (see [`PLAIN_TYPES`], [`Prepared::exit_test`]);
+/// returns whether to reset right after exiting boot services.
+fn bootdebug(config: &[u8]) -> bool {
+    let plain = bootnext::config_lists(config, "bootdebug", "loaderdata");
+    PLAIN_TYPES.store(plain, Ordering::Relaxed);
+    bootnext::config_lists(config, "bootdebug", "exittest")
+}
+
+/// The memory type to allocate Plan R type `t` as.
+pub(crate) fn mem_type(t: u32) -> MemoryType {
+    if PLAIN_TYPES.load(Ordering::Relaxed) {
+        MemoryType::LoaderData
+    } else {
+        MemoryType::Other(t)
+    }
 }
 
 /// Paints square `pos` along the top of the framebuffer handed to the

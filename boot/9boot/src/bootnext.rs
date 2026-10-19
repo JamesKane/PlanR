@@ -41,6 +41,20 @@ pub(crate) fn config_is(config: &[u8], key: &str, value: &str) -> bool {
         == Some(value)
 }
 
+/// True if `plan9.ini`'s last `key` setting lists `word` among its
+/// comma-separated values (`bootdebug=exittest,loaderdata`).
+pub(crate) fn config_lists(config: &[u8], key: &str, word: &str) -> bool {
+    let text = core::str::from_utf8(config).unwrap_or("");
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .filter(|(k, _)| k.trim() == key)
+        .map(|(_, v)| v.trim())
+        .next_back()
+        .is_some_and(|v| v.split(',').any(|w| w.trim() == word))
+}
+
 /// What the first boot of a reset test recorded in its marker.
 pub(crate) struct Pending {
     pub(crate) ring: u64,
@@ -100,7 +114,7 @@ fn plant_canaries(st: &SystemTable<Boot>) -> Vec<u64> {
             if planted.len() == MAX || planted.contains(&at) {
                 continue;
             }
-            if bs.allocate_pages_at(MemoryType::Other(uefi_type::LOG), 1, at).is_ok() {
+            if bs.allocate_pages_at(crate::mem_type(uefi_type::LOG), 1, at).is_ok() {
                 // SAFETY: a page just allocated to us, identity-mapped.
                 unsafe { core::ptr::copy_nonoverlapping(canary(at).as_ptr(), at as *mut u8, 64) };
                 crate::handoff::flush_to_memory(at, 64);
