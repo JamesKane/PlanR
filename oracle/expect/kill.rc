@@ -1,0 +1,13 @@
+# kill: prints, for each process of the user with that name, the line
+# that sends it a kill note, and rc runs them; then it is gone.
+rfork e
+sleep 100 &
+p=$apid
+k=`{kill sleep}
+~ $k(1) echo && echo echo
+~ $k(2) 'kill>/proc/'^$p^'/note' && echo note
+~ $k(3) '#' && echo comment
+kill sleep | rc
+wait
+ps | grep -s ' sleep$' || echo gone
+kill nonesuch

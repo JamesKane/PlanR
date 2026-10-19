@@ -3,7 +3,8 @@
 //! the heap ([`heap`]), formatted output ([`print`]), options ([`arg`]),
 //! UTF-8 ([`utf`]), numbers in text ([`num`]), buffered I/O ([`bio`], on [`io`]), directory entries
 //! ([`dir`]), the environment and `$path` ([`env`]), waiting and notes
-//! ([`proc`]), time ([`time`]) and text utilities ([`text`]).
+//! ([`proc`]), time ([`time`]), text utilities ([`text`]) and the kinds
+//! and cases of runes ([`runetype`]).
 //!
 //! The file calls take names as `&CStr` and give errors as [`Error`].
 //!
@@ -18,6 +19,9 @@
 //! `Ok` exits normally; `Err` exits with its text as the status.
 
 #![cfg_attr(not(test), no_std)]
+// The start-up code, heap and panic handler are for Plan R alone
+// (`target_os = "none"`): built for the host, as a library tested there,
+// libr is the rest.
 // An error is its text, as Plan 9's errstr gives it: ERRMAX bytes, kept by
 // value so a failed call needs no allocator.
 #![allow(clippy::result_large_err)]
@@ -34,12 +38,13 @@ pub mod ns;
 pub mod num;
 pub mod print;
 pub mod proc;
+pub mod runetype;
 pub mod text;
 pub mod time;
 pub mod utf;
 
 use core::arch::asm;
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "none"))]
 use core::arch::global_asm;
 use core::ffi::CStr;
 use core::fmt;
@@ -71,7 +76,7 @@ macro_rules! main {
     };
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "none"))]
 unsafe extern "Rust" {
     /// Defined by [`main!`].
     safe fn __libr_main(args: Args) -> Result<(), &'static str>;
@@ -79,7 +84,7 @@ unsafe extern "Rust" {
 
 // The entry point: hand the start-up block (ADR 0002) to `start`, with the
 // stack aligned as a call leaves it and no frame record above.
-#[cfg(all(not(test), target_arch = "x86_64"))]
+#[cfg(all(not(test), target_os = "none", target_arch = "x86_64"))]
 global_asm!(
     ".section .text._start, \"ax\"",
     ".global _start",
@@ -91,7 +96,7 @@ global_asm!(
     start = sym start,
 );
 
-#[cfg(all(not(test), target_arch = "aarch64"))]
+#[cfg(all(not(test), target_os = "none", target_arch = "aarch64"))]
 global_asm!(
     ".section .text._start, \"ax\"",
     ".global _start",
@@ -105,7 +110,7 @@ global_asm!(
 );
 
 /// Runs the program's main function on the arguments at `block`.
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "none"))]
 extern "C" fn start(block: *const u64) -> ! {
     // SAFETY: the kernel put argc and the argument pointers at `block`.
     let args = unsafe {
@@ -322,6 +327,24 @@ pub fn exits(msg: Option<&[u8]>) -> ! {
     // SAFETY: `buf` is NUL-terminated.
     let _ = unsafe { syscall(Sys::Exits, [ptr, 0, 0, 0, 0, 0]) };
     unreachable!("exits returned")
+}
+
+/// Ends the program with a fault, as Plan 9's `abort` does: it reads
+/// address 0.
+pub fn abort() -> ! {
+    loop {
+        // SAFETY: the read faults, and the kernel ends the process; the
+        // asm touches nothing Rust knows of.
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            asm!("mov eax, dword ptr [0]", out("eax") _, options(nostack, readonly));
+        }
+        // SAFETY: as above.
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            asm!("mov x9, xzr", "ldr w9, [x9]", out("x9") _, options(nostack, readonly));
+        }
+    }
 }
 
 /// Swaps the process's error text with the NUL-terminated text in `buf`.
@@ -811,7 +834,7 @@ pub fn fauth(fd: Fd, aname: &CStr) -> Result<Fd, Error> {
     unsafe { call_n(Sys::Fauth, [fd as u64, ptr(aname), 0, 0, 0, 0]) }
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "none"))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     let mut b = Buf::new();

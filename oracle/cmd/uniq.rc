@@ -1,0 +1,47 @@
+# uniq: runs of lines, -u, -d, -c, fields and characters skipped, a
+# file, and a last line without a newline.
+cat >f <<'!'
+a
+a
+b
+c
+c
+c
+a
+d
+!
+uniq f
+uniq -u f
+uniq -d f
+uniq -c f
+cat f | uniq
+cat >g <<'!'
+1 x
+2 x
+3 y
+4 y
+5 z
+!
+uniq -1 g
+uniq -c -1 g
+uniq +1 g
+uniq -1 +1 g
+cat >h <<'!'
+abc
+abd
+xbc
+!
+uniq +1 h
+uniq +2 h
+echo -n 'a
+a
+b' | uniq
+uniq </dev/null
+uniq -s f
+echo 'ab
+abc
+abd
+b' | uniq -s
+echo 'a	x
+b	x' | uniq -1
+uniq - f >[2]/dev/null

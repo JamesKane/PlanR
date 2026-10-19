@@ -1,0 +1,11 @@
+grep: empty pattern
+grep: (a: syntax error
+grep: a): syntax error
+grep: |a: empty pattern
+grep: [a: empty pattern
+grep: a[b: syntax error
+grep: x: empty pattern
+grep: pats:3: syntax error
+grep: internal error: length
+usage: grep [-bchiLlnsv] [-e pattern] [-f patternfile] [file ...]
+usage: grep [-bchiLlnsv] [-e pattern] [-f patternfile] [file ...]

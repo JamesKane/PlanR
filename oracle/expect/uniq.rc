@@ -1,0 +1,11 @@
+# uniq: Plan 9's errors, and lines Brdline cannot take: one too long for
+# uniq's buffer, and one too long for Brdline's, which ends the input.
+echo a >f
+uniq nonesuch || echo failed
+uniq f f || echo failed
+x=`{seq 1 1850}
+echo $x >long
+uniq long || echo failed
+x=`{seq 1 2000}
+{echo a; echo $x; echo b} >longer
+uniq longer

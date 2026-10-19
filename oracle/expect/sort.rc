@@ -1,0 +1,20 @@
+# sort: -f folds runes beyond Latin-1 by Plan 9's rune tables (plan9port
+# maps Latin-1 alone): ā and Ā are a, so after {, and of equal keys in
+# the order the sort leaves them; and Plan 9's errors.
+echo '{
+ā' | sort -f
+echo 'b
+ā
+a
+Ā' | sort -f
+echo a >f
+sort -x f || echo failed
+sort -t'
+' f || echo failed
+sort +x f || echo failed
+sort -k0 f || echo failed
+sort -k1.0 f || echo failed
+sort -k1x f || echo failed
+sort -c f f || echo failed
+sort -rw f || echo failed
+sort nonesuch >[2]/dev/null || echo failed

@@ -16,10 +16,11 @@ reference:
   what depends on Plan 9's kernel or ramfs (`ls -l`, `stat`'s names, a
   file's times), Plan 9's error strings, and each case where
   plan9port's code differs from Plan 9's (`print`'s `%g`, `cmp`'s and
-  `du`'s output, `touch -t`, …). The reference is written down beside
-  each script: `NAME.out` and `NAME.err` (empty if missing), and
-  `NAME.fail` if it should fail. Check each line against Plan 9's
-  source before writing it down.
+  `du`'s output, `touch -t`, grep's and sed's messages, sed's labels
+  before `;`, `sort -f` beyond Latin-1, …). The reference is written
+  down beside each script: `NAME.out` and `NAME.err` (empty if
+  missing), and `NAME.fail` if it should fail. Check each line against
+  Plan 9's source before writing it down.
 
 On the host a program's status is a Unix exit code, so a status string
 is compared by echoing it. Both sides' results are kept in

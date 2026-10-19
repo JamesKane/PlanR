@@ -1,0 +1,97 @@
+# sort: the order of bytes, -r, -u, -n and -g, -f, -d, -i, -M, -b,
+# fields by -k and by +pos -pos, -t, -c, -o, several files, and lines
+# without a newline at the end.
+cat >f <<'!'
+banana
+apple
+Cherry
+cherry
+apple
+date
+10 x
+9 y
+-3 z
+ 2 w
+!
+sort f
+sort -r f
+sort -u f
+sort -n f
+sort -nr f
+sort -f f
+sort -fu f
+sort -d f
+sort -k 2 f
+sort -k2,2 -n f
+cat >n <<'!'
+1.5
+1e3
+-0
+-2.5
+007
+3
+0.25
+1000
+!
+sort -n n
+sort -g n
+sort -gr n
+cat >m <<'!'
+Mar 3
+jan 1
+DEC 9
+feb 2
+foo 0
+!
+sort -M m
+sort -Mr m
+cat >t <<'!'
+x:3:c
+y:1:a
+z:2:b
+w:2:a
+!
+sort -t: -k2 t
+sort -t: -k2,2 -k3 t
+sort -t: +1 -2 t
+sort -t: +2 t
+sort -t: -k3r t
+cat >b <<'!'
+  b
+a
+ c
+!
+sort b
+sort -b b
+sort -k1b b
+echo -n 'z
+y' >nn
+sort nn f >[2]/dev/null
+sort -c f >[2]/dev/null || echo not sorted
+sort f | sort -c && echo sorted
+sort -o out f
+cat out
+sort f f | sort -u
+echo 'é
+e
+f
+E' | sort
+seq 20 | sort
+seq 20 | sort -n
+seq 20 | sort -nr | sort -n -c && echo wrong || echo unsorted
+echo 'a-b
+a b
+ab' | sort -d
+sort -rw f >[2]/dev/null || echo failed
+sort -t: -k2n t
+sort -k1.2 f
+sort -k1.2,1.3 f
+sort +0.1 -0.3 f
+sort -nu n
+echo '3
+1
+2' | sort -l 1
+seq 30 | sort -l 4 -r
+echo 'b a
+a b
+a a' | sort -k2 -u

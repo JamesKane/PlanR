@@ -1,0 +1,28 @@
+# sed: Plan 9's errors, and what plan9port's older sed does otherwise:
+# a label or a branch to the end before a ';'.
+seq 3 >f
+sed && echo none
+sed -n || echo failed
+sed -e || echo failed
+sed 'p x' f || echo failed
+sed 'a text' f || echo failed
+sed k f || echo failed
+sed '/1/{p' f || echo failed
+sed '}' f || echo failed
+sed 'b nolabel' f || echo failed
+sed ':a;:a' f || echo failed
+sed 0p f || echo failed
+sed 's/a/b' f || echo failed
+sed 's/(/x/' f || echo failed
+sed 's//x/' f || echo failed
+sed //p f || echo failed
+sed '1,2=' f || echo failed
+sed 1:a f || echo failed
+sed 'y/abc/xy/' f || echo failed
+sed 's/1/\1/' f || echo failed
+sed -f nonesuch || echo failed
+sed p nonesuch || echo failed
+sed -x 1p f
+sed -n '/2/{p;b;};p' f
+sed -n ':top;s/^1/x/;t top;p' f
+sed -n '$!{h;b;};G;p' f

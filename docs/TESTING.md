@@ -47,9 +47,9 @@ programs and libraries are ported from it, and checked against it:
   built the same way and compared with libr's ports on many thousands of
   random inputs.
 - **plan9port** on the host: its commands stand in for Plan 9's in
-  `oracle/cmd` where their code is the same; it is the future reference
-  for `sed`, `awk`, `grep`, `sort`, `mk`, `tr`, `diff`, … as far as it
-  agrees with Plan 9's source. Known, intentional differences are listed
+  `oracle/cmd` where their code is the same: so far for the file and
+  text commands (`grep`, `sed`, `sort`, `tr`, `uniq`, …), and later for
+  `awk`, `diff` and `mk`, as far as it agrees with Plan 9's source. Known, intentional differences are listed
   in an allow-file. What the host cannot answer (the commands plan9port
   lacks, Plan 9's kernel, ramfs and error strings, and every case where
   plan9port's code differs from Plan 9's) is in `oracle/expect`, with

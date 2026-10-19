@@ -1,0 +1,8 @@
+sort: unknown option: -x
+aw come on, rob
+sort: unknown option: +x
+sort: field offset must be positive
+sort: character offset must be positive
+sort: unknown option: field.x
+sort: -c can have at most one input file
+sort: illegal combination of flags: 300

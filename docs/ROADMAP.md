@@ -332,7 +332,8 @@ on Plan R and on host plan9port (see [TESTING.md](TESTING.md)).
    `/lib/namespace` (and `auth/newns`), `root/` in the archive; the real
    boot (`/boot/boot`) and `init` (name space, `termrc`, the profile's
    `rc -i`); the P2 test programs run by `/sys/test/run` with `test=1`.
-10. Regexp (`libregexp` semantics), `grep sed tr sort uniq`.
+10. ✅ Regexp (`lib/regexp`, from `libregexp`), `grep sed tr sort uniq`,
+    and `kill` tested; libr's rune tables.
 11. `awk` and `diff`.
 12. `mk`.
 13. The exit test: a scripted interactive `rc` session over serial and

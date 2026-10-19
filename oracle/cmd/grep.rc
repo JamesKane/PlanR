@@ -1,0 +1,60 @@
+# grep: characters, classes, anchors, closures and alternatives, a
+# literal pattern, patterns of several lines, -e and -f, the flags,
+# several files, a last line without a newline, and the statuses.
+cat >f <<'!'
+apple
+banana
+Cherry
+plum pie
+date 2024
+a.c
+abc
+!
+grep an f
+grep '^p' f
+grep 'e$' f
+grep 'a.a' f
+grep '(ch|pl)u' f
+grep 'p+l' f
+grep 'rr?y' f
+grep 'x*' f
+grep '[0-9][0-9]*' f
+grep '[^a-z]' f
+grep '[A-Z]' f
+grep 'a\.c' f
+grep '*a.c' f
+grep 'an
+ie' f
+grep -e an -e um f
+echo 'Cherry
+^d' >pats
+grep -f pats f
+grep -v a f
+grep -i cherry f
+grep -i 'CH[E]' f
+grep -n p f
+grep -c a f
+grep -s an f && echo found
+grep -s nope f || echo not found
+grep an f f
+grep -h an f f
+grep -l an f pats
+grep -L an f pats
+grep -c an f pats
+grep -b an f
+echo -n 'one
+two' >nn
+grep o nn
+grep o nn f
+grep x nn || echo no matches
+cat f | grep -n an
+echo 'café
+naïve
+日本語
+x' >u
+grep 'é' u
+grep '^.$' u
+grep '[à-ï]' u
+grep '^[^a-z]+$' u
+grep '本' u
+grep nope f || echo failed

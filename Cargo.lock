@@ -31,6 +31,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "r",
+ "regexp",
 ]
 
 [[package]]
@@ -44,6 +45,13 @@ version = "0.1.0"
 [[package]]
 name = "frames"
 version = "0.1.0"
+
+[[package]]
+name = "grep"
+version = "0.1.0"
+dependencies = [
+ "r",
+]
 
 [[package]]
 name = "heap"
@@ -117,6 +125,13 @@ dependencies = [
 
 [[package]]
 name = "rc"
+version = "0.1.0"
+dependencies = [
+ "r",
+]
+
+[[package]]
+name = "regexp"
 version = "0.1.0"
 dependencies = [
  "r",

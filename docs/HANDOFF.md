@@ -1,10 +1,10 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19: P3 slices 1 to 9 (console input, libr base, libr system
+2026-10-19: P3 slices 1 to 10 (console input, libr base, libr system
 layer, the 9P server framework and `ramfs`, `rc` parts 1 and 2, the
 oracle harness, the file commands, the name-space commands and the real
-boot and init) are done.
+boot and init, regular expressions and the text commands) are done.
 
 ## State
 
@@ -819,8 +819,8 @@ boot and init) are done.
        `unmount`, `ns` (one entry a read; names with blanks, quotes, `\`,
        `#` or `$` quoted its own way; `xlatemnt`), `ps` (`-apr`, the
        layout of `ps.c`), and `auth/newns` (`$cputype/bin/auth/newns`).
-       `kill` is Plan 9's rc script, in `/rc/bin`; it needs `sed` (slice
-       10), so it is not tested yet.
+       `kill` is Plan 9's rc script, in `/rc/bin`; it needs `sed`, so it
+       is tested from slice 10 (`oracle/expect/kill`).
      - **`root/`** is the archive's tree beside the programs (a file
        starting `#!` gets mode 755): `/lib/namespace` (Plan 9's, for the
        devices Plan R has: `#c #d #e #p #s #P`, `/$cputype/bin` and
@@ -875,6 +875,64 @@ boot and init) are done.
        `namelenerror`'s `"%#q %s"`); Plan R's says only `file does not
        exist`, so `oracle/expect/errors.err` holds Plan R's text, not
        Plan 9's. The kernel's errors are for the kernel audit.
+  10. Regular expressions and the text commands, each ported from
+      `../plan9/sys/src`:
+     - **`lib/regexp`** (crate `regexp`, from `libregexp`): `regcomp`,
+       `regcomplit`, `regcompnl` (the operator-precedence compiler and
+       its `NOP` pass), `regexec` on UTF-8 and `rregexec` on runes (the
+       two-list machine, leftmost longest, lists of 10 threads then 250,
+       or 50 for runes, and -1 if those run out, as C's; rregexec's own
+       start rules), `regsub` and `rregsub`. Plan 9's limits stand (20
+       entries a stack, 16 classes, 31 ranges a class, 31
+       subexpressions), and its quirks (`[-a]` and `[a-]` are malformed;
+       a negated class never matches newline). Errors are returned as
+       text; a program prints them as it likes (sed's `r.e.-using`).
+       A thread keeps only the subexpressions asked for; C copies the
+       rest only then too, so nothing seen changes.
+     - **libr `runetype`**: Plan 9's tables (`runetypebody-6.2.0.h`,
+       Unicode 6.2, and `runebase.c`), converted as data, with its
+       `_runebsearch`: `is{alpha,digit,upper,lower,title,base}_rune`,
+       `to{upper,lower,title,base}_rune`.
+     - **`grep`** (`cmd/grep`, a library and `main.rs`, as Plan 9's
+       directory): `grep.y`'s grammar by recursive descent, the graph of
+       byte classes (UTF-8 classes split by `rclass`, long alternations
+       made tables by `addcase`), the DFA made as the text needs it in
+       a tree of states, and `main.c`'s search with its 16 KiB halves.
+       yacc reduces `prog: /* empty */` by default at the start, so a
+       pattern that cannot start one (`|a`, `[a`) is an "empty
+       pattern", as Plan 9's is; other errors are "syntax error", after
+       the pattern or `file:line`. Classes reaching 4-byte runes give
+       Plan 9's "internal error: length". `gen` is 32 bits (C's
+       `ushort` wraps after 65536 states).
+     - **`sed`, `tr`, `sort`, `uniq`** (`cmd/cmds`): sed's compiler and
+       executor whole (labels and branches chained as C does, `{}` as a
+       negated branch, `a i c` text after `\` and a newline, `c` on a
+       range printing at its start, `D` restarting without reading, `N`
+       at the end deleting, `w` files appended to, an empty expression
+       the last compiled, Plan 9's limits and messages, `ARGBEGIN`'s
+       "missing pattern" for `-e` last); output is flushed at every exit,
+       as bio's `atexit` does. sed's `P` writes runes whole (C's `Bputc`
+       cuts them to a byte). tr's `canon`, escapes (`\x` and four hex
+       digits, `\` and three octal), `readrune`, complement and squeeze.
+       sort's fields (`-k`, `+pos -pos`, `-t`), key encodings (`dokey_`,
+       `_r`, `_gn` numbers, `_m` months, `_dfi` with `makemapd` and the
+       rune tables beyond Latin-1), the radix and bubble sorts (so equal
+       keys come out in Plan 9's order), temporary files merged ten at a
+       time, its note handler. uniq's own argument loop, `Brdline`'s
+       limits (a line over 8 KiB ends the input; over 7998 bytes is
+       "line too long").
+     - **libr:** `abort` (Plan 9's: a fault reading address 0). The
+       start-up code, heap and panic handler are now for Plan R alone
+       (`target_os = "none"`), so a library that uses libr (regexp,
+       grep's) can be tested on the host; the host's clippy checks the
+       libraries and tests (`--lib --tests`), and the programs are
+       checked for Plan R.
+     - **Oracle:** `oracle/cmd` gains `grep sed tr sort uniq`, all as
+       plan9port's; `oracle/expect` gains their errors and what
+       plan9port's code does otherwise (grep's messages and empty
+       patterns, sed's labels and branches before `;`, `sort -f` beyond
+       Latin-1, tr's and uniq's messages, uniq's long lines), and
+       `kill` (88 scripts in all).
 
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
@@ -885,10 +943,10 @@ boot and init) are done.
 
 ## Next steps
 
-P3 slice 10: regexp (`libregexp` semantics), `grep sed tr sort uniq`,
-ported from `../plan9/sys/src`; with `sed`, `/rc/bin/kill` can be
-tested (its script is Plan 9's). Before or with it, the kernel's audit
-against `../plan9/sys/src/9/port`: walk errors that name the file
+P3 slice 11: `awk` and `diff`, ported from `../plan9/sys/src/cmd`
+(`awk`: its `awkgram.y` grammar, `run.c` interpreter and `re.c`;
+`diff`). Before or with it, the kernel's audit against
+`../plan9/sys/src/9/port`: walk errors that name the file
 (`namelenerror`), then the rest of the P2 calls and devices, as the
 slice-8 audit did for rc, libr and ramfs. The P3 slices were agreed on
 2026-10-19 (`docs/ROADMAP.md`; `srv` and `9fs` moved to P5).

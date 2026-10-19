@@ -1,0 +1,7 @@
+usage: tr [-cds] [string1 [string2]]
+usage: tr [-cds] [string1 [string2]]
+usage: tr [-cds] [string1 [string2]]
+usage: tr [-cds] [string1 [string2]]
+tr: invalid range specification
+tr: ambiguous translation
+tr: character > 0377

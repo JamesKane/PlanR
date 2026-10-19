@@ -188,6 +188,7 @@ struct Built {
 /// it. Each goes in `/$cputype/bin` ([`archive_path`]).
 const USER_PROGRAMS: &[(&str, &[&str])] = &[
     ("boot", &["boot"]),
+    ("grep", &["grep"]),
     ("init", &["init"]),
     ("ramfs", &["ramfs"]),
     ("rc", &["rc"]),
@@ -213,13 +214,17 @@ const USER_PROGRAMS: &[(&str, &[&str])] = &[
             "ps",
             "pwd",
             "rm",
+            "sed",
             "seq",
             "sleep",
+            "sort",
             "strings",
             "tail",
             "tee",
             "test",
             "touch",
+            "tr",
+            "uniq",
             "unmount",
             "wc",
             "xd",
@@ -626,8 +631,8 @@ fn write_images(built: &[Built], name: &str, config: &str) -> Result<Vec<PathBuf
 
 /// Crates with host unit tests (everything except the bare-metal binaries).
 const HOST_TESTED: &[&str] = &[
-    "ninep", "abi", "acpi", "bootarc", "bootinfo", "elf", "fbtext", "frames", "heap", "ksyms", "logring", "r", "rc",
-    "uefi", "xtask",
+    "ninep", "abi", "acpi", "bootarc", "bootinfo", "elf", "fbtext", "frames", "grep", "heap", "ksyms", "logring", "r",
+    "rc", "regexp", "uefi", "xtask",
 ];
 
 fn with_packages(c: &mut Command, packages: &[&str]) {
@@ -687,11 +692,18 @@ fn ci(opts: &Opts) -> Result<(), String> {
     fmt.args(["fmt", "--all", "--check"]);
     sh(fmt)?;
 
+    // On the host, the libraries and their tests: a package's programs
+    // need libr's start-up code and panic handler, which are Plan R's
+    // alone, and are checked for Plan R below. xtask is the host's.
     let mut host = cargo();
-    host.args(["clippy", "-q", "--all-targets"]);
-    with_packages(&mut host, HOST_TESTED);
+    host.args(["clippy", "-q", "--lib", "--tests"]);
+    let libs: Vec<&str> = HOST_TESTED.iter().copied().filter(|&p| p != "xtask").collect();
+    with_packages(&mut host, &libs);
     host.args(["--", "-D", "warnings"]);
     sh(host)?;
+    let mut xtask = cargo();
+    xtask.args(["clippy", "-q", "--all-targets", "-p", "xtask", "--", "-D", "warnings"]);
+    sh(xtask)?;
     for arch in &opts.arches {
         let user = USER_PROGRAMS.iter().map(|&(p, _)| (p, arch.kernel_target()));
         for (package, target) in [("nineboot", arch.uefi_target()), ("kernel", arch.kernel_target())]

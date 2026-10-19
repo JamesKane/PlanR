@@ -1,0 +1,96 @@
+# sed: substitutions (global, numbered, with & and \1, a newline in
+# one), addresses (lines, $, expressions, ranges, negated), the
+# commands, -n, -e and -f, several files, and holding.
+cat >f <<'!'
+one
+two
+three
+four
+five
+six
+!
+sed 's/o/0/' f
+sed 's/o/0/g' f
+sed -g 's/e/E/' f
+sed 's/\(t\)/[&]/' f
+sed 's/(.)(.)/\2\1/' f
+sed 's/^/> /' f
+sed 's/$/;/' f
+sed 's/x*/-/g' f
+sed 's/e/\n/' f
+sed -n '2p' f
+sed -n '$p' f
+sed -n '/^t/p' f
+sed -n '2,4p' f
+sed -n '/two/,/four/p' f
+sed -n '4,$p' f
+sed '2,5d' f
+sed '/e/!d' f
+sed '3q' f
+sed -n '/f/=' f
+sed 'y/oe/OE/' f
+sed '2i\
+inserted' f
+sed '2a\
+appended\
+twice' f
+sed '2,3c\
+changed' f
+sed -n 'l' f
+sed 'N;s/\n/+/' f
+sed '$!N;P;D' f
+sed -n 'h;n;G;p' f
+sed -n 'H;${x;s/\n/,/g;p;}' f
+sed -n '/two/{p;p;}' f
+sed ':a
+s/^(.?.?.?.?)$/ &/
+ta' f
+sed -e 's/one/1/' -e 's/two/2/' f
+echo 's/three/3/
+s/four/4/' >script
+sed -f script f
+sed 's/o/0/w out' f >/dev/null
+cat out
+echo extra >r
+sed '3r r' f
+sed 1d f f
+sed -n '$=' f f
+echo -n 'no
+newline' | sed 's/$/!/'
+echo 'a b c' | sed 's/ /_/2' >[2]/dev/null || echo failed
+echo 'tab	x' | sed -n l
+echo café | sed 's/é/e/'
+echo café | sed 's/./[&]/g'
+echo 'hello world' | sed 's/\(hello\) \(world\)/\2 \1/'
+sed -n '/one/,2p' f
+sed -n '3,1p' f
+sed 'p' /dev/null
+sed s/one/1/ <f
+sed 'c\
+X' f
+seq 5 | sed N
+seq 3 | sed -n '$!{h;d;};x;G;p'
+echo 'a.b' | sed -n l
+echo café | sed -n l
+echo 'trailing ' | sed -n l
+sed -n '/two/,+1p' f >[2]/dev/null || echo failed
+sed '2!d' f
+sed -n '2,/o/p' f
+sed -n '/x/,$p' f
+sed 's/[aeiou]/<&>/g' f
+sed 's/./(&)/3' f >[2]/dev/null || echo failed
+sed -n 's/o/O/p' f
+sed -n 's/o/O/gp' f
+sed 's/e/E/w out2' f >/dev/null
+sed 's/x/E/w out2' f >/dev/null
+cat out2
+echo old >ap
+sed -n 'w ap' f
+cat ap
+sed 'y/abcdefghijklmnopqrstuvwxyz/ABCDEFGHIJKLMNOPQRSTUVWXYZ/' f
+sed '=' f
+echo x | sed -x p >[2]/dev/null
+seq 3 | sed -n 'x;p'
+seq 4 | sed -n '2{p;q;}'
+seq 4 | sed 3q
+seq 4 | sed -n 1~2p >[2]/dev/null || echo failed

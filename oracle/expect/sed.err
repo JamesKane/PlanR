@@ -1,0 +1,22 @@
+sed: missing pattern
+sed: missing pattern
+sed:  x command garbled: p x
+sed: a command garbled: a text
+sed: Unrecognized command: k
+sed: Too many {'s
+sed: Too many }'s
+sed: Undefined label: nolabel
+sed: Duplicate labels: :a;:a
+sed: line number 0 is illegal
+sed: s command garbled: s/a/b
+sed: r.e.-using command garbled: s/(/x/
+sed: First RE may not be null.
+sed: First RE may not be null
+sed: Only one address allowed: 1,2=
+sed: No addresses allowed: 1:a
+sed: y command garbled: y/abc/xy/
+sed: Invalid back reference \1
+sed: Cannot open pattern-file: nonesuch
+
+sed: Can't open nonesuch
+sed: Unknown flag: x

@@ -1,0 +1,16 @@
+[package]
+name = "regexp"
+description = "Regular expressions, as Plan 9's libregexp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+r = { path = "../r" }
+
+[lints]
+workspace = true

@@ -1,0 +1,28 @@
+# tr: translation, ranges, the last of a short string repeated,
+# deletion, squeezing, complements, escapes, and runes.
+echo hello world | tr a-z A-Z
+echo hello world | tr lo xy
+echo hello world | tr a-z x
+echo hello world | tr -d lo
+echo heeelllo  wooorld | tr -s a-z a-z
+echo hello world | tr -s lo xy
+echo hello world | tr -c a-z _
+echo hello world | tr -cs a-z _
+echo hello world | tr -d -c a-z
+echo 'a	b' | tr '\011' _
+echo abc | tr '\x61' z
+echo abc | tr '\x0062' z
+echo 'a-b' | tr -d -
+echo abc | tr 'a\-c' xyz
+echo café | tr é e
+echo αβγ | tr α-γ abc
+echo abc | tr abc αβγ
+echo abba | tr -s ab xy
+echo 'x  y   z' | tr -s ' ' ' '
+echo hello | tr -ds l lo
+echo abc | tr -c a x
+echo hello | tr -d '\0154'
+echo ab | tr ab '\x41\x42'
+echo 'a
+b' | tr '\012' ' '
+echo abc | tr a-c '\x41-\x43'

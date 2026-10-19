@@ -1,0 +1,23 @@
+[package]
+name = "grep"
+description = "grep, as Plan 9's /sys/src/cmd/grep"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autobins = false
+
+[lib]
+bench = false
+
+[[bin]]
+name = "grep"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+r = { path = "../../lib/r" }
+
+[lints]
+workspace = true

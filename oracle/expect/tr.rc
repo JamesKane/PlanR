@@ -1,0 +1,9 @@
+# tr: Plan 9's usage and errors (plan9port's say "bad option" and "arg
+# count").
+tr || echo failed
+tr -x a b || echo failed
+tr -d || echo failed
+tr a-z || echo failed
+echo a | tr z-a x || echo failed
+echo a | tr aa xy || echo failed
+echo a | tr '\777' x || echo failed

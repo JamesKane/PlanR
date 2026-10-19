@@ -205,14 +205,14 @@ impl<B: Break> Arena<B> {
 
 /// The top of the program's heap so far: the break, as the heap has
 /// moved it (0 before its first block).
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "none"))]
 #[must_use]
 pub fn top() -> usize {
     global::top()
 }
 
 /// The program's heap.
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "none"))]
 mod global {
     use core::alloc::{GlobalAlloc, Layout};
     use core::cell::UnsafeCell;

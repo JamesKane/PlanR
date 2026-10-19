@@ -1,0 +1,19 @@
+# grep: Plan 9's errors (plan9port's do not name the pattern, and its
+# grammar has no empty pattern, which yacc reduces to at the start of
+# one that cannot start), an empty pattern, a pattern file's line, a
+# class Plan 9 cannot split, and plan9port's extra flags.
+echo x >f
+grep '' f || echo failed
+grep '(a' f || echo failed
+grep 'a)' f || echo failed
+grep '|a' f || echo failed
+grep '[a' f || echo failed
+grep 'a[b' f || echo failed
+grep -e x -e '' f || echo failed
+echo 'a
+(b' >pats
+grep -f pats f || echo failed
+grep -f nonesuch f >[2]/dev/null || echo failed
+grep '[^😀]' f || echo failed
+grep -q x f || echo failed
+grep || echo failed

@@ -145,9 +145,34 @@ path = "src/bin/xd.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "sed"
+path = "src/bin/sed.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "sort"
+path = "src/bin/sort.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "tr"
+path = "src/bin/tr.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "uniq"
+path = "src/bin/uniq.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { path = "../../lib/abi" }
 r = { path = "../../lib/r" }
+regexp = { path = "../../lib/regexp" }
 
 [lints]
 workspace = true
