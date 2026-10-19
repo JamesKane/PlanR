@@ -17,6 +17,7 @@ acpi = { path = "../lib/acpi" }
 bootinfo = { path = "../lib/bootinfo" }
 fbtext = { path = "../lib/fbtext" }
 frames = { path = "../lib/frames" }
+heap = { path = "../lib/heap" }
 ksyms = { path = "../lib/ksyms" }
 logring = { path = "../lib/logring" }
 

@@ -49,6 +49,7 @@ PlanR/
 │  ├─ uefi/             UEFI type definitions (loader only)
 │  ├─ elf/              ELF64 parser/loader
 │  ├─ frames/           physical frame allocator (buddy)
+│  ├─ heap/             kernel heap size classes (slabs)
 │  ├─ sec/              crypto primitives, TLS 1.3, PAKE (libsec successor)
 │  ├─ net/              IP/TCP/UDP stack core
 │  ├─ draw/             memdraw/memlayer, draw protocol

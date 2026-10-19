@@ -6,6 +6,7 @@ pub(crate) mod config;
 pub(crate) mod console;
 pub(crate) mod cpu;
 pub(crate) mod early;
+pub(crate) mod heap;
 pub(crate) mod intr;
 pub(crate) mod ktest;
 pub(crate) mod lock;

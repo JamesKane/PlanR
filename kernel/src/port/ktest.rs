@@ -5,7 +5,7 @@
 //! `cargo xtask test` reads the console.
 
 use crate::arch;
-use crate::port::{clock, console, cpu, intr, mm, trap};
+use crate::port::{clock, console, cpu, heap, intr, mm, trap};
 use crate::println;
 
 /// Why a test did not pass.
@@ -46,6 +46,9 @@ const TESTS: &[(&str, TestFn)] = &[
     ),
     ("mm: frames free and align", mm::ktests::frames_free_and_align),
     ("mm: kernel stack has a guard page", mm::ktests::stack_has_guard),
+    ("heap: collections allocate", heap::ktests::collections_work),
+    ("heap: empty slabs return", heap::ktests::slabs_return),
+    ("heap: large aligned block", heap::ktests::large_aligned),
     ("console: text drawn on the screen", console::ktests::screen_shows_text),
     (
         "console: output kept in the log ring",

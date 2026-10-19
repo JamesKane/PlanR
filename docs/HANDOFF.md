@@ -11,6 +11,11 @@ Where work stands, for picking it up in a new session. Last updated
      free lists threaded through free pages, one state byte per page in
      each arena's first pages). `mm::alloc_frame`, `alloc_frames(order)`
      (zeroed) and `free_frames`; a bad free panics.
+  2. Kernel heap: `lib/heap` size classes (16 B to 2 KiB, slabs of at
+     least 8 objects, each slab a buddy block found by masking an object's
+     address) behind `port/heap.rs`'s `#[global_allocator]`, one lock per
+     class. Larger requests are whole frame blocks. `alloc` is usable in
+     the kernel after `mm::init`.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -20,11 +25,12 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-Slice 2, the kernel heap: a `#[global_allocator]` of ours on top of
-`mm::alloc_frames` (size classes for small objects, whole blocks for
-large ones), then `extern crate alloc` in the kernel. After that, slice 3
-(`trait Mmu`), and so on down the ROADMAP list. Each slice gets its own
-commit after `cargo xtask ci`, and this file is updated with it.
+Slice 3, `trait Mmu`: the kernel's own page tables on both arches
+(replacing 9boot's), address spaces for user mode, and TLB shootdown over
+IPIs. Once the kernel no longer runs on 9boot's tables, the `Boot`
+regions can go to the frame allocator. Then slice 4 (threads), and so on
+down the ROADMAP list. Each slice gets its own commit after
+`cargo xtask ci`, and this file is updated with it.
 
 **Reference boards** (`docs/HARDWARE.md`, "Booting Plan R on a board"):
 no runs until P2's exit test. P1 results, for reference:
@@ -82,6 +88,9 @@ no runs until P2's exit test. P1 results, for reference:
 - **Panic backtraces stop after one frame:** the prebuilt `core` has no
   frame pointers, so the chain breaks in the panic machinery. Trap
   backtraces are unaffected.
+- **Heap:** every block it uses is zeroed by `mm::alloc_frames`, so
+  large allocations pay for a memset they may not need. There are no
+  per-CPU caches yet; add them if the class locks show up in profiles.
 - **Frames:** usable RAM below 1 MiB (`mm::FLOOR`) is never handed out;
   `mm::low_pages` finds the amd64 AP trampoline there. Frames may now come
   from anywhere, including above 4 GiB. The `Boot` and `AcpiReclaimable`

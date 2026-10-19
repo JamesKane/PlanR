@@ -250,7 +250,9 @@ plus a toy 9P server). All of them pass on both architectures.
 **Slices** (agreed 2026-10-18; one commit each):
 1. ✅ Frame allocator: `lib/frames`, a binary buddy allocator over the boot
    map's free RAM, host-tested; `mm::alloc_frames`/`free_frames`.
-2. Kernel heap: our `#[global_allocator]`, so `alloc` works.
+2. ✅ Kernel heap: `lib/heap` (power-of-two size classes, 16 B to
+   2 KiB, in slabs; larger requests take whole blocks) behind our
+   `#[global_allocator]`.
 3. `trait Mmu`: the kernel's own page tables and address spaces on both
    arches, with TLB shootdown.
 4. Threads: `Proc`, kernel stacks, context switch.
