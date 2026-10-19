@@ -14,7 +14,7 @@ pub(crate) use trap::{CpuLocal, breakpoint, copy_in, copy_out, frame_pointer, pr
 
 use core::arch::{asm, global_asm};
 
-use acpi::{AddressSpace, UartKind};
+use acpi::{AddressSpace, Polarity, SpcrIrq, Trigger, UartKind};
 
 use super::ExitCode;
 use crate::drivers::hpet::Hpet;
@@ -316,6 +316,27 @@ pub(crate) fn default_console() -> (Uart, ConsoleSource) {
         Uart::Ns16550(Uart16550::io(0x3f8)),
         ConsoleSource::Default(UartKind::Ns16550),
     )
+}
+
+/// COM1's interrupt, ISA IRQ 4, for the default console.
+pub(crate) const DEFAULT_CONSOLE_IRQ: Option<SpcrIrq> = Some(SpcrIrq::Pic(4));
+
+/// Installs `handler` for a device interrupt and routes it, unmasked, to
+/// this CPU; returns its vector. A GSI below 16 is an ISA line (high,
+/// edge); any other is shared (low, level), as PCI's are.
+pub(crate) fn enable_irq(irq: SpcrIrq, name: &'static str, handler: intr::Handler) -> Result<usize, &'static str> {
+    let (gsi, polarity, trigger) = match irq {
+        SpcrIrq::Pic(n) => ioapic::isa(n).ok_or("no such ISA IRQ")?,
+        SpcrIrq::Gsi(g) if g < 16 => (g, Polarity::High, Trigger::Edge),
+        SpcrIrq::Gsi(g) => (g, Polarity::Low, Trigger::Level),
+    };
+    if !ioapic::exists(gsi) {
+        return Err("no I/O APIC has that GSI");
+    }
+    let vector = usize::from(ioapic::vector(gsi).ok_or("GSI beyond the vector range")?);
+    intr::register(vector, name, handler).map_err(|_| "vector already in use")?;
+    ioapic::route(gsi, polarity, trigger, apic::id())?;
+    Ok(vector)
 }
 
 pub(crate) fn halt() -> ! {

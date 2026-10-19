@@ -4,6 +4,8 @@
 //! copy of its name space, environment and descriptors, and checks how
 //! each one exits. It prints a line for each program (only failures with
 //! `-q`) and a summary; it exits normally only if every program passed.
+//! With `-i` it runs instead the programs that need someone (the test
+//! harness) typing at the console.
 
 #![no_std]
 #![no_main]
@@ -14,6 +16,8 @@ use core::fmt::Write as _;
 use r::{Access, BindFlags, OpenFlags, OpenMode, RforkFlags as F};
 
 r::main!(run);
+
+const _: () = assert!(INTERACTIVE.len() <= PROGRAMS.len());
 
 const fn mode(access: Access) -> OpenMode {
     OpenMode {
@@ -58,6 +62,9 @@ const PROGRAMS: &[(&CStr, &[&CStr], Want)] = &[
     (c"/boot/t9p", &[c"t9p"], Want::Normal),
 ];
 
+/// The programs `-i` runs.
+const INTERACTIVE: &[(&CStr, &[&CStr], Want)] = &[(c"/boot/tcons", &[c"tcons"], Want::Normal)];
+
 /// The binds, in order: what, where, how.
 const NAMESPACE: &[(&CStr, &CStr, BindFlags)] = &[
     (c"#c", c"/dev", BindFlags::empty()),
@@ -76,23 +83,31 @@ fn say(text: &[u8]) {
 
 fn run(args: r::Args) -> Result<(), &'static str> {
     let quiet = args.get(1) == Some(b"-q");
+    let programs = if args.get(1) == Some(b"-i") {
+        INTERACTIVE
+    } else {
+        PROGRAMS
+    };
     namespace()?;
     let mut pids = [0u64; PROGRAMS.len()];
-    for (i, &(path, argv, _)) in PROGRAMS.iter().enumerate() {
+    for (i, &(path, argv, _)) in programs.iter().enumerate() {
         pids[i] = start(path, argv)?;
     }
     let mut passed = [false; PROGRAMS.len()];
     let mut text = [0u8; 256];
     let mut msg = [0u8; 256];
-    for _ in 0..PROGRAMS.len() {
+    for _ in 0..programs.len() {
         let n = r::await_child(&mut text).map_err(|_| "await found no child")?;
         let (pid, _, m) = abi::parse_waitmsg(&text[..n], &mut msg).ok_or("bad wait message")?;
-        let i = pids.iter().position(|&p| p == pid).ok_or("await gave a stranger")?;
+        let i = pids[..programs.len()]
+            .iter()
+            .position(|&p| p == pid)
+            .ok_or("await gave a stranger")?;
         let msg = &msg[..m];
-        passed[i] = exited_as(msg, pid, PROGRAMS[i].2);
+        passed[i] = exited_as(msg, pid, programs[i].2);
         if !passed[i] || !quiet {
             let mut line = r::Buf::new();
-            let _ = write!(line, "init: {}: ", Joined(PROGRAMS[i].1));
+            let _ = write!(line, "init: {}: ", Joined(programs[i].1));
             line.put(if passed[i] { b"ok" } else { b"FAILED: " });
             if !passed[i] {
                 line.put(msg);
@@ -102,9 +117,9 @@ fn run(args: r::Args) -> Result<(), &'static str> {
         }
     }
     ensure(r::await_child(&mut text).is_err(), "await found a child too many")?;
-    let failed = passed.iter().filter(|&&p| !p).count();
+    let failed = passed[..programs.len()].iter().filter(|&&p| !p).count();
     let mut line = r::Buf::new();
-    let _ = writeln!(line, "init: {} passed, {failed} failed", PROGRAMS.len() - failed);
+    let _ = writeln!(line, "init: {} passed, {failed} failed", programs.len() - failed);
     say(line.as_bytes());
     ensure(failed == 0, "test programs failed")
 }

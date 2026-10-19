@@ -90,15 +90,37 @@ impl UartKind {
 pub struct Spcr {
     pub kind: UartKind,
     pub base: Gas,
+    /// The UART's interrupt, if the table gives one.
+    pub irq: Option<SpcrIrq>,
+}
+
+/// A console UART's interrupt, as SPCR gives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpcrIrq {
+    /// A PC-AT (8259) IRQ number, for a UART with no other interrupt.
+    Pic(u8),
+    /// A global system interrupt: an I/O APIC input or a GIC interrupt ID.
+    Gsi(u32),
 }
 
 impl Spcr {
     #[must_use]
     pub fn parse(t: Sdt<'_>) -> Option<Spcr> {
         let b = t.bytes();
+        // Interrupt type: bit 0 an 8259 IRQ, bits 1 to 4 a GSIV (I/O APIC,
+        // I/O SAPIC, GIC, PLIC).
+        let ty = b.get(52).copied().unwrap_or(0);
+        let irq = if ty & 0x1e != 0 {
+            Some(SpcrIrq::Gsi(u32::from_le_bytes(b.get(54..58)?.try_into().ok()?)))
+        } else if ty & 1 != 0 {
+            Some(SpcrIrq::Pic(*b.get(53)?))
+        } else {
+            None
+        };
         Some(Spcr {
             kind: UartKind::from_code(u16::from(*b.get(36)?)),
             base: Gas::parse(b, 40)?,
+            irq,
         })
     }
 }
@@ -493,12 +515,31 @@ mod tests {
     fn spcr_pl011() {
         let mut body = vec![0x03, 0, 0, 0];
         body.extend(gas(0, 3, 0x0900_0000));
-        body.extend([0; 40]);
+        // QEMU virt's: a GIC interrupt, ID 33.
+        body.extend([0x08, 0, 33, 0, 0, 0]);
+        body.extend([0; 34]);
         let m = system(&[sdt(*b"SPCR", 2, &body)]);
         let s = Acpi::new(&m, 0x1000).unwrap().spcr().unwrap();
         assert_eq!(s.kind, UartKind::Pl011);
         assert_eq!(s.base.space, AddressSpace::SystemMemory);
         assert_eq!(s.base.address, 0x0900_0000);
+        assert_eq!(s.irq, Some(SpcrIrq::Gsi(33)));
+    }
+
+    #[test]
+    fn spcr_irq_kinds() {
+        let irq = |ty: u8| {
+            let mut body = vec![0x00, 0, 0, 0];
+            body.extend(gas(1, 1, 0x3f8));
+            body.extend([ty, 4, 20, 0, 0, 0]);
+            body.extend([0; 34]);
+            let m = system(&[sdt(*b"SPCR", 2, &body)]);
+            Acpi::new(&m, 0x1000).unwrap().spcr().unwrap().irq
+        };
+        assert_eq!(irq(0), None);
+        assert_eq!(irq(1), Some(SpcrIrq::Pic(4)));
+        assert_eq!(irq(2), Some(SpcrIrq::Gsi(20)));
+        assert_eq!(irq(3), Some(SpcrIrq::Gsi(20)));
     }
 
     /// Mirrors the Orange Pi 6 Plus DBG2 (`oracle/acpi-corpus/opi6p`): one

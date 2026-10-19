@@ -21,6 +21,7 @@ use crate::println;
 const GICD_CTLR: u64 = 0x0000;
 const GICD_TYPER: u64 = 0x0004;
 const GICD_IGROUPR: u64 = 0x0080;
+const GICD_ISENABLER: u64 = 0x0100;
 const GICD_ICENABLER: u64 = 0x0180;
 const GICD_ICPENDR: u64 = 0x0280;
 const GICD_IPRIORITYR: u64 = 0x0400;
@@ -337,6 +338,18 @@ pub(crate) fn enable_local(id: u32, edge: bool) {
         wr32(r + GICR_ICFGR1, (cfg & !(1 << shift)) | (u32::from(edge) << shift));
     }
     wr32(r + GICR_ISENABLER0, 1 << id);
+}
+
+/// Whether `id` is an SPI this distributor has.
+pub(crate) fn is_spi(id: u32) -> bool {
+    let lines = 32 * ((rd32(gicd() + GICD_TYPER) & 0x1f) + 1);
+    (32..lines.min(1020)).contains(&id)
+}
+
+/// Enables SPI `id`, left as `init_distributor` set it: Group 1, level,
+/// routed to the boot CPU.
+pub(crate) fn enable_spi(id: u32) {
+    wr32(gicd() + GICD_ISENABLER + u64::from(id / 32) * 4, 1 << (id % 32));
 }
 
 /// Sends SGI `id` to this CPU.

@@ -14,7 +14,7 @@ pub(crate) use trap::{CpuLocal, breakpoint, copy_in, copy_out, frame_pointer, pr
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use acpi::UartKind;
+use acpi::{SpcrIrq, UartKind};
 
 use super::ExitCode;
 use crate::drivers::uart16550::Uart16550;
@@ -253,6 +253,23 @@ pub(crate) fn default_console() -> (Uart, ConsoleSource) {
         Uart::Ns16550(Uart16550::io(0)),
         ConsoleSource::Default(UartKind::Other(0xffff)),
     )
+}
+
+/// No default console, so no interrupt for it.
+pub(crate) const DEFAULT_CONSOLE_IRQ: Option<SpcrIrq> = None;
+
+/// Installs `handler` for a device interrupt, a level-triggered SPI routed
+/// to the boot CPU, and enables it; returns its interrupt ID.
+pub(crate) fn enable_irq(irq: SpcrIrq, name: &'static str, handler: intr::Handler) -> Result<usize, &'static str> {
+    let SpcrIrq::Gsi(id) = irq else {
+        return Err("no 8259 IRQs on arm64");
+    };
+    if !gic::is_spi(id) {
+        return Err("not an SPI");
+    }
+    intr::register(id as usize, name, handler).map_err(|_| "interrupt ID already in use")?;
+    gic::enable_spi(id);
+    Ok(id as usize)
 }
 
 pub(crate) fn halt() -> ! {

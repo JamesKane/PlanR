@@ -1,4 +1,4 @@
-//! NS16550-compatible UART, polled transmit only.
+//! NS16550-compatible UART: polled transmit, interrupt-driven receive.
 
 /// How the registers are reached.
 #[derive(Debug, Clone, Copy)]
@@ -18,11 +18,16 @@ pub(crate) struct Uart16550 {
 }
 
 const THR: u16 = 0;
+const RBR: u16 = 0;
 const IER: u16 = 1;
+const IER_RX: u8 = 1 << 0;
+const IIR: u16 = 2;
 const FCR: u16 = 2;
 const LCR: u16 = 3;
 const MCR: u16 = 4;
+const MCR_OUT2: u8 = 1 << 3;
 const LSR: u16 = 5;
+const LSR_DR: u8 = 1 << 0;
 const LSR_THRE: u8 = 1 << 5;
 
 impl Uart16550 {
@@ -70,6 +75,23 @@ impl Uart16550 {
                 ((base + (u64::from(reg) << shift)) as *mut u8).write_volatile(v);
             },
         }
+    }
+
+    /// Interrupts when a byte arrives. OUT2 gates the line to the
+    /// interrupt controller on PCs; elsewhere it is unused.
+    pub(crate) fn enable_rx(&mut self) {
+        if self.absent {
+            return;
+        }
+        let mcr = self.read(MCR);
+        self.write(MCR, mcr | MCR_OUT2);
+        self.write(IER, IER_RX);
+        let _ = self.read(IIR);
+    }
+
+    /// The next byte received, if any.
+    pub(crate) fn getc(&mut self) -> Option<u8> {
+        (!self.absent && self.read(LSR) & LSR_DR != 0).then(|| self.read(RBR))
     }
 
     pub(crate) fn putc(&mut self, b: u8) {

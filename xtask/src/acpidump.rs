@@ -36,7 +36,7 @@ pub(crate) fn run(opts: &Opts) -> Result<(), String> {
     for (b, img) in built.iter().zip(&imgs) {
         let profile = &b.arch.profiles()[0];
         let expect = Expect::Ok(&["acpidump: end"]);
-        qemu::run_test(b.arch, profile, "acpidump", img, FOUR_CPUS, &expect, opts.timeout)?;
+        qemu::run_test(b.arch, profile, "acpidump", img, FOUR_CPUS, &expect, &[], opts.timeout)?;
         let log_path = qemu::log_path(b.arch, "acpidump", profile);
         let log = fs::read_to_string(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
         let tables = parse(&log)?;

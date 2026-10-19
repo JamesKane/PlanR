@@ -2,26 +2,38 @@
 //! process and the system, as Plan 9's `devcons` has them. Numbers read as
 //! Plan 9 writes them: right-aligned in 11 columns, then a space.
 //!
-//! The console has no input yet, so reading `cons` fails.
+//! Input comes from the console UART's interrupt, which only queues the
+//! bytes; the `kbd` process edits them into lines as Plan 9 does (`\r` is
+//! `\n`, backspace erases a character, ^U the line, ^D sends the line
+//! without a newline, and so ends input if it is empty) and echoes them.
+//! DEL posts `interrupt` to the note group of the process that last read
+//! `cons`. Writing `rawon` to `consctl` passes bytes through untouched and
+//! unechoed until `rawoff`, or until the last `consctl` is closed. With no
+//! known interrupt there is no input, and reading `cons` fails.
 
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Write;
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use abi::{DMDIR, OpenMode, QTDIR, QTFILE, Qid};
 
 use crate::port::chan::Chan;
 use crate::port::dev::{self, Dev, EVE, Entry};
-use crate::port::error::{EBADSPEC, ENONEXIST, EPERM, Result};
+use crate::port::error::{EBADCTL, EBADSPEC, ENONEXIST, EPERM, Result};
 use crate::port::lock::SpinLock;
-use crate::port::{clock, devrtc, proc};
+use crate::port::proc::{Rendez, Sleepable, Spawn};
+use crate::port::qio::{Block, Queue};
+use crate::port::{clock, console, devrtc, note, proc};
 
 const QDIR: u64 = 0;
 
 /// The files: name, qid path and permissions.
 const FILES: &[(&str, u64, u32)] = &[
     ("cons", 1, 0o660),
+    ("consctl", 11, 0o220),
     ("drivers", 2, 0o444),
     ("null", 3, 0o666),
     ("osversion", 4, 0o444),
@@ -42,6 +54,7 @@ const QSYSNAME: u64 = 7;
 const QTIME: u64 = 8;
 const QUSER: u64 = 9;
 const QZERO: u64 = 10;
+const QCONSCTL: u64 = 11;
 
 /// The longest `sysname`.
 const SYSNAME_MAX: usize = 64;
@@ -145,13 +158,27 @@ impl Dev for Cons {
 
     fn open(&self, c: Chan, mode: OpenMode) -> Result<Arc<Chan>> {
         let p = perm(c.qid.path);
-        dev::open_checked(c, mode, p)
+        let c = dev::open_checked(c, mode, p)?;
+        if c.qid.path == QCONSCTL {
+            KBD.lock().ctl += 1;
+        }
+        Ok(c)
+    }
+
+    fn close(&self, c: &Chan) {
+        if c.qid.path == QCONSCTL {
+            let mut k = KBD.lock();
+            k.ctl -= 1;
+            if k.ctl == 0 {
+                k.raw = false;
+            }
+        }
     }
 
     fn read(&self, c: &Chan, buf: &mut [u8], offset: u64) -> Result<usize> {
         match c.qid.path {
             QDIR => dev::dirread_gen(c, buf, offset, &dirgen),
-            QCONS => Err("console has no input yet".into()),
+            QCONS => read_cons(buf),
             QNULL => Ok(0),
             QZERO => {
                 buf.fill(0);
@@ -164,7 +191,11 @@ impl Dev for Cons {
     fn write(&self, c: &Chan, buf: &[u8], _: u64) -> Result<usize> {
         match c.qid.path {
             QCONS => {
-                crate::port::console::print(format_args!("{}", String::from_utf8_lossy(buf)));
+                console::write_bytes(buf);
+                Ok(buf.len())
+            }
+            QCONSCTL => {
+                consctl(buf)?;
                 Ok(buf.len())
             }
             QNULL => Ok(buf.len()),
@@ -178,4 +209,239 @@ impl Dev for Cons {
             _ => Err(EPERM.into()),
         }
     }
+}
+
+/// Bytes the interrupt has taken from the UART, for `kbd`.
+struct Raw {
+    buf: [u8; RAW_MAX],
+    start: usize,
+    len: usize,
+}
+
+const RAW_MAX: usize = 1024;
+
+static RAW: SpinLock<Raw> = SpinLock::new(Raw {
+    buf: [0; RAW_MAX],
+    start: 0,
+    len: 0,
+});
+/// Where `kbd` waits for bytes.
+static RAW_READY: Rendez = Rendez::new();
+
+/// The line discipline's state.
+#[derive(Debug)]
+struct Kbd {
+    raw: bool,
+    /// The line being typed.
+    line: Vec<u8>,
+    /// The note group of the last reader of `cons`; 0 for none yet.
+    noteid: u64,
+    /// Open `consctl` chans.
+    ctl: usize,
+}
+
+static KBD: SpinLock<Kbd> = SpinLock::new(Kbd {
+    raw: false,
+    line: Vec::new(),
+    noteid: 0,
+    ctl: 0,
+});
+
+/// What reading `cons` gives: one line, or what raw input there was, per
+/// block.
+static INPUT: Queue = Queue::new(INPUT_MAX, false);
+/// Input beyond this is dropped while nothing reads it.
+const INPUT_MAX: usize = 64 * 1024;
+/// The longest line: it is sent as it is once this long, as Plan 9 does.
+const LINE_MAX: usize = 1024;
+
+static HAVE_INPUT: AtomicBool = AtomicBool::new(false);
+
+const ERASE: u8 = 0x08;
+const KILL: u8 = 0x15; // ^U
+const EOT: u8 = 0x04; // ^D
+const DEL: u8 = 0x7f;
+
+/// Starts console input, if the UART's interrupt is known: the `kbd`
+/// process, then the interrupt.
+pub(crate) fn start_input() {
+    let Some(irq) = console::input_irq() else {
+        crate::println!("cons: no input (the console's interrupt is unknown)");
+        return;
+    };
+    if proc::spawn(Spawn::kproc("kbd"), kbd).is_none() {
+        crate::println!("cons: no input (no memory for kbd)");
+        return;
+    }
+    match crate::arch::enable_irq(irq, "cons", uart_interrupt) {
+        Ok(v) => {
+            console::enable_input();
+            HAVE_INPUT.store(true, Ordering::Release);
+            crate::println!("cons: input on {irq:?}, vector {v:#x}");
+        }
+        Err(e) => crate::println!("cons: no input ({e})"),
+    }
+}
+
+/// The UART's interrupt: takes every byte it has.
+fn uart_interrupt() {
+    let mut got = false;
+    while let Some(b) = console::getc() {
+        let mut r = RAW.lock();
+        if r.len < RAW_MAX {
+            let at = (r.start + r.len) % RAW_MAX;
+            r.buf[at] = b;
+            r.len += 1;
+        }
+        got = true;
+    }
+    if got {
+        RAW_READY.wakeup();
+    }
+}
+
+/// The `kbd` process: edits what the interrupt took.
+fn kbd() {
+    let s = proc::sleepable().expect("a kernel process may sleep");
+    let mut bytes = [0u8; RAW_MAX];
+    loop {
+        RAW_READY.sleep(&s, || RAW.lock().len > 0);
+        let n = {
+            let mut r = RAW.lock();
+            let n = r.len;
+            for (i, b) in bytes[..n].iter_mut().enumerate() {
+                *b = r.buf[(r.start + i) % RAW_MAX];
+            }
+            r.start = (r.start + n) % RAW_MAX;
+            r.len = 0;
+            n
+        };
+        let mut out = Edited::default();
+        {
+            let mut k = KBD.lock();
+            for &b in &bytes[..n] {
+                k.put(b, &mut out);
+            }
+            if !out.raw.is_empty() {
+                out.send.push(core::mem::take(&mut out.raw));
+            }
+        }
+        if !out.echo.is_empty() {
+            console::write_bytes(&out.echo);
+        }
+        for v in out.send {
+            send(&s, v);
+        }
+        if let Some(id) = out.interrupt {
+            note::post_group(id, b"interrupt");
+        }
+    }
+}
+
+/// What a run of input bytes comes to.
+#[derive(Default)]
+struct Edited {
+    echo: Vec<u8>,
+    /// Finished lines, in order.
+    send: Vec<Vec<u8>>,
+    /// Raw bytes, sent as one block at the end.
+    raw: Vec<u8>,
+    /// A note group to interrupt.
+    interrupt: Option<u64>,
+}
+
+impl Kbd {
+    fn put(&mut self, b: u8, out: &mut Edited) {
+        if self.raw {
+            out.raw.push(b);
+            return;
+        }
+        match b {
+            DEL => {
+                self.line.clear();
+                if self.noteid != 0 {
+                    out.interrupt = Some(self.noteid);
+                }
+            }
+            ERASE => {
+                if self.erase() {
+                    out.echo.extend_from_slice(b"\x08 \x08");
+                }
+            }
+            KILL => {
+                while self.erase() {
+                    out.echo.extend_from_slice(b"\x08 \x08");
+                }
+            }
+            EOT => out.send.push(core::mem::take(&mut self.line)),
+            b'\r' | b'\n' => {
+                self.line.push(b'\n');
+                out.echo.push(b'\n');
+                out.send.push(core::mem::take(&mut self.line));
+            }
+            b => {
+                self.line.push(b);
+                out.echo.push(b);
+                if self.line.len() >= LINE_MAX {
+                    out.send.push(core::mem::take(&mut self.line));
+                }
+            }
+        }
+    }
+
+    /// Takes the last character (a whole UTF-8 sequence) off the line;
+    /// false if it was empty.
+    fn erase(&mut self) -> bool {
+        let Some(at) = self.line.iter().rposition(|&b| b & 0xc0 != 0x80) else {
+            let had = !self.line.is_empty();
+            self.line.clear();
+            return had;
+        };
+        self.line.truncate(at);
+        true
+    }
+}
+
+/// Queues `v` for readers, unless they have let too much pile up.
+fn send(s: &Sleepable, v: Vec<u8>) {
+    if INPUT.len() < INPUT_MAX {
+        let _ = INPUT.bwrite(s, Block::new(v));
+    }
+}
+
+fn read_cons(buf: &mut [u8]) -> Result<usize> {
+    if !HAVE_INPUT.load(Ordering::Acquire) {
+        return Err("console has no input".into());
+    }
+    let s = proc::sleepable().ok_or(EPERM)?;
+    if let Some(p) = proc::current() {
+        KBD.lock().noteid = p.noteid();
+    }
+    INPUT.read(&s, buf)
+}
+
+/// A `consctl` request: `rawon` or `rawoff`, several to a write.
+fn consctl(buf: &[u8]) -> Result<()> {
+    let text = core::str::from_utf8(buf).map_err(|_| EBADCTL)?;
+    for word in text.split_ascii_whitespace() {
+        let flushed = {
+            let mut k = KBD.lock();
+            match word {
+                // A line half typed goes to the reader as it is.
+                "rawon" => {
+                    k.raw = true;
+                    core::mem::take(&mut k.line)
+                }
+                "rawoff" => {
+                    k.raw = false;
+                    Vec::new()
+                }
+                _ => return Err(EBADCTL.into()),
+            }
+        };
+        if !flushed.is_empty() {
+            send(&proc::sleepable().ok_or(EPERM)?, flushed);
+        }
+    }
+    Ok(())
 }

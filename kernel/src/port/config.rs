@@ -48,6 +48,9 @@ pub(crate) enum TestMode {
     /// and reset warm; on the next, power off. The harness checks that
     /// 9boot reported saving the first boot's log, ending with that line.
     Reset,
+    /// `test=cons`: run `init -i`, whose console test the harness types
+    /// to, and power off once it exits normally.
+    Cons,
 }
 
 impl<'a> Config<'a> {
@@ -84,6 +87,7 @@ impl<'a> Config<'a> {
             "overflow" => Some(TestMode::Overflow),
             "acpidump" => Some(TestMode::AcpiDump),
             "reset" => Some(TestMode::Reset),
+            "cons" => Some(TestMode::Cons),
             _ => None,
         }
     }

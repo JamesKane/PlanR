@@ -40,6 +40,7 @@ options:
   --gui                    qemu: show a display window
   --timeout SECS           test: per-boot timeout (default 120)
   --all-profiles           test: boot every QEMU profile (ci does this)
+  --only NAME              test: run only the boot test NAME (e.g. cons)
   --config FILE            image, qemu: use FILE as plan9.ini (e.g.
                            scripts/hwcheck.ini for the boards)
 ";
@@ -52,6 +53,8 @@ struct Opts {
     timeout: u64,
     /// Boot every QEMU profile, not just each arch's first.
     all_profiles: bool,
+    /// test: run only the boot test of this name.
+    only: Option<String>,
     /// image, qemu: the `plan9.ini` to put on the image instead of [`CONFIG`].
     config: Option<PathBuf>,
 }
@@ -110,6 +113,7 @@ fn parse_opts(args: &[String], single_default: bool) -> Result<Opts, String> {
         gui: false,
         timeout: 120,
         all_profiles: false,
+        only: None,
         config: None,
     };
     let mut it = args.iter();
@@ -126,6 +130,7 @@ fn parse_opts(args: &[String], single_default: bool) -> Result<Opts, String> {
             "--release" => opts.release = true,
             "--gui" => opts.gui = true,
             "--all-profiles" => opts.all_profiles = true,
+            "--only" => opts.only = Some(it.next().ok_or("--only needs a test name")?.clone()),
             "--config" => opts.config = Some(it.next().ok_or("--config needs a file")?.into()),
             "--timeout" => {
                 let v = it.next().ok_or("--timeout needs a value")?;
@@ -182,7 +187,9 @@ const USER_PROGRAMS: &[(&str, &[&str])] = &[
     ("init", &["init"]),
     (
         "utest",
-        &["tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote", "t9p"],
+        &[
+            "tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote", "t9p", "tcons",
+        ],
     ),
 ];
 
@@ -264,6 +271,8 @@ struct BootTest {
     /// Only for this architecture (the test exercises arch-specific code).
     only: Option<Arch>,
     machine: qemu::Machine,
+    /// What to type, and after which console line.
+    input: &'static [qemu::Typed],
 }
 
 const FOUR_CPUS: qemu::Machine = qemu::Machine {
@@ -275,6 +284,30 @@ const FOUR_CPUS: qemu::Machine = qemu::Machine {
 /// exits normally.
 const INIT_OK: &str = "kernel: init exited normally";
 
+/// What `tcons` (run by `init -i`) waits to be typed, step by step.
+const CONS_INPUT: &[qemu::Typed] = &[
+    qemu::Typed {
+        after: "tcons: type a line",
+        send: b"hello, console\r",
+    },
+    qemu::Typed {
+        after: "tcons: edit",
+        send: b"abx\x08c\rjunk\x15ok\r\xc3\xa9\x08z\rpart\x04\x04",
+    },
+    qemu::Typed {
+        after: "tcons: raw",
+        send: b"r\x7fq\r",
+    },
+    qemu::Typed {
+        after: "tcons: interrupt",
+        send: b"\x7f",
+    },
+    qemu::Typed {
+        after: "tcons: after",
+        send: b"still here\r",
+    },
+];
+
 const BOOT_TESTS: &[BootTest] = &[
     // The kernel runs its in-kernel tests, then init runs the test
     // programs, and the kernel powers off.
@@ -285,6 +318,18 @@ const BOOT_TESTS: &[BootTest] = &[
         every_profile: true,
         only: None,
         machine: FOUR_CPUS,
+        input: &[],
+    },
+    // Console input: init runs tcons, and the harness types to it. The
+    // typed line must be echoed.
+    BootTest {
+        name: "cons",
+        config: "# Plan R console input test image\ntest=cons\n",
+        expect: Expect::Ok(&["cons: input on", "hello, console", "init: tcons: ok", INIT_OK]),
+        every_profile: false,
+        only: None,
+        machine: FOUR_CPUS,
+        input: CONS_INPUT,
     },
     // One CPU: the SMP code must cope with having nothing to start.
     BootTest {
@@ -294,6 +339,7 @@ const BOOT_TESTS: &[BootTest] = &[
         every_profile: false,
         only: None,
         machine: qemu::Machine { cpus: 1, reboot: false },
+        input: &[],
     },
     // The amd64 fallbacks KVM would otherwise hide: xAPIC registers in
     // MMIO, and the one-shot count timer instead of TSC-deadline mode.
@@ -304,6 +350,7 @@ const BOOT_TESTS: &[BootTest] = &[
         every_profile: false,
         only: Some(Arch::Amd64),
         machine: FOUR_CPUS,
+        input: &[],
     },
     // TSC calibration against the PIT, the fallback for machines with no
     // HPET (the in-kernel tests cross-check it against the HPET).
@@ -314,6 +361,7 @@ const BOOT_TESTS: &[BootTest] = &[
         every_profile: false,
         only: Some(Arch::Amd64),
         machine: FOUR_CPUS,
+        input: &[],
     },
     // A deliberate fatal page fault must produce a full trap report.
     BootTest {
@@ -330,6 +378,7 @@ const BOOT_TESTS: &[BootTest] = &[
         every_profile: false,
         only: None,
         machine: FOUR_CPUS,
+        input: &[],
     },
     // Overflowing a kernel stack must produce a report, not a hang or a
     // reset: on an application processor, then on the boot CPU, whose
@@ -346,6 +395,7 @@ const BOOT_TESTS: &[BootTest] = &[
         every_profile: false,
         only: None,
         machine: FOUR_CPUS,
+        input: &[],
     },
     BootTest {
         name: "overflow-boot-cpu",
@@ -358,6 +408,7 @@ const BOOT_TESTS: &[BootTest] = &[
         every_profile: false,
         only: None,
         machine: qemu::Machine { cpus: 1, reboot: false },
+        input: &[],
     },
     // The table dump `cargo xtask acpidump` captures the corpus with.
     BootTest {
@@ -367,6 +418,7 @@ const BOOT_TESTS: &[BootTest] = &[
         every_profile: false,
         only: None,
         machine: FOUR_CPUS,
+        input: &[],
     },
     // The kernel resets warm; 9boot must find the log ring the first boot
     // wrote, save it to the boot volume, and show how it ended.
@@ -382,6 +434,7 @@ const BOOT_TESTS: &[BootTest] = &[
         every_profile: false,
         only: None,
         machine: qemu::Machine { cpus: 1, reboot: true },
+        input: &[],
     },
 ];
 
@@ -434,7 +487,10 @@ fn test(opts: &Opts) -> Result<(), String> {
     host_tests()?;
     let built = build(opts)?;
     let mut failed = Vec::new();
-    for t in BOOT_TESTS {
+    for t in BOOT_TESTS
+        .iter()
+        .filter(|t| opts.only.as_deref().is_none_or(|n| n == t.name))
+    {
         let built: Vec<Built> = built
             .iter()
             .filter(|b| t.only.is_none_or(|a| a == b.arch))
@@ -449,7 +505,7 @@ fn test(opts: &Opts) -> Result<(), String> {
             };
             for profile in profiles {
                 let name = format!("{arch}/{} {}", profile.name, t.name);
-                match qemu::run_test(arch, profile, t.name, img, t.machine, &t.expect, opts.timeout) {
+                match qemu::run_test(arch, profile, t.name, img, t.machine, &t.expect, t.input, opts.timeout) {
                     Ok(()) => println!("xtask: {name} test: PASS"),
                     Err(e) => {
                         println!("xtask: {name} test: FAIL: {e}");

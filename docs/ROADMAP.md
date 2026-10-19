@@ -301,7 +301,7 @@ the same `rc` scripts and text-tool pipelines give byte-identical output
 on Plan R and on host plan9port (see [TESTING.md](TESTING.md)).
 
 **Slices** (agreed 2026-10-19; one commit each):
-1. Console input: UART receive interrupts (16550, PL011) into an input
+1. ✅ Console input: UART receive interrupts (16550, PL011) into an input
    queue; Plan 9's line discipline in `#c/cons` (echo, backspace, ^U,
    ^D), `consctl` raw mode, DEL posting `interrupt` to the console's note
    group; a QEMU test that types on the serial line.

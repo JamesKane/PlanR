@@ -25,6 +25,14 @@ pub(crate) enum Expect {
 }
 const BANNER: &str = "Plan R 9boot";
 
+/// Input for a boot test: once a console line contains `after`, `send` is
+/// typed on the serial line.
+#[derive(Debug)]
+pub(crate) struct Typed {
+    pub(crate) after: &'static str,
+    pub(crate) send: &'static [u8],
+}
+
 /// CPUs QEMU gives the machine unless a test says otherwise.
 pub(crate) const CPUS: u32 = 4;
 
@@ -118,8 +126,10 @@ pub(crate) fn log_path(arch: Arch, test: &str, profile: &Profile) -> PathBuf {
 /// Lines not echoed to the terminal: table dump bytes.
 const QUIET: &str = "acpidump: = ";
 
-/// Boots `img` headless and checks the console and QEMU's exit status
-/// against `expect`, within `timeout_secs`.
+/// Boots `img` headless, types `input` as the console asks for it, and
+/// checks the console and QEMU's exit status against `expect`, within
+/// `timeout_secs`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_test(
     arch: Arch,
     profile: &Profile,
@@ -127,12 +137,20 @@ pub(crate) fn run_test(
     img: &Path,
     m: Machine,
     expect: &Expect,
+    input: &[Typed],
     timeout_secs: u64,
 ) -> Result<(), String> {
     let mut c = command(arch, profile, img, m)?;
     c.args(["-display", "none", "-serial", "stdio", "-monitor", "none"]);
-    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    let stdin = if input.is_empty() {
+        Stdio::null()
+    } else {
+        Stdio::piped()
+    };
+    c.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::inherit());
     let mut child = c.spawn().map_err(|e| format!("{}: {e}", arch.qemu()))?;
+    let mut keyboard = child.stdin.take();
+    let mut typed = 0;
 
     let stdout = child.stdout.take().expect("piped");
     let (tx, rx) = mpsc::channel();
@@ -168,6 +186,14 @@ pub(crate) fn run_test(
                 for (s, n) in seen.iter_mut().zip(needles) {
                     *s |= line.contains(n);
                 }
+                if let (Some(t), Some(k)) = (input.get(typed), keyboard.as_mut())
+                    && line.contains(t.after)
+                {
+                    typed += 1;
+                    if k.write_all(t.send).and_then(|()| k.flush()).is_err() {
+                        break Some(format!("cannot type {:?}", t.after));
+                    }
+                }
                 let fail_marker = LOADER_FAIL_MARKERS.iter().any(|m| line.contains(m))
                     || (matches!(expect, Expect::Ok(_)) && line.contains(KERNEL_PANIC));
                 if failed.is_none() && fail_marker {
@@ -185,6 +211,9 @@ pub(crate) fn run_test(
     let fail = |why: String| Err(format!("{why} (serial log: {})", log_path.display()));
     if let Some(why) = outcome.or(failed) {
         return fail(why);
+    }
+    if let Some(t) = input.get(typed) {
+        return fail(format!("console never asked for input after {:?}", t.after));
     }
     let want_status = match expect {
         Expect::Ok(_) if !ok => return fail(format!("QEMU exited ({status}) without {OK_MARKER:?}")),

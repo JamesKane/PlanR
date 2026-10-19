@@ -20,7 +20,7 @@ fadt: revision 6.3
 fadt: dsdt present, facs absent
 fadt: boot flags 0x0, psci Some(Smc)
 fadt: reset None
-spcr: Spcr { kind: Pl011, base: Gas { space: SystemMemory, bit_width: 32, bit_offset: 0, access_size: 3, address: 150994944 } }
+spcr: Spcr { kind: Pl011, base: Gas { space: SystemMemory, bit_width: 32, bit_offset: 0, access_size: 3, address: 150994944 }, irq: Some(Gsi(33)) }
 gtdt: Gtdt { secure_el1: TimerIrq { gsiv: 29, edge: false, active_low: false, always_on: false }, nonsecure_el1: TimerIrq { gsiv: 30, edge: false, active_low: false, always_on: true }, virtual_el1: TimerIrq { gsiv: 27, edge: false, active_low: false, always_on: false }, nonsecure_el2: TimerIrq { gsiv: 26, edge: false, active_low: false, always_on: false }, virtual_el2: Some(TimerIrq { gsiv: 28, edge: false, active_low: false, always_on: false }) }
 dbg2: Dbg2Device { port_type: 32768, port_subtype: 3, base: Some(Gas { space: SystemMemory, bit_width: 32, bit_offset: 0, access_size: 3, address: 150994944 }), namespace: "COM0" }
 mcfg: McfgEntry { base: 275146342400, segment: 0, bus_start: 0, bus_end: 255 }

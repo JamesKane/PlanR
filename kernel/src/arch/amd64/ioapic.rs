@@ -140,7 +140,6 @@ pub(crate) fn exists(gsi: u32) -> bool {
 }
 
 /// The GSI, polarity and trigger for ISA IRQ `irq`.
-#[allow(dead_code)] // for the legacy devices that come with the drivers
 pub(crate) fn isa(irq: u8) -> Option<(u32, Polarity, Trigger)> {
     let s = STATE.lock();
     let (gsi, flags) = *s.isa.get(usize::from(irq))?;

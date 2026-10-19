@@ -20,7 +20,7 @@ use bootinfo::{BootInfo, EntryLevel, RegionKind};
 use port::config::{self, Config, TestMode};
 use port::console::{self, ConsoleSource};
 use port::early::{self, Stage};
-use port::{acpi, clock, cpu, devroot, devrtc, exec, intr, ktest, mm, timer, trap};
+use port::{acpi, clock, cpu, devcons, devroot, devrtc, exec, intr, ktest, mm, timer, trap};
 
 /// Marker lines `cargo xtask test` scans the serial log for.
 const OK_MARKER: &str = "kernel: ok";
@@ -114,7 +114,8 @@ extern "C" fn boot_main(info: usize) -> ! {
     devroot::init(info);
     let config = Config::parse(info.config());
     config.apply();
-    match arch::init_interrupts(acpi.as_ref().ok(), &config) {
+    let interrupts = arch::init_interrupts(acpi.as_ref().ok(), &config);
+    match interrupts {
         Ok(counter_hz) => {
             clock::init(counter_hz);
             clock::start();
@@ -126,13 +127,17 @@ extern "C" fn boot_main(info: usize) -> ! {
         Err(e) => println!("intr: {e}; continuing without interrupts"),
     }
     devrtc::init(info.boot_time);
+    if interrupts.is_ok() {
+        devcons::start_input();
+    }
 
     match config.test_mode() {
         Some(TestMode::Run) => {
             let failed = ktest::run();
             assert!(failed == 0, "{failed} kernel tests failed");
-            run_init()
+            run_init(&["init"])
         }
+        Some(TestMode::Cons) => run_init(&["init", "-i"]),
         Some(TestMode::Trap) => {
             println!("ktest: deliberate page fault at {:#x}", trap::UNMAPPED);
             // SAFETY: none; this is meant to fault, and the fault is fatal.
@@ -162,9 +167,10 @@ extern "C" fn boot_main(info: usize) -> ! {
 }
 
 /// After the in-kernel tests: what a real boot does, but waited for. Init
-/// runs the test programs and must exit normally.
-fn run_init() -> ! {
-    let exit = match exec::start_init(&["init"]) {
+/// runs the test programs (with `-i`, the one that reads the console) and
+/// must exit normally.
+fn run_init(argv: &'static [&'static str]) -> ! {
+    let exit = match exec::start_init(argv) {
         Ok(exit) => exit,
         Err(e) => panic!("cannot start /boot/init: {e}"),
     };

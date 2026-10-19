@@ -5,12 +5,15 @@
 //! - the framebuffer, as text (`lib/fbtext`);
 //! - one UART, chosen from ACPI SPCR, then DBG2, then the architecture's
 //!   default.
+//!
+//! The UART is also the console's input, when its interrupt is known
+//! (from SPCR, or the default's); `devcons` reads it.
 
 use core::cell::UnsafeCell;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use acpi::{AddressSpace, Gas, UartKind};
+use acpi::{AddressSpace, Gas, SpcrIrq, UartKind};
 use bootinfo::{Framebuffer, LogRing, PixelFormat};
 use logring::Ring;
 
@@ -32,6 +35,20 @@ impl Uart {
         match self {
             Uart::Ns16550(u) => u.putc(b),
             Uart::Pl011(u) => u.putc(b),
+        }
+    }
+
+    fn getc(&mut self) -> Option<u8> {
+        match self {
+            Uart::Ns16550(u) => u.getc(),
+            Uart::Pl011(u) => u.getc(),
+        }
+    }
+
+    fn enable_rx(&mut self) {
+        match self {
+            Uart::Ns16550(u) => u.enable_rx(),
+            Uart::Pl011(u) => u.enable_rx(),
         }
     }
 
@@ -80,14 +97,18 @@ static CONSOLE: SpinLock<Outputs> = SpinLock::new(Outputs {
 /// The index of the CPU printing, or [`NOBODY`].
 static HOLDER: AtomicUsize = AtomicUsize::new(NOBODY);
 const NOBODY: usize = usize::MAX;
+/// The UART's interrupt, if known.
+static IRQ: SpinLock<Option<SpcrIrq>> = SpinLock::new(None);
 
 pub(crate) fn init(acpi: Result<&System, &Unavailable>) -> ConsoleSource {
     let mut chosen = None;
+    let mut irq = None;
     if let Ok(sys) = acpi {
         if let Some(s) = sys.tables.spcr()
             && let Some(u) = Uart::from_acpi(s.kind, s.base)
         {
             chosen = Some((u, ConsoleSource::Spcr(s.kind)));
+            irq = s.irq;
         }
         if chosen.is_none() {
             chosen = sys.tables.dbg2().find_map(|d| {
@@ -97,8 +118,29 @@ pub(crate) fn init(acpi: Result<&System, &Unavailable>) -> ConsoleSource {
         }
     }
     let (uart, source) = chosen.unwrap_or_else(arch::default_console);
+    if matches!(source, ConsoleSource::Default(_)) {
+        irq = arch::DEFAULT_CONSOLE_IRQ;
+    }
     CONSOLE.lock().uart = Some(uart);
+    *IRQ.lock() = irq;
     source
+}
+
+/// The console UART's interrupt, if known.
+pub(crate) fn input_irq() -> Option<SpcrIrq> {
+    *IRQ.lock()
+}
+
+/// Makes the UART interrupt when a byte arrives.
+pub(crate) fn enable_input() {
+    if let Some(u) = CONSOLE.lock().uart.as_mut() {
+        u.enable_rx();
+    }
+}
+
+/// The next byte the UART has received, if any.
+pub(crate) fn getc() -> Option<u8> {
+    CONSOLE.lock().uart.as_mut()?.getc()
 }
 
 /// The text grid's backing store: room for 480×270 cells, enough for a
@@ -173,23 +215,29 @@ pub(crate) fn attach_ring(r: LogRing) -> Option<u64> {
 
 struct Writer<'a>(&'a mut Outputs);
 
-impl Write for Writer<'_> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
+impl Writer<'_> {
+    fn write_bytes(&mut self, bytes: &[u8]) {
         let o = &mut *self.0;
         if let Some(r) = o.ring.as_mut() {
-            r.write(s.as_bytes());
+            r.write(bytes);
         }
         if let Some(screen) = o.screen.as_mut() {
-            screen.write(s.as_bytes());
+            screen.write(bytes);
         }
         if let Some(u) = o.uart.as_mut() {
-            for b in s.bytes() {
+            for &b in bytes {
                 if b == b'\n' {
                     u.putc(b'\r');
                 }
                 u.putc(b);
             }
         }
+    }
+}
+
+impl Write for Writer<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.write_bytes(s.as_bytes());
         Ok(())
     }
 }
@@ -208,6 +256,18 @@ pub(crate) fn begin_panic() -> bool {
 const PANIC_PATIENCE: u32 = 10_000_000;
 
 pub(crate) fn print(args: fmt::Arguments<'_>) {
+    with_outputs(|o| {
+        let _ = Writer(o).write_fmt(args);
+    });
+}
+
+/// Writes `bytes` as they are, which need not be whole UTF-8.
+pub(crate) fn write_bytes(bytes: &[u8]) {
+    with_outputs(|o| Writer(o).write_bytes(bytes));
+}
+
+/// Runs `f` with the console held, as `print` must have it.
+fn with_outputs(f: impl FnOnce(&mut Outputs)) {
     let me = arch::cpu_index();
     let panicking = PANICKING.load(Ordering::Acquire);
     let guard = if HOLDER.load(Ordering::Relaxed) == me {
@@ -231,7 +291,7 @@ pub(crate) fn print(args: fmt::Arguments<'_>) {
     };
     if let Some(mut c) = guard {
         HOLDER.store(me, Ordering::Relaxed);
-        let _ = Writer(&mut c).write_fmt(args);
+        f(&mut c);
         HOLDER.store(NOBODY, Ordering::Relaxed);
     }
 }

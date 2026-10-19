@@ -55,6 +55,12 @@ path = "src/bin/t9p.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "tcons"
+path = "src/bin/tcons.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { path = "../../lib/abi" }
 ninep = { path = "../../lib/9p" }

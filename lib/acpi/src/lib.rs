@@ -17,7 +17,7 @@ pub use iort::{IdMapping, Iort, IortKind, IortNode, ItsIds};
 pub use pptt::{CacheKind, CacheNode, Pptt, PpttNode, ProcessorFlags, ProcessorNode};
 pub use tables::{
     AddressSpace, Dbg2Device, Fadt, Gas, Gtdt, Hpet, Madt, MadtEntry, McfgEntry, MpsFlags, Polarity, PsciConduit, Spcr,
-    TimerIrq, Trigger, UartKind, dbg2_devices, mcfg_entries,
+    SpcrIrq, TimerIrq, Trigger, UartKind, dbg2_devices, mcfg_entries,
 };
 
 /// Read access to physical memory.

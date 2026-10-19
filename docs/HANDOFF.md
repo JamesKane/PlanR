@@ -1,8 +1,7 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19: P2 is done, in CI and on both reference boards; the P3
-slice plan is agreed.
+2026-10-19: P3 slice 1 (console input) is done.
 
 ## State
 
@@ -371,6 +370,42 @@ slice plan is agreed.
        2 MiB (`init` added), the freed read buffer landed on the ring at
        the top of RAM, and the amd64 `log-ring` test failed every time.
        The reads now come after `logring::setup`.
+- **P3** (userland bootstrap), from 2026-10-19; slices in
+  `docs/ROADMAP.md`:
+  1. Console input:
+     - `lib/acpi`: `Spcr::irq` (`SpcrIrq::Pic` or `Gsi`) from the
+       table's interrupt fields; QEMU virt's is GSI 33. The amd64
+       default COM1 uses ISA IRQ 4 (`arch::DEFAULT_CONSOLE_IRQ`); arm64
+       has no default. The Orange Pi has only DBG2, which gives no
+       interrupt, so it has no input yet; the Ryzen falls back to COM1.
+     - Drivers: `enable_rx` and `getc` on the 16550 (IER, plus MCR OUT2,
+       which gates the IRQ on PCs) and PL011 (RX and RX-timeout in IMSC).
+       `arch::enable_irq(irq, name, handler)` registers and routes one
+       device interrupt: the I/O APIC to this CPU (below GSI 16 high and
+       edge, else low and level), or a level SPI on the GIC
+       (`gic::enable_spi`).
+     - `port/console.rs`: `write_bytes` for output that need not be whole
+       UTF-8 (`cons` writes use it now), `getc`, `enable_input`.
+     - `port/devcons.rs`: the interrupt only copies bytes into a 1 KiB
+       ring and wakes the `kbd` kproc, which edits them (Plan 9's
+       discipline: `\r` → `\n`, ^H erases a UTF-8 character, ^U the
+       line, ^D sends the line without a newline, lines of 1 KiB are
+       sent as they are), echoes (`\b \b` for an erase), and queues each
+       line as one block on a qio queue that `cons` reads. Input past
+       64 KiB unread is dropped. DEL clears the line and posts
+       `interrupt` to the note group of the last process to read `cons`.
+       `consctl` (new): `rawon`/`rawoff`; raw bytes go through
+       unedited and unechoed, a half-typed line is sent at `rawon`, and
+       closing the last `consctl` turns raw off. With no interrupt,
+       reading `cons` fails with "console has no input". The kernel
+       prints `cons: input on …` at boot.
+     - `test=cons`: the kernel runs `init -i`, which runs `tcons` alone;
+       xtask's `cons` boot test types each step's input when `tcons`
+       prompts (`qemu::Typed`). `cargo xtask test --only NAME` runs one
+       boot test.
+     - Caveat: Linux terminals send DEL for Backspace, so under
+       `cargo xtask qemu` Backspace interrupts; use ^H to erase, as on
+       Plan 9.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -380,11 +415,10 @@ slice plan is agreed.
 
 ## Next steps
 
-P3, the userland bootstrap. Its 13 slices were agreed on 2026-10-19 and
-are in `docs/ROADMAP.md` under P3; `srv` and `9fs` moved to P5. Next is
-slice 1, console input: UART receive interrupts on both arches, Plan 9's
-line discipline in `#c/cons`, `consctl` raw mode, DEL posting
-`interrupt`, and a QEMU test that types on the serial line.
+P3 slice 2, libr base: a user heap (`#[global_allocator]` on `brk`),
+`print!`/`fprint!` on `core::fmt` with helpers for `%q` and `%r`, an
+`ARGBEGIN` replacement, UTF-8/Rune, and `bio`. The P3 slices were
+agreed on 2026-10-19 (`docs/ROADMAP.md`; `srv` and `9fs` moved to P5).
 
 The oracle harness (slice 7) needs host plan9port, built by
 `scripts/install-plan9port.sh` (as the user, into `$PLAN9` or
