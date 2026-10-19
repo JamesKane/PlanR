@@ -22,9 +22,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{self, Write};
 use core::panic::PanicInfo;
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicPtr, Ordering};
 
-use bootinfo::{BootInfo, Framebuffer, HHDM_BASE, Region, Slice, phys_to_virt, uefi_type};
+use bootinfo::{BootInfo, Framebuffer, HHDM_BASE, Region, RegionKind, Slice, phys_to_virt};
 use elf::{Elf, Machine};
 use handoff::Handoff;
 use paging::{Native, Perm, Tables};
@@ -175,21 +175,22 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     let mut map_buf = vec![0u8; bs.memory_map_size() * 2 + MAP_SLACK * 64];
     let (ram, descriptors) = {
         let map = bs.memory_map(&mut map_buf).ctx("memory map")?;
-        (memmap::ram_ranges(&map), map.len())
+        let ring = log_ring.map(|(r, _)| (r.phys, r.phys + r.size));
+        (memmap::ram_ranges(&map, ring), map.len())
     };
     let fb = framebuffer(st);
     let tables = build_tables(st, &ram, &kernel, fb)?;
 
     // Boot stack and the BootInfo block: [BootInfo][Region; capacity][config].
     let stack = bs
-        .allocate_pages(mem_type(uefi_type::BOOT), STACK_PAGES)
+        .allocate_pages(MemoryType::LoaderData, STACK_PAGES)
         .ctx("boot stack")?;
     let capacity = descriptors + MAP_SLACK;
     let regions_off = size_of::<BootInfo>().next_multiple_of(16);
     let config_off = regions_off + capacity * size_of::<Region>();
     let block_pages = (config_off + config.len()).div_ceil(PAGE_BYTES);
     let block = bs
-        .allocate_pages(mem_type(uefi_type::BOOT), block_pages)
+        .allocate_pages(MemoryType::LoaderData, block_pages)
         .ctx("boot info")?;
     // SAFETY: freshly allocated and identity-mapped.
     unsafe { core::ptr::write_bytes(block as *mut u8, 0, block_pages * PAGE_BYTES) };
@@ -253,9 +254,7 @@ fn load_kernel<'a>(st: &SystemTable<Boot>, file: &'a [u8]) -> Result<Kernel<'a>,
     let lo = lo & !(PAGE - 1);
     let size = hi.next_multiple_of(PAGE) - lo;
     let pages = usize::try_from(size / PAGE).map_err(|_| Error::Kernel("too large"))?;
-    let phys = bs
-        .allocate_pages(mem_type(uefi_type::KERNEL), pages)
-        .ctx("kernel memory")?;
+    let phys = bs.allocate_pages(MemoryType::LoaderData, pages).ctx("kernel memory")?;
     // SAFETY: freshly allocated, identity-mapped, `pages` pages.
     let mem = unsafe { core::slice::from_raw_parts_mut(phys as *mut u8, pages * PAGE_BYTES) };
     mem.fill(0);
@@ -342,7 +341,14 @@ fn exit_and_jump(mut st: SystemTable<Boot>, image: Handle, mut p: Prepared) -> !
                 .ok()
                 .and_then(|map| Some((memmap::convert(&map, regions)?, map.key())))
         };
-        let Some((n, key)) = fetched else { break };
+        let Some((mut n, key)) = fetched else { break };
+        // Loader data is all `Boot`; label the kernel and the ring.
+        // SAFETY: as above.
+        let (kernel, ring) = unsafe { (((*p.info).kernel_phys, (*p.info).kernel_size), (*p.info).log_ring()) };
+        bootinfo::carve(regions, &mut n, kernel.0, kernel.1, RegionKind::Kernel);
+        if let Some(r) = ring {
+            bootinfo::carve(regions, &mut n, r.phys, r.size, RegionKind::LogRing);
+        }
         // SAFETY: as above.
         unsafe { (*p.info).memory = Slice::new(phys_to_virt(p.regions as u64) as *const Region, n) };
         mark(1, true);
@@ -374,28 +380,10 @@ pub(crate) fn read_file(root: &File<'_>, path: &str) -> uefi::Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// `bootdebug=loaderdata`: allocate everything as plain `EfiLoaderData`
-/// instead of Plan R's own types (`bootinfo::uefi_type`), as Linux's stub
-/// and FreeBSD's loader do. For diagnosing firmware that mishandles
-/// OS-defined memory types; the kernel cannot run so, since it no longer
-/// sees which memory is its own. Pair it with `bootdebug=exittest`.
-static PLAIN_TYPES: AtomicBool = AtomicBool::new(false);
-
-/// Applies `bootdebug=` (see [`PLAIN_TYPES`], [`Prepared::exit_test`]);
-/// returns whether to reset right after exiting boot services.
+/// Applies `bootdebug=`: returns whether to reset right after exiting
+/// boot services ([`Prepared::exit_test`]).
 fn bootdebug(config: &[u8]) -> bool {
-    let plain = bootnext::config_lists(config, "bootdebug", "loaderdata");
-    PLAIN_TYPES.store(plain, Ordering::Relaxed);
     bootnext::config_lists(config, "bootdebug", "exittest")
-}
-
-/// The memory type to allocate Plan R type `t` as.
-pub(crate) fn mem_type(t: u32) -> MemoryType {
-    if PLAIN_TYPES.load(Ordering::Relaxed) {
-        MemoryType::LoaderData
-    } else {
-        MemoryType::Other(t)
-    }
 }
 
 /// Paints square `pos` along the top of the framebuffer handed to the

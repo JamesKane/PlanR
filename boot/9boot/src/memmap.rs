@@ -1,20 +1,20 @@
 //! UEFI memory map → `bootinfo::Region`s.
 
-use bootinfo::{Region, RegionKind, uefi_type};
+use bootinfo::{Region, RegionKind};
 use uefi::{MemoryDescriptor, MemoryMap, MemoryType};
 
 /// What the kernel should make of a UEFI memory type, once boot services
 /// are gone. `None`: not RAM (MMIO), left out of the map.
 fn kind(t: MemoryType) -> Option<RegionKind> {
     Some(match t {
-        MemoryType::Conventional
-        | MemoryType::LoaderCode
-        | MemoryType::LoaderData
-        | MemoryType::BootServicesCode
-        | MemoryType::BootServicesData => RegionKind::Usable,
-        MemoryType::Other(uefi_type::KERNEL) => RegionKind::Kernel,
-        MemoryType::Other(uefi_type::BOOT) => RegionKind::Boot,
-        MemoryType::Other(uefi_type::LOG) => RegionKind::LogRing,
+        MemoryType::Conventional | MemoryType::BootServicesCode | MemoryType::BootServicesData => RegionKind::Usable,
+        // Everything 9boot allocated: the kernel, page tables, boot stack,
+        // BootInfo, the log ring. Plan R's own memory types (OS-loader
+        // range) would label each, but the Ryzen's AMI firmware hangs in
+        // ExitBootServices once any is in use, so 9boot allocates plain
+        // loader data and `exit_and_jump` carves the kernel and the ring out
+        // by address.
+        MemoryType::LoaderCode | MemoryType::LoaderData => RegionKind::Boot,
         MemoryType::AcpiReclaim => RegionKind::AcpiReclaimable,
         MemoryType::AcpiNvs => RegionKind::AcpiNvs,
         MemoryType::RuntimeServicesCode | MemoryType::RuntimeServicesData => RegionKind::UefiRuntime,
@@ -60,8 +60,9 @@ pub(crate) fn convert(map: &MemoryMap<'_>, out: &mut [Region]) -> Option<usize> 
 }
 
 /// Physical ranges of RAM (any kind the kernel direct-maps), merged
-/// regardless of kind, for building the direct map.
-pub(crate) fn ram_ranges(map: &MemoryMap<'_>) -> alloc::vec::Vec<(u64, u64)> {
+/// regardless of kind, for building the direct map, less `exclude` (the log
+/// ring, which the kernel maps uncached and must have no cacheable alias).
+pub(crate) fn ram_ranges(map: &MemoryMap<'_>, exclude: Option<(u64, u64)>) -> alloc::vec::Vec<(u64, u64)> {
     let mut v: alloc::vec::Vec<(u64, u64)> = map
         .iter()
         .filter_map(|d| region(&d))
@@ -76,5 +77,11 @@ pub(crate) fn ram_ranges(map: &MemoryMap<'_>) -> alloc::vec::Vec<(u64, u64)> {
             _ => out.push((s, e)),
         }
     }
-    out
+    let Some((xs, xe)) = exclude else {
+        return out;
+    };
+    out.into_iter()
+        .flat_map(|(s, e)| [(s, e.min(xs)), (s.max(xe), e)])
+        .filter(|(s, e)| s < e)
+        .collect()
 }

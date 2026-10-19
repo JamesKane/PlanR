@@ -90,6 +90,14 @@ In the suggested order:
   - The Orange Pi's MCFG has three windows on segment 0 that share one
     ECAM base, with different bus ranges.
   - The Ryzen's MADT matches Linux's APIC IDs exactly.
+- **9boot allocates only `EfiLoaderData`.** The Ryzen's AMI firmware
+  (F2) hangs in ExitBootServices once memory of an OS-defined type
+  (`0x8000_0000` and up) is in use, so Plan R's own types are gone. The
+  final map reports loader memory as `Boot`, and 9boot carves the kernel
+  and the log ring out by address (`bootinfo::carve`). It keeps the ring
+  out of the direct map by address too. Diagnosing it took
+  `bootdebug=exittest` (reset right after the exit) and the framebuffer
+  marks: 9boot's squares 0–2 and the kernel's from 3 on.
 - **EL2 must set VPIDR_EL2/VMPIDR_EL2** before dropping to EL1. EL1
   reads MIDR/MPIDR from them, and they reset to unknown values. The Orange
   Pi's A520s read garbage affinities until both 9boot and the AP entry set

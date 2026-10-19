@@ -4,7 +4,7 @@
 //! The walk is generic; [`Format`] supplies each architecture's descriptor
 //! encoding. Both use 4 KiB granules, 4 levels and 48-bit addresses.
 
-use uefi::BootServices;
+use uefi::{BootServices, MemoryType};
 
 const PAGE: u64 = 4096;
 const PAGE_BYTES: usize = 4096;
@@ -70,7 +70,7 @@ impl<'a, F: Format> Tables<'a, F> {
 
     /// A zeroed page for a table, tagged so the kernel knows it is in use.
     fn frame(&mut self) -> uefi::Result<u64> {
-        let p = self.bs.allocate_pages(crate::mem_type(bootinfo::uefi_type::BOOT), 1)?;
+        let p = self.bs.allocate_pages(MemoryType::LoaderData, 1)?;
         // SAFETY: UEFI identity-maps memory; the page is ours.
         unsafe { core::ptr::write_bytes(p as *mut u8, 0, PAGE_BYTES) };
         self.pages_used += 1;

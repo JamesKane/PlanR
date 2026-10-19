@@ -37,17 +37,6 @@ pub mod arm64 {
     pub const MAIR: u64 = 0x00_44_00_ff;
 }
 
-/// UEFI memory types (OS-loader range) 9boot uses for its allocations, so
-/// the final memory map tells the kernel what each page is for.
-pub mod uefi_type {
-    /// The loaded kernel image.
-    pub const KERNEL: u32 = 0x8000_0001;
-    /// Page tables, boot stack, `BootInfo` and the memory map array.
-    pub const BOOT: u32 = 0x8000_0002;
-    /// The persistent log ring.
-    pub const LOG: u32 = 0x8000_0003;
-}
-
 /// A `(pointer, length)` pair pointing into the direct map.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -345,12 +334,99 @@ pub fn push_region(out: &mut [Region], len: &mut usize, region: Region) -> bool 
     true
 }
 
+/// Relabels `[start, start + size)` as `kind` in a sorted region list,
+/// splitting the regions it partly covers. Gaps stay gaps. Returns false,
+/// changing nothing, if `out` has no room for the extra regions. Does not
+/// allocate: 9boot runs it between the final memory map and
+/// `ExitBootServices`.
+pub fn carve(out: &mut [Region], len: &mut usize, start: u64, size: u64, kind: RegionKind) -> bool {
+    let end = start.saturating_add(size);
+    // Count the extra regions first, so a full list is left untouched.
+    let extra: usize = out[..*len]
+        .iter()
+        .filter(|r| r.start < end && start < r.end() && r.kind != kind)
+        .map(|r| usize::from(r.start < start) + usize::from(end < r.end()))
+        .sum();
+    if *len + extra > out.len() {
+        return false;
+    }
+    let mut at = 0;
+    while at < *len {
+        let old = out[at];
+        if old.end() <= start || end <= old.start || old.kind == kind {
+            at += 1;
+            continue;
+        }
+        let (lo, hi) = (old.start.max(start), old.end().min(end));
+        let pieces = [(old.start, lo, old.kind), (lo, hi, kind), (hi, old.end(), old.kind)];
+        let mut put = [old; 3];
+        let mut count = 0;
+        for (from, to, piece_kind) in pieces {
+            if from < to {
+                put[count] = Region {
+                    start: from,
+                    len: to - from,
+                    kind: piece_kind,
+                };
+                count += 1;
+            }
+        }
+        out.copy_within(at + 1..*len, at + count);
+        out[at..at + count].copy_from_slice(&put[..count]);
+        *len += count - 1;
+        at += count;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn r(start: u64, len: u64, kind: RegionKind) -> Region {
         Region { start, len, kind }
+    }
+
+    #[test]
+    fn carve_splits_and_relabels() {
+        let mut out = [r(0, 0, RegionKind::Reserved); 8];
+        out[0] = r(0x1000, 0x4000, RegionKind::Boot);
+        out[1] = r(0x5000, 0x1000, RegionKind::Usable);
+        out[2] = r(0x8000, 0x2000, RegionKind::Boot);
+        let mut n = 3;
+        // Inside the first region: it splits in three.
+        assert!(carve(&mut out, &mut n, 0x2000, 0x1000, RegionKind::Kernel));
+        assert_eq!(
+            out[..n],
+            [
+                r(0x1000, 0x1000, RegionKind::Boot),
+                r(0x2000, 0x1000, RegionKind::Kernel),
+                r(0x3000, 0x2000, RegionKind::Boot),
+                r(0x5000, 0x1000, RegionKind::Usable),
+                r(0x8000, 0x2000, RegionKind::Boot),
+            ]
+        );
+        // Across a gap and the start of the last region.
+        assert!(carve(&mut out, &mut n, 0x6000, 0x3000, RegionKind::LogRing));
+        assert_eq!(
+            out[n - 2..n],
+            [
+                r(0x8000, 0x1000, RegionKind::LogRing),
+                r(0x9000, 0x1000, RegionKind::Boot)
+            ]
+        );
+        assert_eq!(n, 6);
+    }
+
+    #[test]
+    fn carve_without_room_changes_nothing() {
+        let mut out = [r(0x1000, 0x4000, RegionKind::Boot), r(0, 0, RegionKind::Reserved)];
+        let mut n = 1;
+        assert!(!carve(&mut out, &mut n, 0x2000, 0x1000, RegionKind::Kernel));
+        assert_eq!((n, out[0]), (1, r(0x1000, 0x4000, RegionKind::Boot)));
+        // An exact fit needs no room.
+        assert!(carve(&mut out, &mut n, 0x1000, 0x4000, RegionKind::Kernel));
+        assert_eq!((n, out[0]), (1, r(0x1000, 0x4000, RegionKind::Kernel)));
     }
 
     #[test]
