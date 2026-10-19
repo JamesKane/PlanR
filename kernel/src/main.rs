@@ -42,7 +42,10 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
         arch::halt();
     }
     early::mark(info, Stage::BootInfoValid, true);
-    mm::init(info);
+    if mm::init(info).is_err() {
+        early::mark(info, Stage::Memory, false);
+        arch::halt();
+    }
     early::mark(info, Stage::Memory, true);
     // Leave 9boot's stack, which has no guard below it, for a kernel stack.
     let Some(stack) = mm::alloc_stack(mm::STACK_PAGES) else {

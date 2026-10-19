@@ -38,6 +38,8 @@ pub(crate) const TIMER_VECTOR: u8 = 0xf0;
 pub(crate) const TEST_VECTOR: usize = 0xf1;
 /// Wakes a CPU to look for work ([`crate::port::cpu::call`]).
 pub(crate) const WAKE_VECTOR: usize = 0xf2;
+/// Asks a CPU to flush its TLB ([`crate::port::mmu::shootdown`]).
+pub(crate) const SHOOTDOWN_VECTOR: usize = 0xf3;
 pub(crate) const ERROR_VECTOR: u8 = 0xfe;
 pub(crate) const SPURIOUS_VECTOR: u8 = 0xff;
 
@@ -154,7 +156,9 @@ pub(super) fn interrupt(vector: u8) -> bool {
 
 /// Installs the handlers for the kernel's own inter-processor interrupts.
 pub(crate) fn register_ipis() -> Result<(), &'static str> {
-    intr::register(WAKE_VECTOR, "wake", crate::port::cpu::wake).map_err(|_| "wake vector busy")
+    intr::register(WAKE_VECTOR, "wake", crate::port::cpu::wake).map_err(|_| "wake vector busy")?;
+    intr::register(SHOOTDOWN_VECTOR, "shootdown", crate::port::mmu::answer_shootdown)
+        .map_err(|_| "shootdown vector busy")
 }
 
 const IA32_GS_BASE: u32 = 0xc000_0101;

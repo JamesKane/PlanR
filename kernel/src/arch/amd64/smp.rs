@@ -3,11 +3,13 @@
 //! into the kernel.
 //!
 //! The trampoline is assembled into the kernel image and copied to two
-//! free low pages: the code, and a copy of the kernel's top-level page
-//! table, because in 32-bit mode CR3 can only point below 4 GiB. That copy
-//! keeps the identity map (so the trampoline stays mapped when paging comes
-//! on) and the kernel half. The CPUs start one at a time, each with its own
-//! parameters in the trampoline's data block.
+//! free low pages: the code, and the root of a [`StartupMap`], because in
+//! 32-bit mode CR3 can only point below 4 GiB. That map has the kernel half
+//! and the trampoline page at its own address, so the trampoline stays
+//! mapped when paging comes on. From long mode it jumps to
+//! `planr_ap_high`, in the kernel image, which loads the kernel's CR3: the
+//! kernel's tables do not map the trampoline. The CPUs start one at a
+//! time, each with its own parameters in the trampoline's data block.
 
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -20,12 +22,12 @@ use crate::port::acpi::System;
 use crate::port::clock;
 use crate::port::cpu::{self, Census, Cpu};
 use crate::port::mm::{self, PAGE};
+use crate::port::mmu::{self, StartupMap};
 use crate::println;
 
-const PAGE_BYTES: usize = 4096;
-
-// Real mode at `page:0` → protected mode → long mode on the copied page
-// table → the kernel's own CR0/CR4/CR3, stack, and `ap_entry(index)`.
+// Real mode at `page:0` → protected mode → long mode on the start-up map
+// → the kernel's own CR0/CR4, stack, then CR3 from the kernel image, and
+// `ap_entry(index)`.
 // Fields the boot CPU fills are named; three hold offsets from the start
 // that it turns into physical addresses.
 global_asm!(
@@ -74,21 +76,23 @@ planr_ap_start:
     movq %rax, %cr0
     movq 16(%rsi), %rax
     movq %rax, %cr4
-    movq 24(%rsi), %rax
-    movq %rax, %cr3                     // the kernel's page table
+    movq 24(%rsi), %rdx                 // the kernel's page table
     movq 32(%rsi), %rsp
     movq 40(%rsi), %rdi
     movq 48(%rsi), %rax
+    movq 56(%rsi), %rcx
     xorl %ebp, %ebp
-    pushq $0                            // no return address
-    jmpq *%rax
+    jmpq *%rcx                          // planr_ap_high
 
+    // Accessed bits preset: the CPU would otherwise set them on loading a
+    // selector, a write that faults once paging is on, since the start-up
+    // map has this page read-only.
     .balign 8
 .Lgdt:
     .quad 0
-    .quad 0x00cf9a000000ffff            // 0x08: 32-bit code
-    .quad 0x00cf92000000ffff            // 0x10: data
-    .quad 0x00af9a000000ffff            // 0x18: 64-bit code
+    .quad 0x00cf9b000000ffff            // 0x08: 32-bit code
+    .quad 0x00cf93000000ffff            // 0x10: data
+    .quad 0x00af9b000000ffff            // 0x18: 64-bit code
     .global planr_ap_gdtr
 planr_ap_gdtr:
     .word 31
@@ -104,10 +108,17 @@ planr_ap_far64:
     .balign 8
     .global planr_ap_params
 planr_ap_params:
-    .fill 7, 8, 0
+    .fill 8, 8, 0
     .global planr_ap_end
 planr_ap_end:
     .code64
+
+    .text
+    .global planr_ap_high
+planr_ap_high:
+    movq %rdx, %cr3
+    pushq $0                            // no return address
+    jmpq *%rax
     "#,
     options(att_syntax),
 );
@@ -119,13 +130,14 @@ unsafe extern "C" {
     static planr_ap_far64: u8;
     static planr_ap_params: u8;
     static planr_ap_end: u8;
+    static planr_ap_high: u8;
 }
 
 /// The trampoline's data block, at `planr_ap_params`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct Params {
-    /// The low page-table copy (below 4 GiB).
+    /// The start-up map's root (below 4 GiB).
     low_cr3: u64,
     cr0: u64,
     cr4: u64,
@@ -133,6 +145,8 @@ struct Params {
     stack: u64,
     index: u64,
     entry: u64,
+    /// `planr_ap_high`, in the kernel image.
+    high: u64,
 }
 
 /// Offset of a trampoline symbol from its start.
@@ -141,15 +155,16 @@ fn offset(sym: *const u8) -> usize {
 }
 
 /// The installed trampoline.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct Trampoline {
-    /// Physical address of the code page; the page table copy follows.
+    /// Physical address of the code page; the start-up map's root follows.
     phys: u64,
+    map: StartupMap,
 }
 
 impl Trampoline {
-    /// Copies the trampoline and the top-level page table into low memory
-    /// and fixes up its absolute addresses.
+    /// Copies the trampoline into low memory, fixes up its absolute
+    /// addresses, and maps it at its own address.
     fn install() -> Result<Trampoline, &'static str> {
         let len = offset(&raw const planr_ap_end);
         let phys = mm::low_pages(2).ok_or("no free memory below 1 MiB for the AP trampoline")?;
@@ -169,22 +184,24 @@ impl Trampoline {
                 let p = code.add(field).cast::<u32>();
                 p.write_unaligned(p.read_unaligned() + base);
             }
-            let pml4 = phys_to_virt(read_cr3() & !0xfff) as *const u8;
-            core::ptr::copy_nonoverlapping(pml4, code.add(PAGE_BYTES), PAGE_BYTES);
         }
-        Ok(Trampoline { phys })
+        // SAFETY: the second low page is ours, as above.
+        let mut map = unsafe { StartupMap::new_at(phys + PAGE) };
+        map.map(phys, PAGE).map_err(|_| "cannot map the AP trampoline")?;
+        Ok(Trampoline { phys, map })
     }
 
     /// Writes the parameters for the next CPU to start.
-    fn set(self, stack: u64, index: usize) {
+    fn set(&self, stack: u64, index: usize) {
         let p = Params {
-            low_cr3: self.phys + PAGE,
+            low_cr3: self.map.root(),
             cr0: read_cr0(),
             cr4: super::cpu::read_cr4(),
-            cr3: read_cr3(),
+            cr3: mmu::kernel().root(),
             stack,
             index: index as u64,
             entry: ap_entry as *const () as u64,
+            high: (&raw const planr_ap_high) as u64,
         };
         let at = phys_to_virt(self.phys) + offset(&raw const planr_ap_params) as u64;
         // SAFETY: the data block is inside the copied page, 8-byte aligned.
@@ -192,7 +209,7 @@ impl Trampoline {
     }
 
     #[allow(clippy::cast_possible_truncation)] // below 1 MiB, so the page number fits
-    fn page(self) -> u8 {
+    fn page(&self) -> u8 {
         (self.phys / PAGE) as u8
     }
 }
@@ -201,13 +218,6 @@ fn read_cr0() -> u64 {
     let v: u64;
     // SAFETY: reads a control register.
     unsafe { asm!("mov {}, cr0", out(reg) v, options(nomem, nostack)) };
-    v
-}
-
-fn read_cr3() -> u64 {
-    let v: u64;
-    // SAFETY: reads a control register.
-    unsafe { asm!("mov {}, cr3", out(reg) v, options(nomem, nostack)) };
     v
 }
 
@@ -239,8 +249,8 @@ pub(crate) fn start_cpus(acpi: Option<&System>) -> Result<Census, &'static str> 
             continue;
         }
         let t = match trampoline {
-            Some(t) => t,
-            None => *trampoline.insert(Trampoline::install()?),
+            Some(ref t) => t,
+            None => trampoline.insert(Trampoline::install()?),
         };
         if let Err(e) = start(t, id) {
             println!("smp: CPU with APIC ID {id}: {e}");
@@ -250,7 +260,7 @@ pub(crate) fn start_cpus(acpi: Option<&System>) -> Result<Census, &'static str> 
 }
 
 /// Starts the CPU with APIC ID `id` and waits for it to come online.
-fn start(t: Trampoline, id: u32) -> Result<(), &'static str> {
+fn start(t: &Trampoline, id: u32) -> Result<(), &'static str> {
     let cpu = cpu::claim(u64::from(id)).ok_or("too many CPUs")?;
     let index = cpu.index();
     let stack = mm::alloc_stack(mm::STACK_PAGES).ok_or("no memory for a stack")?;
@@ -293,6 +303,7 @@ extern "C" fn ap_entry(index: usize) -> ! {
         super::halt();
     };
     super::set_cpu_local(cpu);
+    mmu::leave_startup();
     apic::init_local();
     apic::init_local_timer();
     cpu::ap_main(cpu)

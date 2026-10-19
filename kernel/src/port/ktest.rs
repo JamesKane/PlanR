@@ -5,7 +5,7 @@
 //! `cargo xtask test` reads the console.
 
 use crate::arch;
-use crate::port::{clock, console, cpu, heap, intr, mm, trap};
+use crate::port::{clock, console, cpu, heap, intr, mm, mmu, trap};
 use crate::println;
 
 /// Why a test did not pass.
@@ -46,6 +46,8 @@ const TESTS: &[(&str, TestFn)] = &[
     ),
     ("mm: frames free and align", mm::ktests::frames_free_and_align),
     ("mm: kernel stack has a guard page", mm::ktests::stack_has_guard),
+    ("mmu: kernel text translates", mmu::ktests::image_translates),
+    ("mmu: address spaces are separate", mmu::ktests::spaces_are_separate),
     ("heap: collections allocate", heap::ktests::collections_work),
     ("heap: empty slabs return", heap::ktests::slabs_return),
     ("heap: large aligned block", heap::ktests::large_aligned),
@@ -61,6 +63,10 @@ const TESTS: &[(&str, TestFn)] = &[
     ("smp: every CPU's clock ticks", cpu::ktests::each_cpu_ticks),
     ("smp: a call runs on its target", cpu::ktests::call_runs_on_target),
     ("smp: spin lock serializes CPUs", cpu::ktests::lock_serializes),
+    (
+        "smp: TLB shootdown reaches every CPU",
+        mmu::ktests::shootdown_reaches_all,
+    ),
 ];
 
 /// Runs every test, portable then architecture-specific, and returns the

@@ -253,8 +253,9 @@ plus a toy 9P server). All of them pass on both architectures.
 2. ✅ Kernel heap: `lib/heap` (power-of-two size classes, 16 B to
    2 KiB, in slabs; larger requests take whole blocks) behind our
    `#[global_allocator]`.
-3. `trait Mmu`: the kernel's own page tables and address spaces on both
-   arches, with TLB shootdown.
+3. ✅ `trait Mmu` (`port/mmu.rs`): the kernel's own page tables, user
+   address spaces (`Space`), start-up identity maps for the APs, and TLB
+   shootdown (IPIs on amd64, broadcast TLBI on arm64).
 4. Threads: `Proc`, kernel stacks, context switch.
 5. Scheduler: preemptive SMP, per-CPU run queues and priorities;
    sleep/wakeup, `QLock`/`RWLock` with `Sleepable`, `rendezvous`.

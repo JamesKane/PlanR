@@ -16,6 +16,16 @@ Where work stands, for picking it up in a new session. Last updated
      address) behind `port/heap.rs`'s `#[global_allocator]`, one lock per
      class. Larger requests are whole frame blocks. `alloc` is usable in
      the kernel after `mm::init`.
+  3. Page tables (`port/mmu.rs`, `trait Mmu` in each `arch/*/mmu.rs`).
+     `mm::init` builds the kernel's own tables and switches to them: the
+     direct map in 2 MiB blocks, the framebuffer if it is not RAM, and
+     the image W^X from `__text_end`/`__rodata_end` in `link.ld`. The
+     lower half is empty. A `Space` is a lower half. On amd64 every root
+     shares the kernel half's 256 PDPTs, which are allocated up front; on
+     arm64 the halves have their own TTBRs. `KERNEL_SPACE` is where a CPU
+     with no process runs. APs start through a `StartupMap`, which maps
+     the entry code at its physical address and is freed afterwards.
+     `shootdown(mask, va, pages)` flushes the TLBs.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -25,12 +35,12 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-Slice 3, `trait Mmu`: the kernel's own page tables on both arches
-(replacing 9boot's), address spaces for user mode, and TLB shootdown over
-IPIs. Once the kernel no longer runs on 9boot's tables, the `Boot`
-regions can go to the frame allocator. Then slice 4 (threads), and so on
-down the ROADMAP list. Each slice gets its own commit after
-`cargo xtask ci`, and this file is updated with it.
+Slice 4, threads: a `Proc` (kernel part only for now), kernel stacks
+from `mm::alloc_stack` with a matching `free_stack` (unmap, then
+`shootdown`, then free the frames), and a context switch on each arch,
+switching `Space` too. Then slice 5 (the scheduler), and so on down the
+ROADMAP list. Each slice gets its own commit after `cargo xtask ci`, and
+this file is updated with it.
 
 **Reference boards** (`docs/HARDWARE.md`, "Booting Plan R on a board"):
 no runs until P2's exit test. P1 results, for reference:
@@ -88,14 +98,27 @@ no runs until P2's exit test. P1 results, for reference:
 - **Panic backtraces stop after one frame:** the prebuilt `core` has no
   frame pointers, so the chain breaks in the panic machinery. Trap
   backtraces are unaffected.
+- **TLB shootdown rule:** never unmap or call `mmu::shootdown` with a
+  `SpinLock` held. Spin locks hold interrupts off, so a CPU spinning on
+  one cannot take the shootdown IPI. Change the tables under the lock,
+  drop it, then flush; a stuck shootdown panics after 1 s and names the
+  CPU. There are no ASIDs/PCIDs yet: switching spaces flushes the user
+  half (CR3 reload; arm64 `tlbi aside1` on ASID 0 with nG user leaves).
+  Kernel leaves are not global on amd64.
+- **The AP trampoline's GDT has its Accessed bits preset.** Loading a
+  selector otherwise writes them, which faults once the read-only start-up
+  map is live. KVM does this write and TCG does not, so only KVM runs
+  caught it (a silent triple fault right after "clock: ticking").
+- **9boot's `Boot` regions** (its page tables, the boot stack and
+  BootInfo) are still not given to the frame allocator. That needs
+  BootInfo copied out first and the boot stack left behind.
 - **Heap:** every block it uses is zeroed by `mm::alloc_frames`, so
   large allocations pay for a memset they may not need. There are no
   per-CPU caches yet; add them if the class locks show up in profiles.
 - **Frames:** usable RAM below 1 MiB (`mm::FLOOR`) is never handed out;
   `mm::low_pages` finds the amd64 AP trampoline there. Frames may now come
   from anywhere, including above 4 GiB. The `Boot` and `AcpiReclaimable`
-  regions are not yet given to the allocator: that waits for the
-  kernel's own page tables (slice 3) and copies of what it needs. The
+  regions are not yet given to the allocator (see below). The
   per-page state byte has spare bits, but CoW refcounts (slice 9) will
   need a separate array.
 - **Kernel stacks** come only from `mm::alloc_stack`, in 128 KiB slots.

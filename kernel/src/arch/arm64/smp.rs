@@ -5,8 +5,9 @@
 //! job is done here: EL2 is set up for an EL1 kernel), otherwise at EL1.
 //! The entry code is position-independent and takes everything it needs
 //! from a parameter block whose physical address arrives in `x0`: the boot
-//! CPU's translation registers, the new CPU's stack and index, and the
-//! address of [`ap_entry`].
+//! CPU's translation registers (with `TTBR0` pointing at a [`StartupMap`]
+//! that maps the entry code at its own address), the new CPU's stack and
+//! index, and the address of [`ap_entry`].
 
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -18,6 +19,7 @@ use super::{gic, psci, trap};
 use crate::port::acpi::System;
 use crate::port::cpu::{self, Census, Cpu};
 use crate::port::mm;
+use crate::port::mmu::{self, StartupMap};
 use crate::println;
 
 const PSCI_CPU_ON: u64 = 0xc400_0003;
@@ -155,25 +157,23 @@ unsafe extern "C" {
     static planr_ap_entry_end: u8;
 }
 
-fn sysreg_values() -> (u64, u64, u64, u64, u64) {
-    let (mair, tcr, ttbr0, ttbr1, sctlr): (u64, u64, u64, u64, u64);
+fn sysreg_values() -> (u64, u64, u64, u64) {
+    let (mair, tcr, ttbr1, sctlr): (u64, u64, u64, u64);
     // SAFETY: reads system registers.
     unsafe {
         asm!(
             "mrs {0}, mair_el1",
             "mrs {1}, tcr_el1",
-            "mrs {2}, ttbr0_el1",
-            "mrs {3}, ttbr1_el1",
-            "mrs {4}, sctlr_el1",
+            "mrs {2}, ttbr1_el1",
+            "mrs {3}, sctlr_el1",
             out(reg) mair,
             out(reg) tcr,
-            out(reg) ttbr0,
             out(reg) ttbr1,
             out(reg) sctlr,
             options(nomem, nostack),
         );
     }
-    (mair, tcr, ttbr0, ttbr1, sctlr)
+    (mair, tcr, ttbr1, sctlr)
 }
 
 /// Cleans `[va, va + len)` to the point of coherency, so a CPU running with
@@ -204,6 +204,10 @@ pub(crate) fn start_cpus(acpi: Option<&System>) -> Result<Census, &'static str> 
     let entry_len = (&raw const planr_ap_entry_end) as u64 - entry_va;
     clean_to_poc(entry_va, entry_len);
     let entry = mm::kernel_phys(entry_va);
+    // The EL1 path turns the MMU on while running at the entry code's
+    // physical address. Dropped once every CPU has left it.
+    let mut map = StartupMap::new().ok_or("no memory for the start-up map")?;
+    map.map(entry, entry_len).map_err(|_| "cannot map the start-up code")?;
 
     let mut found = 1;
     let targets = madt.entries().filter_map(|e| match e {
@@ -214,7 +218,7 @@ pub(crate) fn start_cpus(acpi: Option<&System>) -> Result<Census, &'static str> 
     });
     for target in targets.filter(|&m| m != me) {
         found += 1;
-        if let Err(e) = start(target, entry) {
+        if let Err(e) = start(target, entry, &map) {
             println!("smp: CPU {target:#x}: {e}");
         }
     }
@@ -237,12 +241,13 @@ const AFFINITY: u64 = 0xff_00ff_ffff;
 /// Starts the CPU with affinity `target` at physical address `entry`.
 /// Each CPU gets its own parameter page, so one that starts after its
 /// timeout still finds its own stack and index.
-fn start(target: u64, entry: u64) -> Result<(), &'static str> {
+fn start(target: u64, entry: u64, map: &StartupMap) -> Result<(), &'static str> {
     let cpu = cpu::claim(target).ok_or("too many CPUs")?;
     let stack = mm::alloc_stack(mm::STACK_PAGES).ok_or("no memory for a stack")?;
     trap::prepare(cpu.index())?;
     let block = mm::alloc_frame().ok_or("no memory for the parameter block")?;
-    let (mair, tcr, ttbr0, ttbr1, sctlr) = sysreg_values();
+    let (mair, tcr, ttbr1, sctlr) = sysreg_values();
+    let ttbr0 = map.root();
     let p = Params {
         mair,
         tcr,
@@ -287,6 +292,7 @@ extern "C" fn ap_entry(index: usize) -> ! {
     };
     // First: a stack overflow finds this CPU's overflow stack by its index.
     super::set_cpu_local(cpu);
+    mmu::leave_startup();
     super::init_traps();
     super::protect::init_cpu();
     if let Err(e) = gic::init_cpu() {

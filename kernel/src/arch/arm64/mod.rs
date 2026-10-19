@@ -31,6 +31,9 @@ pub(crate) const NVEC: usize = 1020;
 pub(crate) const TEST_VECTOR: usize = 15;
 /// The SGI that wakes a CPU to look for work ([`crate::port::cpu::call`]).
 pub(crate) const WAKE_VECTOR: usize = 0;
+/// The SGI that would ask a CPU to flush its TLB; unused, since arm64
+/// broadcasts its invalidations ([`crate::port::mmu::shootdown`]).
+pub(crate) const SHOOTDOWN_VECTOR: usize = 1;
 /// The EL1 virtual timer's PPI when the GTDT does not say.
 const DEFAULT_TIMER_PPI: u32 = 27;
 

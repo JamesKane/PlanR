@@ -43,6 +43,11 @@ impl<T> SpinLock<T> {
         SpinGuard { lock: self, pl }
     }
 
+    /// The value, through exclusive access to the lock itself.
+    pub(crate) fn get_mut(&mut self) -> &mut T {
+        self.value.get_mut()
+    }
+
     /// Takes the lock if it is free. Used by the panic path, which must not
     /// deadlock on a lock held by the code that panicked.
     pub(crate) fn try_lock(&self) -> Option<SpinGuard<'_, T>> {

@@ -18,6 +18,7 @@ SECTIONS
         KEEP(*(.text.boot))
         *(.text .text.*)
     } :text
+    __text_end = ALIGN(4096);
 
     . = ALIGN(4096);
     .rodata : {
@@ -34,6 +35,7 @@ SECTIONS
         . += 0x80000;
         __ksyms_end = .;
     } :rodata
+    __rodata_end = ALIGN(4096);
 
     . = ALIGN(4096);
     .data : {

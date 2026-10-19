@@ -2,15 +2,16 @@
 //! buddy allocator over the boot memory map's free RAM), an MMIO mapping
 //! window, and kernel stacks with guard space below them.
 //!
-//! The page tables are still 9boot's; the kernel's own come later in P2.
+//! The page tables are the kernel's own (`port/mmu.rs`), built in
+//! [`init`].
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use bootinfo::{BootInfo, HHDM_BASE, Region, RegionKind, phys_to_virt};
 use frames::Frames;
 
-use crate::arch;
 use crate::port::lock::SpinLock;
+use crate::port::mmu::{self, MapError};
 
 pub(crate) const PAGE: u64 = 4096;
 const PAGE_BYTES: usize = 4096;
@@ -47,10 +48,19 @@ pub(crate) enum MapKind {
     /// device promptly (framebuffers, the log ring): uncached, but writes
     /// may be combined. Writable, never executable.
     WriteCombining,
+    /// The kernel's code: cacheable, read-only, executable.
+    KernelText,
     /// Ordinary memory in the lower half that user mode may read and write:
     /// cacheable, never executable. With SMAP or PAN on, the kernel reaches
-    /// it only through [`arch::probe_user_read`].
+    /// it only through [`crate::arch::probe_user_read`].
     UserReadWrite,
+}
+
+impl MapKind {
+    /// True for the kinds that belong in the lower (user) half.
+    pub(crate) fn is_user(self) -> bool {
+        self == MapKind::UserReadWrite
+    }
 }
 
 /// Never hand out memory below 1 MiB: amd64 needs it for the AP start-up
@@ -61,8 +71,6 @@ static FRAMES: SpinLock<Frames> = SpinLock::new(Frames::new(HHDM_BASE));
 static MMIO_NEXT: AtomicU64 = AtomicU64::new(MMIO_BASE);
 static STACK_NEXT: AtomicU64 = AtomicU64::new(STACK_BASE);
 static MEMORY: SpinLock<&'static [Region]> = SpinLock::new(&[]);
-/// Serializes page-table updates; held around each mapping's walk.
-static MAP: SpinLock<()> = SpinLock::new(());
 /// Where 9boot loaded the kernel image.
 static KERNEL_PHYS: AtomicU64 = AtomicU64::new(0);
 
@@ -71,7 +79,9 @@ unsafe extern "C" {
     static __kernel_start: u8;
 }
 
-pub(crate) fn init(info: &'static BootInfo) {
+/// Takes over the boot memory map's free RAM and switches to the kernel's
+/// own page tables.
+pub(crate) fn init(info: &'static BootInfo) -> Result<(), MapError> {
     let mut frames = FRAMES.lock();
     for r in info.memory().iter().filter(|r| r.kind == RegionKind::Usable) {
         // SAFETY: usable RAM is free once the kernel runs, and 9boot's
@@ -81,6 +91,7 @@ pub(crate) fn init(info: &'static BootInfo) {
     drop(frames);
     *MEMORY.lock() = info.memory();
     KERNEL_PHYS.store(info.kernel_phys, Ordering::Relaxed);
+    mmu::init(info)
 }
 
 /// Free and total pages, and the number of arenas they are in.
@@ -150,9 +161,9 @@ pub(crate) fn alloc_stack(pages: u64) -> Option<u64> {
         return None;
     }
     let top = slot + STACK_SLOT / 2;
-    let _map = MAP.lock();
+    let mut k = mmu::kernel();
     for i in 1..=pages {
-        arch::mmu::map_page(top - i * PAGE, alloc_frame()?, MapKind::NormalReadWrite)?;
+        k.map(top - i * PAGE, alloc_frame()?, MapKind::NormalReadWrite).ok()?;
     }
     Some(top)
 }
@@ -185,9 +196,9 @@ pub(crate) fn map_phys(phys: u64, len: u64, kind: MapKind) -> Option<u64> {
     if va + pages * PAGE > MMIO_LIMIT {
         return None;
     }
-    let _map = MAP.lock();
+    let mut k = mmu::kernel();
     for i in 0..pages {
-        arch::mmu::map_page(va + i * PAGE, first + i * PAGE, kind)?;
+        k.map(va + i * PAGE, first + i * PAGE, kind).ok()?;
     }
     Some(va + (phys - first))
 }
@@ -196,10 +207,11 @@ pub(crate) fn map_phys(phys: u64, len: u64, kind: MapKind) -> Option<u64> {
 pub(crate) mod ktests {
     use bootinfo::phys_to_virt;
 
-    use super::{MAP, MapKind, PAGE, alloc_frame, alloc_frames, alloc_stack, frame_counts, free_frames};
+    use super::{MapKind, PAGE, alloc_frame, alloc_frames, alloc_stack, frame_counts, free_frames};
     use crate::arch;
     use crate::port::ktest::TestResult;
     use crate::port::lock::SpinLock;
+    use crate::port::mmu::KERNEL_SPACE;
 
     /// Where [`user_page`] maps its page: near the top of the lower half,
     /// far above any RAM the identity map covers.
@@ -216,8 +228,9 @@ pub(crate) mod ktests {
             let frame = alloc_frame().ok_or("no memory for a user page")?;
             // SAFETY: the frame is new, in the direct map and ours.
             unsafe { (phys_to_virt(frame) as *mut u64).write(USER_WORD) };
-            let _map = MAP.lock();
-            arch::mmu::map_page(USER_PAGE, frame, MapKind::UserReadWrite).ok_or("cannot map a user page")?;
+            KERNEL_SPACE
+                .map(USER_PAGE, frame, MapKind::UserReadWrite)
+                .map_err(|_| "cannot map a user page")?;
             *mapped = true;
         }
         Ok(USER_PAGE)

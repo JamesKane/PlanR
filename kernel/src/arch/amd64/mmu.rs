@@ -1,10 +1,11 @@
-//! amd64 page tables: 4-level, 4 KiB pages.
+//! amd64 page tables: 4-level, 4 KiB pages and 2 MiB blocks. One root
+//! (CR3) covers both halves, so each address space's root carries the
+//! kernel half's entries (`port/mmu.rs`).
 
 use core::arch::asm;
 
-use bootinfo::phys_to_virt;
-
-use crate::port::mm::{self, MapKind};
+use crate::port::mm::MapKind;
+use crate::port::mmu::{self, Mmu};
 
 const PRESENT: u64 = 1 << 0;
 const WRITABLE: u64 = 1 << 1;
@@ -28,45 +29,79 @@ pub(crate) fn init_cpu() {
     unsafe { super::cpu::wrmsr(IA32_PAT, PAT) };
 }
 
-fn table(phys: u64) -> *mut u64 {
-    phys_to_virt(phys) as *mut u64
-}
-
-/// Maps one 4 KiB page in the current address space. User pages go in
-/// the lower half only.
-pub(crate) fn map_page(va: u64, pa: u64, kind: MapKind) -> Option<()> {
-    let user = kind == MapKind::UserReadWrite;
-    if user && va >> 63 != 0 {
-        return None;
-    }
+fn read_cr3() -> u64 {
     let cr3: u64;
     // SAFETY: reading CR3 has no side effects.
     unsafe { asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack)) };
-    let mut t = table(cr3 & ADDR);
-    for shift in [39, 30, 21] {
-        let idx = ((va >> shift) & 511) as usize;
-        // SAFETY: `t` is a live page-table page reached through the direct map.
-        let e = unsafe { &mut *t.add(idx) };
-        if *e & PRESENT == 0 {
-            *e = mm::alloc_frame()? | PRESENT | WRITABLE;
-        } else if *e & HUGE != 0 {
-            return None; // already covered by a large page
-        }
-        // A page is reachable from user mode only if every level allows it.
-        if user {
-            *e |= USER;
-        }
-        t = table(*e & ADDR);
+    cr3
+}
+
+/// The amd64 format.
+#[derive(Debug)]
+pub(crate) enum Native {}
+
+impl Mmu for Native {
+    const SHARED_ROOT: bool = true;
+    const BROADCAST_FLUSH: bool = false;
+
+    fn table(phys: u64, user: bool) -> u64 {
+        // A page is reachable from user mode only if every level allows
+        // it; the leaves decide.
+        phys | PRESENT | WRITABLE | if user { USER } else { 0 }
     }
-    let leaf = match kind {
-        MapKind::Device => PRESENT | WRITABLE | CACHE_DISABLE | WRITE_THROUGH | NO_EXECUTE,
-        MapKind::NormalReadOnly => PRESENT | NO_EXECUTE,
-        MapKind::NormalReadWrite => PRESENT | WRITABLE | NO_EXECUTE,
-        MapKind::WriteCombining => PRESENT | WRITABLE | WRITE_THROUGH | NO_EXECUTE,
-        MapKind::UserReadWrite => PRESENT | WRITABLE | USER | NO_EXECUTE,
-    };
-    // SAFETY: as above; a not-present entry is never cached in the TLB, so
-    // no invalidation is needed for a fresh mapping.
-    unsafe { *t.add(((va >> 12) & 511) as usize) = pa | leaf };
-    Some(())
+
+    fn leaf(phys: u64, kind: MapKind, block: bool) -> u64 {
+        let attrs = match kind {
+            MapKind::Device => WRITABLE | CACHE_DISABLE | WRITE_THROUGH | NO_EXECUTE,
+            MapKind::NormalReadOnly => NO_EXECUTE,
+            MapKind::NormalReadWrite => WRITABLE | NO_EXECUTE,
+            MapKind::KernelText => 0,
+            MapKind::WriteCombining => WRITABLE | WRITE_THROUGH | NO_EXECUTE,
+            MapKind::UserReadWrite => WRITABLE | USER | NO_EXECUTE,
+        };
+        phys | PRESENT | attrs | if block { HUGE } else { 0 }
+    }
+
+    fn is_valid(e: u64) -> bool {
+        e & PRESENT != 0
+    }
+
+    fn is_table(e: u64, shift: u32) -> bool {
+        shift == 39 || e & HUGE == 0
+    }
+
+    fn address(e: u64) -> u64 {
+        e & ADDR
+    }
+
+    fn publish() {}
+
+    unsafe fn load(kernel: u64, _user: u64) {
+        // SAFETY: the caller's contract. Writing CR3 flushes the TLB.
+        unsafe { asm!("mov cr3, {}", in(reg) kernel, options(nostack)) };
+    }
+
+    unsafe fn activate(user: u64) {
+        if read_cr3() & ADDR != user {
+            // SAFETY: the caller's contract.
+            unsafe { asm!("mov cr3, {}", in(reg) user, options(nostack)) };
+        }
+    }
+
+    fn flush_local(va: u64, pages: u64) {
+        if mmu::flush_all_instead(pages) {
+            // SAFETY: reloading CR3 flushes every non-global translation,
+            // and the kernel uses none that are global.
+            unsafe { asm!("mov cr3, {}", in(reg) read_cr3(), options(nostack)) };
+            return;
+        }
+        for i in 0..pages {
+            // SAFETY: invlpg only drops a translation.
+            unsafe { asm!("invlpg [{}]", in(reg) va + i * 4096, options(nostack)) };
+        }
+    }
+
+    fn flush_everywhere(va: u64, pages: u64) {
+        Self::flush_local(va, pages);
+    }
 }
