@@ -4,7 +4,9 @@
 //!
 //! A call runs on the calling thread's kernel stack with interrupts on, so
 //! it may sleep. A failure sets the thread's error text, which `errstr`
-//! fetches, and returns the error word.
+//! fetches, and returns the error word. Calls that never return (`exits`,
+//! `exec`) leave nothing on the stack that needs dropping: the dispatcher
+//! holds no reference to the thread while a call runs.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -12,9 +14,10 @@ use core::fmt;
 
 use abi::{ERRMAX, Failed, Sys};
 
-use crate::port::proc::{self, Proc};
+use crate::port::proc;
+use crate::port::segment::SegError;
 use crate::port::uaccess::{self, BadAddress};
-use crate::port::{clock, mm};
+use crate::port::{clock, exec};
 use crate::println;
 
 /// Why a call failed: its error text.
@@ -37,16 +40,22 @@ const EBADSYS: &str = "bad system call";
 const EBADARG: &str = "bad arg in system call";
 const EBADADDR: &str = "bad address in system call";
 const ENOTYET: &str = "system call not yet implemented";
+const ENOCHILD: &str = "no living children";
+const ESOVERLAP: &str = "segments overlap";
+/// The longest file name a call takes.
+const NAME_MAX: usize = 1024;
 
 type SysResult = Result<u64, Error>;
 
 /// Runs system call `number` for the calling thread and returns the
 /// register pair its caller sees.
 pub(crate) fn dispatch(number: u64, args: [u64; abi::MAX_ARGS]) -> [u64; 2] {
-    let me = proc::current().expect("a system call comes from a thread");
     let r = match Sys::from_raw(number) {
-        Some(Sys::Errstr) => errstr(&me, args[0], args[1]),
+        Some(Sys::Errstr) => errstr(args[0], args[1]),
         Some(Sys::Exits) => exits(args[0]),
+        Some(Sys::Exec) => exec(args[0], args[1]),
+        Some(Sys::Await) => await_(args[0], args[1]),
+        Some(Sys::Brk) => brk(args[0]),
         Some(Sys::Settls) => settls(args[0]),
         Some(Sys::Sleep) => sleep(args[0]),
         Some(_) => Err(Error::from(ENOTYET)),
@@ -55,14 +64,19 @@ pub(crate) fn dispatch(number: u64, args: [u64; abi::MAX_ARGS]) -> [u64; 2] {
     abi::encode(r.map_err(|Error(text)| {
         let mut e = text.into_bytes();
         e.truncate(ERRMAX - 1);
-        *me.errstr().lock() = e;
+        *me().errstr().lock() = e;
         Failed
     }))
 }
 
+fn me() -> alloc::sync::Arc<proc::Proc> {
+    proc::current().expect("a system call comes from a thread")
+}
+
 /// `errstr(buf, n)`: swaps the thread's error text with the string in
 /// `buf`, both cut to fit `n` bytes with the NUL.
-fn errstr(me: &Proc, buf: u64, n: u64) -> SysResult {
+fn errstr(buf: u64, n: u64) -> SysResult {
+    let me = me();
     let n = usize::try_from(n).map_err(|_| EBADARG)?.min(ERRMAX);
     if n == 0 {
         return Err(Error::from(EBADARG));
@@ -89,6 +103,64 @@ fn exits(msg: u64) -> SysResult {
         uaccess::copy_in_str(msg, ERRMAX - 1).unwrap_or_else(|_| b"exits: bad address".to_vec())
     };
     proc::exits(status)
+}
+
+/// `exec(name, argv)`: replaces the thread's program.
+fn exec(name: u64, argv: u64) -> SysResult {
+    let path = uaccess::copy_in_str(name, NAME_MAX)?;
+    let argv = read_argv(argv)?;
+    let l = exec::load(&path, &argv)?;
+    drop((path, argv));
+    proc::exec(l.mem, l.name, l.pc, l.sp)
+}
+
+/// The strings `argv` points at, up to its null pointer, within
+/// [`exec::ARGS_MAX`]. A null `argv` is no arguments.
+fn read_argv(argv: u64) -> Result<Vec<Vec<u8>>, Error> {
+    let mut strings = Vec::new();
+    // Each takes its NUL and its pointer; the null pointer ends the list.
+    let mut room = exec::ARGS_MAX - 8;
+    if argv == 0 {
+        return Ok(strings);
+    }
+    for i in 0.. {
+        let mut w = [0u8; 8];
+        uaccess::copy_in(&mut w, argv.checked_add(i * 8).ok_or(BadAddress)?)?;
+        let p = u64::from_ne_bytes(w);
+        if p == 0 {
+            break;
+        }
+        let a = uaccess::copy_in_str(p, room.saturating_sub(8))?;
+        if a.len() + 9 > room {
+            return Err(Error::from(exec::E2BIG));
+        }
+        room -= a.len() + 9;
+        strings.push(a);
+    }
+    Ok(strings)
+}
+
+/// `await(buf, n)`: waits for a child to exit and returns its wait
+/// message, cut to `n` bytes.
+fn await_(buf: u64, n: u64) -> SysResult {
+    let n = usize::try_from(n).map_err(|_| EBADARG)?.min(4 * ERRMAX);
+    uaccess::check(buf, n)?;
+    let s = proc::sleepable().expect("a system call may sleep");
+    let w = proc::await_child(&s).ok_or(ENOCHILD)?;
+    let mut text = alloc::vec![0u8; n];
+    let len = abi::format_waitmsg(w.pid, w.times, &w.msg, &mut text);
+    uaccess::copy_out(buf, &text[..len])?;
+    Ok(len as u64)
+}
+
+/// `brk(addr)`: moves the end of the bss segment.
+fn brk(addr: u64) -> SysResult {
+    let mem = me().memory().ok_or(EBADARG)?;
+    match mem.brk(addr) {
+        Ok(()) => Ok(0),
+        Err(SegError::BadAddress) => Err(Error::from(EBADARG)),
+        Err(SegError::Overlap) => Err(Error::from(ESOVERLAP)),
+    }
 }
 
 /// `settls(addr)`: sets the thread pointer.
@@ -125,58 +197,17 @@ pub(crate) fn user_trap(what: &dyn fmt::Display, pc: u64) -> ! {
     proc::exits(status)
 }
 
-/// A fresh user address space for tests, with the pages it maps.
-#[derive(Debug)]
-pub(crate) struct TestSpace {
-    pub(crate) space: alloc::sync::Arc<crate::port::mmu::Space>,
-    pages: Vec<(u64, u64)>,
-}
-
-impl TestSpace {
-    pub(crate) fn new() -> Option<TestSpace> {
-        Some(TestSpace {
-            space: alloc::sync::Arc::new(crate::port::mmu::Space::new()?),
-            pages: Vec::new(),
-        })
-    }
-
-    /// Maps a new zeroed page at `va` and returns its frame.
-    pub(crate) fn page(&mut self, va: u64, kind: mm::MapKind) -> Option<u64> {
-        let frame = mm::alloc_frame()?;
-        if self.space.map(va, frame, kind).is_err() {
-            // SAFETY: never mapped.
-            unsafe { mm::free_frames(frame, 0) };
-            return None;
-        }
-        self.pages.push((va, frame));
-        Some(frame)
-    }
-}
-
-impl Drop for TestSpace {
-    fn drop(&mut self) {
-        for &(va, frame) in &self.pages {
-            if self.space.unmap(va) == Some(frame) {
-                // SAFETY: unmapped and flushed from every CPU.
-                unsafe { mm::free_frames(frame, 0) };
-            }
-        }
-    }
-}
-
 /// Tests run by [`crate::port::ktest`].
 pub(crate) mod ktests {
     use alloc::sync::Arc;
 
-    use bootinfo::phys_to_virt;
-
-    use super::TestSpace;
     use crate::arch;
     use crate::port::clock;
     use crate::port::cpu;
     use crate::port::ktest::TestResult;
-    use crate::port::mm::{MapKind, PAGE};
+    use crate::port::mm::PAGE;
     use crate::port::proc::{PRI_NORMAL, Proc, Spawn, State, spawn_user};
+    use crate::port::segment::{Kind, Memory, Segment};
 
     const SECOND: u64 = 1_000_000_000;
     const TEXT: u64 = 0x0000_0000_0040_0000;
@@ -196,51 +227,60 @@ pub(crate) mod ktests {
     const BUF: usize = 0x100;
     const FROM_USER: &[u8] = b"from user\0";
 
-    /// A user thread running the test program, and its data page.
+    /// A user thread running the test program, and its memory, kept to
+    /// look at once the thread is dead.
     struct Run {
         p: Arc<Proc>,
-        data: *mut u64,
-        _space: TestSpace,
+        mem: Arc<Memory>,
     }
 
     impl Run {
         fn word(&self, i: usize) -> u64 {
-            // SAFETY: the data page is ours, in the direct map, and its
-            // thread is dead.
-            unsafe { self.data.add(i).read_volatile() }
+            let mut w = [0u8; 8];
+            self.mem
+                .read(DATA + i as u64 * 8, &mut w)
+                .expect("the data page is there");
+            u64::from_ne_bytes(w)
         }
 
-        fn buf(&self) -> &[u8] {
-            // SAFETY: as above.
-            let b = unsafe { core::slice::from_raw_parts(self.data.cast::<u8>().add(BUF), 128) };
-            &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]
+        fn buf(&self) -> alloc::vec::Vec<u8> {
+            let mut b = alloc::vec![0u8; 128];
+            self.mem
+                .read(DATA + BUF as u64, &mut b)
+                .expect("the data page is there");
+            b.truncate(b.iter().position(|&c| c == 0).unwrap_or(b.len()));
+            b
         }
     }
 
-    /// Starts the test program in a space of its own, on this CPU.
-    fn start(tag: u64, mode: u64) -> Result<Run, &'static str> {
+    /// Starts the test program in memory of its own, on this CPU: one page
+    /// each of text, data and stack, with the stack pointer `below` bytes
+    /// under the top.
+    fn start(tag: u64, mode: u64, below: u64) -> Result<Run, &'static str> {
         let program = arch::context::ktests::user_test();
-        let mut s = TestSpace::new().ok_or("no memory for a space")?;
-        let text = s.page(TEXT, MapKind::UserText).ok_or("cannot map text")?;
-        let data = s.page(DATA, MapKind::UserReadWrite).ok_or("cannot map data")?;
-        s.page(STACK, MapKind::UserReadWrite).ok_or("cannot map a stack")?;
-        let text_va = phys_to_virt(text);
-        let data = phys_to_virt(data) as *mut u64;
-        // SAFETY: both frames are new, ours, and in the direct map.
-        unsafe {
-            core::ptr::copy_nonoverlapping(program.as_ptr(), text_va as *mut u8, program.len());
-            data.add(TAG).write(tag);
-            data.add(MODE).write(mode);
-            core::ptr::copy_nonoverlapping(FROM_USER.as_ptr(), data.cast::<u8>().add(BUF), FROM_USER.len());
+        let mem = Memory::new().ok_or("no memory for a space")?;
+        for (kind, at) in [(Kind::Text, TEXT), (Kind::Data, DATA), (Kind::Stack, STACK)] {
+            mem.add(Segment::new(kind, at, at + PAGE, &[], 0))
+                .map_err(|_| "segments overlap")?;
         }
-        arch::mmu::sync_icache(text_va, program.len() as u64);
+        let (tag, mode) = (tag.to_ne_bytes(), mode.to_ne_bytes());
+        let fill: [(u64, &[u8]); 4] = [
+            (TEXT, program),
+            (DATA + TAG as u64 * 8, &tag),
+            (DATA + MODE as u64 * 8, &mode),
+            (DATA + BUF as u64, FROM_USER),
+        ];
+        for (at, bytes) in fill {
+            mem.write(at, bytes).map_err(|_| "cannot fill the program's memory")?;
+        }
+        let mem = Arc::new(mem);
         let how = Spawn {
             name: "utest",
             pri: PRI_NORMAL,
             wired: Some(cpu::current().index()),
         };
-        let p = spawn_user(how, s.space.clone(), TEXT, STACK + PAGE, DATA).ok_or("cannot spawn")?;
-        Ok(Run { p, data, _space: s })
+        let p = spawn_user(how, mem.clone(), TEXT, STACK + PAGE - below, DATA).ok_or("cannot spawn")?;
+        Ok(Run { p, mem })
     }
 
     fn wait_dead(runs: &[&Run]) -> TestResult {
@@ -257,7 +297,9 @@ pub(crate) mod ktests {
     /// `exits` ends them.
     pub(crate) fn user_threads_call() -> TestResult {
         let pl = arch::splhi();
-        let runs = (start(0x1111_2222_3333_4444, 0), start(0x5555_6666_7777_8888, 0));
+        // Different stack pointers, so a thread that resumes with the
+        // other's shows it.
+        let runs = (start(0x1111_2222_3333_4444, 0, 0), start(0x5555_6666_7777_8888, 0, 64));
         arch::splx(pl);
         let (a, b) = (runs.0?, runs.1?);
         wait_dead(&[&a, &b])?;
@@ -265,7 +307,7 @@ pub(crate) mod ktests {
             match r.word(STATUS) {
                 1 => {}
                 2 => return Err("FP/SIMD state or thread pointer lost across a switch".into()),
-                3 => return Err("a register lost across a system call".into()),
+                3 => return Err("a register (perhaps the stack pointer) lost across a system call".into()),
                 _ => return Err("the program did not finish".into()),
             }
             if r.word(SETTLS_ERR) != 0 {
@@ -293,7 +335,7 @@ pub(crate) mod ktests {
     /// A user thread that reads address 0 is ended, with a status saying
     /// why, and the kernel carries on.
     pub(crate) fn user_fault_kills() -> TestResult {
-        let r = start(1, 1)?;
+        let r = start(1, 1, 0)?;
         wait_dead(&[&r])?;
         let status = r.p.status().ok_or("no exit status")?;
         if !status.starts_with(b"sys: trap: ") {

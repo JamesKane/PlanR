@@ -26,6 +26,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::port::cpu::{self, Cpu, MAXCPU};
+use crate::port::segment::{self, Access};
 use crate::port::{trap, uaccess};
 
 const KERNEL_CS: u16 = 0x08;
@@ -50,7 +51,7 @@ const IA32_FMASK: u32 = 0xc000_0084;
 const SYSCALL_FMASK: u64 = 0x0004_7700;
 
 /// GDT layout. User data sits below user code so that `SYSRET` (CS =
-/// STAR+16, SS = STAR+8) works with STAR[63:48] = `KERNEL_DS`.
+/// STAR+16, SS = STAR+8) works with STAR[63:48] = `KERNEL_DS | 3`.
 const GDT: [u64; 5] = [
     0,
     0x00af_9a00_0000_ffff, // 0x08 kernel code: 64-bit, DPL 0
@@ -268,7 +269,10 @@ pub(crate) fn load(index: usize) {
             tmp = out(reg) _,
         );
     }
-    let star = u64::from(KERNEL_DS) << 48 | u64::from(KERNEL_CS) << 32;
+    // SYSRET's selectors come from STAR[63:48] with RPL 3 already in it:
+    // Intel ORs 3 into SS, but AMD loads it as given, and a user SS of RPL
+    // 0 passes until something returns to user mode by `iretq` and faults.
+    let star = u64::from(KERNEL_DS | 3) << 48 | u64::from(KERNEL_CS) << 32;
     // SAFETY: `syscall` enters at the entry below, on the kernel stack
     // `set_kernel_stack` gives it; the selectors match the GDT.
     unsafe {
@@ -520,6 +524,29 @@ impl fmt::Display for TrapFrame {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PfError(u64);
 
+impl PfError {
+    /// The page was not present (rather than present but protected).
+    fn not_present(self) -> bool {
+        self.0 & 1 == 0
+    }
+
+    fn access(self) -> Access {
+        if self.0 & (1 << 4) != 0 {
+            Access::Exec
+        } else if self.0 & (1 << 1) != 0 {
+            Access::Write
+        } else {
+            Access::Read
+        }
+    }
+}
+
+/// True if the fault at `addr` was on a page not yet mapped in a segment
+/// of the running process, which is now mapped: retry the access.
+fn demand_page(addr: u64, error: PfError) -> bool {
+    error.not_present() && segment::fault(addr, error.access())
+}
+
 impl fmt::Display for PfError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let e = self.0;
@@ -668,11 +695,16 @@ extern "C" fn trap(f: &mut TrapFrame) {
         ),
         // Not the user code's doing, wherever they arrive.
         Exception::Nmi | Exception::MachineCheck | Exception::DoubleFault => trap::fatal(&ex, f, f.rip, f.rbp),
+        // A page of a segment, touched for the first time.
+        Exception::PageFault { addr, error } if user && demand_page(addr, error) => {}
         // Anything else from user mode is the thread's own fault.
         _ if user => crate::port::syscall::user_trap(&ex, f.rip),
         // int3 leaves rip after itself, so returning resumes.
         Exception::Breakpoint => trap::count_breakpoint(),
         Exception::PageFault { .. } | Exception::GeneralProtection(_) => match trap::fixup(f.rip) {
+            // A user copy on a page not yet touched: map it and retry
+            // (`rep movsb` picks up where it stopped).
+            Some(_) if matches!(ex, Exception::PageFault { addr, error } if demand_page(addr, error)) => {}
             Some(resume) => f.rip = resume,
             None => trap::fatal(&ex, f, f.rip, f.rbp),
         },

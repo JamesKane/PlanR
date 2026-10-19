@@ -22,11 +22,17 @@
 //! always safe. Interrupt handlers run on the interrupted thread's stack,
 //! which keeps the interrupted state until the thread resumes.
 //!
-//! **User threads.** A user thread is a thread with a user address space.
-//! It starts by leaving the kernel for user mode, and comes back on traps
-//! and system calls. Switching to a thread activates its space (a kernel
-//! thread's is the kernel space), loads its user registers and points the
-//! CPU's way in from user mode at its kernel stack.
+//! **User threads.** A user thread is a thread with a user address space,
+//! its [`Memory`]. It starts by leaving the kernel for user mode, and comes
+//! back on traps and system calls. Switching to a thread activates its
+//! space (a kernel thread's is the kernel space), loads its user registers
+//! and points the CPU's way in from user mode at its kernel stack. `exec`
+//! gives it new memory ([`exec`]); its memory is freed once it is dead and
+//! switched away from.
+//!
+//! **Children.** A user thread started by another thread is its child.
+//! When it exits, its parent gets a [`Wait`] message, which [`await_child`]
+//! returns, as Plan 9's `await` does.
 //!
 //! **Switching.** A thread being left is still running on its own stack
 //! until the switch has saved it. So it goes back on a queue (or, if dead,
@@ -38,17 +44,19 @@
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use crate::arch::{self, context::Context, context::UserRegs};
+use crate::port::clock;
 use crate::port::cpu::{self, MAXCPU};
 use crate::port::lock::SpinLock;
 use crate::port::mm::Stack;
-use crate::port::mmu::{self, Space};
+use crate::port::mmu;
+use crate::port::segment::Memory;
 
 /// Priorities, 0 (lowest) to `NPRI - 1`, as in Plan 9.
 pub(crate) const NPRI: usize = 20;
@@ -60,6 +68,8 @@ pub(crate) const PRI_KPROC: usize = 13;
 const QUANTUM: u32 = 2;
 /// "Not wired to a CPU."
 const UNWIRED: usize = usize::MAX;
+/// The most wait messages kept for a parent that does not await them.
+const MAX_WAITS: usize = 128;
 
 /// What a process is doing.
 #[repr(u8)]
@@ -77,7 +87,8 @@ pub(crate) enum State {
 /// A process: a thread of control with its own kernel stack.
 pub(crate) struct Proc {
     pid: u64,
-    name: String,
+    /// Its program's name, once it has one.
+    name: SpinLock<String>,
     pri: usize,
     /// The CPU it must run on, or [`UNWIRED`].
     wired: usize,
@@ -93,8 +104,12 @@ pub(crate) struct Proc {
     stack: Stack,
     /// What the thread runs; taken when it starts.
     entry: SpinLock<Option<Entry>>,
-    /// A user thread's address space; `None` for a kernel thread.
-    space: Option<Arc<Space>>,
+    /// True for a user thread.
+    is_user: bool,
+    /// A user thread's memory, until it is dead and switched away from.
+    /// Changed only by the thread itself (exec) and by the switch that
+    /// leaves it dead.
+    mem: SpinLock<Option<Arc<Memory>>>,
     /// A user thread's registers that the switch keeps. Touched only by
     /// the CPU running the thread, with interrupts off.
     user: UnsafeCell<UserRegs>,
@@ -102,6 +117,32 @@ pub(crate) struct Proc {
     errstr: SpinLock<Vec<u8>>,
     /// The exit status, once `exits` or a fatal trap has set it.
     status: SpinLock<Option<Vec<u8>>>,
+    /// Who hears when it exits.
+    parent: Option<Weak<Proc>>,
+    children: SpinLock<Children>,
+    /// Woken when a child exits.
+    child_exited: Rendez,
+    /// When it was made, for [`Wait::times`].
+    started_ns: u64,
+}
+
+/// A thread's children: how many are alive, and the wait messages of those
+/// that have exited.
+#[derive(Debug)]
+struct Children {
+    live: usize,
+    exited: VecDeque<Wait>,
+}
+
+/// What a parent learns of a child that exited.
+#[derive(Debug, Clone)]
+pub(crate) struct Wait {
+    pub(crate) pid: u64,
+    /// User, system and real time in milliseconds. Only the real time is
+    /// counted yet.
+    pub(crate) times: [u64; 3],
+    /// Empty for a normal exit, else `name pid: status`.
+    pub(crate) msg: Vec<u8>,
 }
 
 /// What a new thread runs.
@@ -123,7 +164,7 @@ impl core::fmt::Debug for Proc {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Proc")
             .field("pid", &self.pid)
-            .field("name", &self.name)
+            .field("name", &*self.name.lock())
             .field("pri", &self.pri)
             .field("state", &self.state())
             .finish_non_exhaustive()
@@ -135,8 +176,13 @@ impl Proc {
         self.pid
     }
 
-    pub(crate) fn name(&self) -> &str {
-        &self.name
+    pub(crate) fn name(&self) -> String {
+        self.name.lock().clone()
+    }
+
+    /// A user thread's memory.
+    pub(crate) fn memory(&self) -> Option<Arc<Memory>> {
+        self.mem.lock().clone()
     }
 
     pub(crate) fn state(&self) -> State {
@@ -277,16 +323,17 @@ unsafe fn local() -> &'static mut Local {
 
 /// Makes a kernel thread that runs `f`, and makes it ready.
 pub(crate) fn spawn(how: Spawn<'_>, f: impl FnOnce() + Send + 'static) -> Option<Arc<Proc>> {
-    make(how, None, Entry::Kernel(Box::new(f)))
+    make(how, None, None, Entry::Kernel(Box::new(f)))
 }
 
-/// Makes a user thread in `space` that starts at `pc` with stack pointer
-/// `sp` and `arg` in the first argument register, and makes it ready.
-pub(crate) fn spawn_user(how: Spawn<'_>, space: Arc<Space>, pc: u64, sp: u64, arg: u64) -> Option<Arc<Proc>> {
-    make(how, Some(space), Entry::User { pc, sp, arg })
+/// Makes a user thread in `mem` that starts at `pc` with stack pointer
+/// `sp` and `arg` in the first argument register, and makes it ready. It
+/// is a child of the calling thread, if any.
+pub(crate) fn spawn_user(how: Spawn<'_>, mem: Arc<Memory>, pc: u64, sp: u64, arg: u64) -> Option<Arc<Proc>> {
+    make(how, Some(mem), current(), Entry::User { pc, sp, arg })
 }
 
-fn make(how: Spawn<'_>, space: Option<Arc<Space>>, entry: Entry) -> Option<Arc<Proc>> {
+fn make(how: Spawn<'_>, mem: Option<Arc<Memory>>, parent: Option<Arc<Proc>>, entry: Entry) -> Option<Arc<Proc>> {
     assert!(how.pri < NPRI, "priority out of range");
     let stack = Stack::new()?;
     // SAFETY: the stack is new and ours.
@@ -294,7 +341,7 @@ fn make(how: Spawn<'_>, space: Option<Arc<Space>>, entry: Entry) -> Option<Arc<P
     let wired = how.wired.unwrap_or(UNWIRED);
     let p = Arc::new(Proc {
         pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
-        name: String::from(how.name),
+        name: SpinLock::new(String::from(how.name)),
         pri: how.pri,
         wired,
         state: AtomicU8::new(State::Sleeping as u8),
@@ -307,11 +354,22 @@ fn make(how: Spawn<'_>, space: Option<Arc<Space>>, entry: Entry) -> Option<Arc<P
         context: UnsafeCell::new(context),
         stack,
         entry: SpinLock::new(Some(entry)),
-        space,
+        is_user: mem.is_some(),
+        mem: SpinLock::new(mem),
         user: UnsafeCell::new(UserRegs::INITIAL),
         errstr: SpinLock::new(Vec::new()),
         status: SpinLock::new(None),
+        parent: parent.as_ref().map(Arc::downgrade),
+        children: SpinLock::new(Children {
+            live: 0,
+            exited: VecDeque::new(),
+        }),
+        child_exited: Rendez::new(),
+        started_ns: clock::now_ns(),
     });
+    if let Some(parent) = parent {
+        parent.children.lock().live += 1;
+    }
     ready(p.clone());
     Some(p)
 }
@@ -470,8 +528,75 @@ pub(crate) fn set_tls(tls: u64) {
     arch::splx(pl);
 }
 
+/// Gives the calling thread new memory, in which it starts at `pc` with
+/// stack pointer and first argument `sp`, with fresh user registers: the
+/// end of `exec`. Nothing is left on the caller's kernel stack that needs
+/// dropping, since the thread starts over at its top.
+pub(crate) fn exec(mem: Arc<Memory>, name: String, pc: u64, sp: u64) -> ! {
+    let me = current().expect("exec comes from a thread");
+    assert!(me.is_user, "exec in a kernel thread");
+    *me.name.lock() = name;
+    let pl = arch::splhi();
+    // SAFETY: only this CPU, running the thread, touches `user`, and
+    // interrupts are off.
+    unsafe { *me.user.get() = UserRegs::INITIAL };
+    let old = me.mem.lock().replace(mem);
+    // Off the old space before it can be freed.
+    enter_space(Some(&*me));
+    arch::splx(pl);
+    drop(old);
+    let top = me.stack.top();
+    drop(me);
+    // SAFETY: the new space is active, and holds `pc` and `sp`; nothing on
+    // this stack is needed again.
+    unsafe { arch::context::enter_user(pc, sp, sp, top) }
+}
+
+/// Waits for a child of the calling thread to exit and returns its wait
+/// message, or `None` if it has no children left to wait for.
+pub(crate) fn await_child(s: &Sleepable) -> Option<Wait> {
+    let me = current().expect("a Sleepable proves a thread");
+    me.child_exited.sleep(s, || {
+        let c = me.children.lock();
+        !c.exited.is_empty() || c.live == 0
+    });
+    me.children.lock().exited.pop_front()
+}
+
+/// Tells the calling thread's parent, if it has one still, that it is
+/// exiting.
+fn tell_parent(me: &Proc) {
+    let Some(parent) = me.parent.as_ref().and_then(Weak::upgrade) else {
+        return;
+    };
+    let status = me.status.lock().clone().unwrap_or_default();
+    let mut msg = Vec::new();
+    if !status.is_empty() {
+        msg = alloc::format!("{} {}: ", me.name(), me.pid).into_bytes();
+        msg.extend_from_slice(&status);
+        msg.truncate(abi::ERRMAX - 1);
+    }
+    let real = (clock::now_ns() - me.started_ns) / 1_000_000;
+    let w = Wait {
+        pid: me.pid,
+        times: [0, 0, real],
+        msg,
+    };
+    {
+        let mut c = parent.children.lock();
+        c.live -= 1;
+        if c.exited.len() < MAX_WAITS {
+            c.exited.push_back(w);
+        }
+    }
+    parent.child_exited.wakeup_all();
+}
+
 /// Ends the calling thread.
 fn exit() -> ! {
+    if let Some(me) = current() {
+        tell_parent(&me);
+    }
     let _ = arch::splhi();
     drop(reschedule(Leave::Dead));
     unreachable!("a dead thread was resumed");
@@ -481,7 +606,7 @@ fn exit() -> ! {
 /// so, and returns once it runs again, with the thread left behind by the
 /// switch into it, if dead, for the caller to drop with interrupts on.
 /// Interrupts must be off.
-fn reschedule(how: Leave) -> Option<Arc<Proc>> {
+fn reschedule(how: Leave) -> Reaped {
     let me = cpu::current().index();
     // SAFETY: interrupts are off; `l` is not used after the switch.
     let l = unsafe { local() };
@@ -532,7 +657,7 @@ fn reschedule(how: Leave) -> Option<Arc<Proc>> {
         None => &raw mut l.own,
     };
     if let Some((p, _)) = &l.left
-        && p.space.is_some()
+        && p.is_user
     {
         // SAFETY: this CPU ran it until now; interrupts are off.
         unsafe { (*p.user.get()).save() };
@@ -553,11 +678,12 @@ fn enter_space(p: Option<&Proc>) {
         mmu::activate_kernel_space();
         return;
     };
-    match &p.space {
-        Some(space) => {
-            // SAFETY: `p` holds the space until it is dropped, after a
-            // later switch away from it has activated another.
-            unsafe { space.activate() };
+    match &*p.mem.lock() {
+        Some(mem) => {
+            // SAFETY: `p` holds its memory until exec has activated new
+            // memory, or a switch away from it, dead, has activated
+            // another space.
+            unsafe { mem.space().activate() };
             // SAFETY: `p` is about to run here; no other CPU touches it.
             unsafe { (*p.user.get()).restore() };
         }
@@ -566,10 +692,14 @@ fn enter_space(p: Option<&Proc>) {
     arch::context::set_kernel_stack(p.stack.top());
 }
 
+/// A dead thread and the memory it ran in, freed when dropped.
+type Reaped = Option<(Arc<Proc>, Option<Arc<Memory>>)>;
+
 /// Run in the context switched to, interrupts off: finishes with the
-/// thread left behind. Returns it if it is dead, to be dropped (freeing
-/// its stack) once interrupts are back on.
-fn finish_switch() -> Option<Arc<Proc>> {
+/// thread left behind. Returns it and its memory if it is dead, to be
+/// dropped (freeing its stack and memory) once interrupts are back on,
+/// whoever else still holds the thread.
+fn finish_switch() -> Reaped {
     let me = cpu::current().index();
     // SAFETY: interrupts are off, and the reference is dropped here.
     let left = unsafe { local() }.left.take();
@@ -581,7 +711,10 @@ fn finish_switch() -> Option<Arc<Proc>> {
             None
         }
         Leave::Sleep => None,
-        Leave::Dead => Some(p),
+        Leave::Dead => {
+            let mem = p.mem.lock().take();
+            Some((p, mem))
+        }
     }
 }
 

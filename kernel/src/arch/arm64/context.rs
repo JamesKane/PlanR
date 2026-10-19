@@ -110,16 +110,27 @@ pub(crate) fn init_cpu() {}
 pub(crate) struct UserRegs {
     /// `TPIDR_EL0`: the thread pointer.
     tls: u64,
+    /// `SP_EL0`: the user stack pointer, which the trap frame does not
+    /// hold (the kernel runs on `SP_EL1` and never touches it).
+    sp: u64,
 }
 
 impl UserRegs {
-    pub(crate) const INITIAL: UserRegs = UserRegs { tls: 0 };
+    pub(crate) const INITIAL: UserRegs = UserRegs { tls: 0, sp: 0 };
 
     /// Saves the calling CPU's user state, which belongs to the thread
     /// being switched out.
     pub(crate) fn save(&mut self) {
-        // SAFETY: reads a register.
-        unsafe { asm!("mrs {}, tpidr_el0", out(reg) self.tls, options(nomem, nostack, preserves_flags)) };
+        // SAFETY: reads registers.
+        unsafe {
+            asm!(
+                "mrs {}, tpidr_el0",
+                "mrs {}, sp_el0",
+                out(reg) self.tls,
+                out(reg) self.sp,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
     }
 
     /// Loads this thread's user state into the calling CPU. Also clears
@@ -130,8 +141,10 @@ impl UserRegs {
         unsafe {
             asm!(
                 "msr tpidr_el0, {}",
+                "msr sp_el0, {}",
                 "msr tpidrro_el0, xzr",
                 in(reg) self.tls,
+                in(reg) self.sp,
                 options(nomem, nostack, preserves_flags),
             );
         }
@@ -269,6 +282,7 @@ pub(crate) mod ktests {
         "    str x1, [x19, #16]",
         "    ldr d0, [x19]",
         "    ldr x21, [x19]",
+        "    mov x22, sp",
         "    mov x20, #50",
         "2:  mov x8, #{sleep}",
         "    mov x0, xzr",
@@ -282,6 +296,9 @@ pub(crate) mod ktests {
         "    cmp x9, x10",
         "    b.ne 5f",
         "    cmp x21, x10",
+        "    b.ne 6f",
+        "    mov x9, sp",
+        "    cmp x9, x22",
         "    b.ne 6f",
         "    subs x20, x20, #1",
         "    b.ne 2b",

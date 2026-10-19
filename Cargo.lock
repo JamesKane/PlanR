@@ -11,6 +11,10 @@ name = "acpi"
 version = "0.1.0"
 
 [[package]]
+name = "bootarc"
+version = "0.1.0"
+
+[[package]]
 name = "bootinfo"
 version = "0.1.0"
 
@@ -36,7 +40,9 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "acpi",
+ "bootarc",
  "bootinfo",
+ "elf",
  "fbtext",
  "frames",
  "heap",
@@ -63,13 +69,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "r"
+version = "0.1.0"
+dependencies = [
+ "abi",
+]
+
+[[package]]
 name = "uefi"
 version = "0.1.0"
+
+[[package]]
+name = "utest"
+version = "0.1.0"
+dependencies = [
+ "r",
+]
 
 [[package]]
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "bootarc",
  "elf",
  "ksyms",
 ]

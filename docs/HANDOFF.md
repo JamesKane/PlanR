@@ -80,7 +80,8 @@ Where work stands, for picking it up in a new session. Last updated
        stops at a fault through a fixup.
      - `proc::spawn_user(how, space, pc, sp, arg)`: a `Proc` with a
        `Space` and `UserRegs` (amd64: the `fxsave` area and FS base;
-       arm64: `TPIDR_EL0`, since the trap frame has the rest). Every
+       arm64: `TPIDR_EL0` and, since slice 7, `SP_EL0`; the trap frame
+       has the rest). Every
        switch activates the next thread's space (the kernel space for a
        kernel thread or a CPU's own context) and saves/loads user
        registers. `Space::activate` skips a space that is already current.
@@ -89,6 +90,49 @@ Where work stands, for picking it up in a new session. Last updated
        check their registers, SSE/NEON value and thread pointer, then
        `errstr` and `exits`; a third reads address 0 and is ended.
        Disabling the user-register save makes the first fail.
+  7. Segments, demand paging, `exec`, `exits`/`await`, the boot archive:
+     - `port/segment.rs`: a `Memory` is a `Space` plus sorted, disjoint
+       `Segment`s (text, data, bss, stack), each owning the frames mapped
+       in it and filled on first touch from an optional `&'static` image
+       (zeros elsewhere). The trap handlers call `segment::fault` for a
+       not-present (amd64) or translation (arm64) fault from user mode,
+       and for one in a kernel user copy before taking its fixup, then
+       retry. Frames go back when the `Memory` drops, which is safe without
+       a shootdown because no CPU runs in the space by then and switching
+       flushes the user half. `brk` moves the bss end (clamped as Plan 9
+       does when the linked bss starts inside data's last page) and
+       unmaps, flushes and frees what it gives up.
+     - `port/exec.rs`: `load(path, argv)` finds `path` (minus its `/`) in
+       the boot archive, checks the ELF (no W+X, nothing below 64 KiB or
+       into the stack, at most one writable segment, entry in text) and
+       builds text, data, bss and a 16 MiB stack below `USER_TOP`, with
+       the arguments laid out as `lib/abi` documents (sp at argc, argv,
+       null, strings above; 64 KiB at most). `exec::spawn` starts a
+       program as a child of the caller.
+     - `port/proc.rs`: a `Proc` has `mem: SpinLock<Option<Arc<Memory>>>`
+       (taken by `finish_switch` once dead, so it is freed whoever holds
+       the `Proc`), a name that `exec` changes, a parent (`Weak`), a count
+       of live children and their `Wait` messages (at most 128 kept).
+       `proc::exec` swaps in new memory and re-enters user mode at the
+       top of the kernel stack; `await_child` sleeps on `child_exited`.
+     - Calls: `exec`, `await` (Plan 9's text, `abi::format_waitmsg`; only
+       real time is counted), `brk`. `dispatch` no longer holds the thread
+       across a call, since `exits` and `exec` never return; it used to
+       leak every exited thread.
+     - `lib/bootarc`: the archive format (sorted table, page-aligned
+       contents, clean relative names), host-tested. 9boot loads
+       `\planr\boot.arc` into its own pages (`BootInfo` version 3,
+       `archive`); `port/archive.rs` keeps it where it is.
+     - User space: `lib/r` (libr: `_start`, `main!`, the calls, `Error`
+       holding errstr text, exit on panic) and `cmd/utest` (`tmem`,
+       `targs`, `texec`, `tfault`), linked by `lib/r/user.ld` at
+       0x400000 for the `*-unknown-none` targets. `xtask build` packs them
+       as `boot/<name>` (symbols kept, debug info stripped).
+     - Tests: `exec: programs run from the boot archive` starts all seven
+       runs at once under a kernel thread that awaits them and checks each
+       wait message; `exec: programs' memory is freed` checks the free
+       frame count comes back. The slice-6 programs now run in a `Memory`
+       too, with a different stack pointer each, and check it survives.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -98,20 +142,22 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-Slice 7: segments, demand paging, ELF `exec`, `exits`/`await`, and the
-boot archive.
-- Segments (text, data, bss, stack) that own their frames: `Space::drop`
-  frees only page tables, so today the tests unmap and free their pages
-  themselves (`syscall::TestSpace`).
-- Demand paging: a user-mode fault in a segment maps the page. A kernel
-  fault on a user address inside `uaccess` (a fixup site) must try the
-  same before taking the fixup, or a syscall on a not-yet-touched buffer
-  fails.
-- ELF `exec` on `lib/elf`; `exits`/`await` with a parent and its wait
-  queue (today `exits` only records the status in the `Proc`).
-- The boot archive, with the first user programs as `no_std` Rust built
-  by `xtask` against `lib/abi`; they replace the hand-written test
-  programs.
+Slice 8: the Chan/Dev core, the name space, and the first devices.
+- `Dev` (Plan 9's `Dev` table as a trait: attach, walk, stat, open,
+  create, read, write, remove, wstat), `Chan`, `Qid`, and `Dir` with
+  Plan 9's stat encoding (likely in `lib/abi` or a small new crate,
+  since `lib/9p` needs it in slice 11).
+- `Pgrp` (the mount table, `bind` with `BindFlags`), `Fgrp` (file
+  descriptors), `Egrp`; `walk` through mounts and unions.
+- Calls: `open`, `create`, `close`, `read`, `write`, `pread`, `pwrite`,
+  `seek`, `stat`, `fstat`, `wstat`, `fwstat`, `remove`, `fd2path`,
+  `dup`, `chdir`, `bind`; `mount` waits for `#M` (slice 11).
+- Devices: `#/` (the boot archive as a tree, replacing `exec`'s direct
+  lookup in `port/archive.rs`), `#c` (cons), `#e` (env), `#d` (dup), `#r`
+  (rtc), `#P` (arch).
+- `exec` then opens its file through the name space. Segment images are
+  `&'static [u8]` today, which only the archive can give; a file from
+  anywhere else needs an owned image (or a page source) instead.
 
 **Reference boards** (`docs/HARDWARE.md`, "Booting Plan R on a board"):
 no runs until P2's exit test. P1 results, for reference:
@@ -135,6 +181,18 @@ no runs until P2's exit test. P1 results, for reference:
   are undefined without the feature, so they sit behind the
   `protect::SMAP` / `protect::PAN` flags; arm64's copies use the
   unprivileged `ldtrb`/`sttrb`, which PAN does not affect.
+- **SYSRET on AMD takes SS's RPL from STAR:** STAR[63:48] must be
+  `KERNEL_DS | 3`. Intel ORs in 3 itself and so does TCG, so only KVM on
+  the Ryzen host showed it: a user SS of RPL 0 works until the first
+  `iretq` back to user mode from a hardware frame (a demand-paging
+  fault), which takes #GP(0x18).
+- **arm64 traps do not save `SP_EL0`:** the kernel never touches it, so
+  `UserRegs` keeps it across switches with `TPIDR_EL0`. Without that, a
+  preempted thread came back on another thread's stack pointer; the
+  slice-6 test missed it because both its threads used one stack address.
+- **User programs on amd64 are soft-float,** like the kernel: they build
+  for `x86_64-unknown-none`, whose ABI has no SSE. The kernel still saves
+  and restores user SSE state. A Plan R target (TOOLCHAIN.md) fixes it.
 - **amd64 GS:** an NMI or machine check between `syscall` and its
   `swapgs` would run with the user's GS base. Both are fatal, so only
   the report would suffer, but a real NMI handler will need Linux's
@@ -195,8 +253,9 @@ no runs until P2's exit test. P1 results, for reference:
   selector otherwise writes them, which faults once the read-only start-up
   map is live. KVM does this write and TCG does not, so only KVM runs
   caught it (a silent triple fault right after "clock: ticking").
-- **9boot's `Boot` regions** (its page tables, the boot stack and
-  BootInfo) are still not given to the frame allocator. That needs
+- **9boot's `Boot` regions** (its page tables, the boot stack,
+  BootInfo and the boot archive, which `#/` will serve in place) are
+  still not given to the frame allocator. That needs
   BootInfo copied out first and the boot stack left behind.
 - **Heap:** every block it uses is zeroed by `mm::alloc_frames`, so
   large allocations pay for a memset they may not need. There are no

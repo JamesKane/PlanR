@@ -20,7 +20,7 @@ use bootinfo::{BootInfo, EntryLevel, RegionKind};
 use port::config::{self, Config, TestMode};
 use port::console::{self, ConsoleSource};
 use port::early::{self, Stage};
-use port::{acpi, clock, cpu, intr, ktest, mm, trap};
+use port::{acpi, archive, clock, cpu, intr, ktest, mm, trap};
 
 /// Marker lines `cargo xtask test` scans the serial log for.
 const OK_MARKER: &str = "kernel: ok";
@@ -111,6 +111,7 @@ extern "C" fn boot_main(info: usize) -> ! {
         Ok(sys) => sys.report(),
         Err(e) => println!("acpi: {e}"),
     }
+    archive::init(info);
     let config = Config::parse(info.config());
     config.apply();
     match arch::init_interrupts(acpi.as_ref().ok(), &config) {

@@ -1,0 +1,10 @@
+[package]
+name = "bootarc"
+description = "The boot archive: the files 9boot loads for the kernel's #/"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

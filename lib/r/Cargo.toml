@@ -1,0 +1,17 @@
+[package]
+name = "r"
+description = "libr: the Plan R user runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../abi" }
+
+[lints]
+workspace = true

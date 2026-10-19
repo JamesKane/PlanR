@@ -43,6 +43,7 @@ PlanR/
 │  └─ drivers/          virtio, nvme, ahci, xhci, nics, uarts, gop/fb
 ├─ lib/                 no_std libraries, host-testable
 │  ├─ abi/              syscall numbers, typed flags, the result pair
+│  ├─ bootarc/          the boot archive format (`#/`, 9boot loads it)
 │  ├─ 9p/               9P2000 codec + client/server framework
 │  ├─ acpi/             table parser + AML interpreter
 │  ├─ bootinfo/         9boot → kernel handoff types (ADR 0010)
@@ -57,6 +58,7 @@ PlanR/
 │  ├─ flate/ regexp/ utf/ fmt/ ndb/ auth/ …
 │  └─ r/                libr: the user runtime (replaces libc+lib9+bio+thread)
 ├─ cmd/                 user commands (rc, mk, acme, rio, cpu, …)
+│  └─ utest/           user-mode test programs (boot archive)
 ├─ ape2/                POSIX environment exporting a C ABI (see TOOLCHAIN.md)
 ├─ foreign/             quarantined upstream code for self-hosting (Q2)
 ├─ root/                files for the installed tree (/lib/namespace, /rc/bin, …)

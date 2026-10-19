@@ -15,7 +15,9 @@ bench = false
 [dependencies]
 abi = { path = "../lib/abi" }
 acpi = { path = "../lib/acpi" }
+bootarc = { path = "../lib/bootarc" }
 bootinfo = { path = "../lib/bootinfo" }
+elf = { path = "../lib/elf" }
 fbtext = { path = "../lib/fbtext" }
 frames = { path = "../lib/frames" }
 heap = { path = "../lib/heap" }

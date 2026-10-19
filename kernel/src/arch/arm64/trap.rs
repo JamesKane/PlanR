@@ -19,6 +19,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::port::cpu::MAXCPU;
+use crate::port::segment::{self, Access};
 use crate::port::{mm, trap};
 
 /// The saved state of the interrupted code, as the entry path builds it.
@@ -446,6 +447,23 @@ fn overflow(f: &mut TrapFrame) -> ! {
     )
 }
 
+/// True if `ex` was a translation fault on a page not yet mapped in a
+/// segment of the running process, which is now mapped: retry the access.
+fn demand_page(ex: Exception) -> bool {
+    match ex {
+        Exception::DataAbort {
+            addr,
+            fault: Fault::Translation(_),
+            write,
+        } => segment::fault(addr, if write { Access::Write } else { Access::Read }),
+        Exception::InstructionAbort {
+            addr,
+            fault: Fault::Translation(_),
+        } => segment::fault(addr, Access::Exec),
+        _ => false,
+    }
+}
+
 /// Called from the entry path with the saved frame; returning resumes it.
 extern "C" fn trap(f: &mut TrapFrame) {
     if f.vector == OVERFLOW_VECTOR {
@@ -471,6 +489,8 @@ extern "C" fn trap(f: &mut TrapFrame) {
         }
         // elr is already past the svc.
         (Origin::User, Exception::Svc(0)) => syscall(f),
+        // A page of a segment, touched for the first time.
+        (Origin::User, _) if demand_page(ex) => {}
         (Origin::User, _) => crate::port::syscall::user_trap(&ex, f.elr),
         // elr points at the brk itself; step over it.
         (_, Exception::Breakpoint(_)) => {
@@ -478,6 +498,9 @@ extern "C" fn trap(f: &mut TrapFrame) {
             f.elr += 4;
         }
         (_, Exception::DataAbort { .. }) => match trap::fixup(f.elr) {
+            // A user copy on a page not yet touched: map it and retry the
+            // load or store.
+            Some(_) if demand_page(ex) => {}
             Some(resume) => f.elr = resume,
             None => trap::fatal(&ex, f, f.elr, f.x[29]),
         },

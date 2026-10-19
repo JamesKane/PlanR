@@ -19,6 +19,20 @@
 //!
 //! **Arguments.** Pointers and lengths are plain 64-bit words, as are file
 //! offsets. A string argument is a pointer to NUL-terminated bytes.
+//!
+//! **Start-up.** A program starts at its ELF entry point with the stack
+//! pointer 16-byte aligned and pointing at `argc` (a `u64`), followed by
+//! `argc` pointers to the NUL-terminated arguments and a null pointer; the
+//! strings lie above them. The first argument register holds the same
+//! address. Every other register is zero, the floating-point state is
+//! reset, and the thread pointer is 0.
+//!
+//! **Wait messages.** [`Sys::Await`] returns text ([`format_waitmsg`],
+//! [`parse_waitmsg`]): the child's pid, its user, system and real times in
+//! milliseconds, and its exit message quoted as `rc` quotes, as Plan 9's
+//! `await` does. The message is empty for a normal exit, else the
+//! program's name and pid before what it exited with
+//! (`tfault 12: sys: trap: …`).
 
 #![cfg_attr(not(test), no_std)]
 
@@ -140,11 +154,13 @@ calls! {
     // Processes.
     /// `rfork(flags: RforkFlags) -> pid`, 0 in the child
     Rfork = 30,
-    /// `exec(name, argv)`; returns only on failure
+    /// `exec(name, argv)`: `argv` points at pointers to the arguments,
+    /// ended by a null pointer; returns only on failure
     Exec = 31,
     /// `exits(msg)`; a null `msg` is a normal exit
     Exits = 32,
-    /// `await(buf, n) -> n`
+    /// `await(buf, n) -> n`: waits for a child to exit and returns its
+    /// wait message, cut to `n` bytes
     Await = 33,
     /// `errstr(buf, n)`: swaps the process's error text with `buf`'s
     Errstr = 34,
@@ -172,7 +188,8 @@ calls! {
     Semrelease = 53,
 
     // Memory.
-    /// `brk(addr)`
+    /// `brk(addr)`: moves the end of the bss segment to `addr`, rounded up
+    /// to a page
     Brk = 60,
     /// `segattach(attr, class, va, len) -> va`
     Segattach = 61,
@@ -209,6 +226,71 @@ pub fn decode(regs: [u64; 2]) -> Result<u64, Failed> {
         [v, 0] => Ok(v),
         _ => Err(Failed),
     }
+}
+
+/// Writes the wait message for a child `pid` that ran for `times` (user,
+/// system, real, in ms) and exited with `msg` into `out`, cut to fit, and
+/// returns its length.
+pub fn format_waitmsg(pid: u64, times: [u64; 3], msg: &[u8], out: &mut [u8]) -> usize {
+    struct Cut<'a> {
+        out: &'a mut [u8],
+        len: usize,
+    }
+    impl Cut<'_> {
+        fn put(&mut self, b: &[u8]) {
+            let n = b.len().min(self.out.len() - self.len);
+            self.out[self.len..self.len + n].copy_from_slice(&b[..n]);
+            self.len += n;
+        }
+    }
+    impl core::fmt::Write for Cut<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            self.put(s.as_bytes());
+            Ok(())
+        }
+    }
+    let mut c = Cut { out, len: 0 };
+    let _ = core::fmt::write(&mut c, format_args!("{pid} {} {} {} '", times[0], times[1], times[2]));
+    for (i, q) in msg.split(|&b| b == b'\'').enumerate() {
+        if i > 0 {
+            c.put(b"''");
+        }
+        c.put(q);
+    }
+    c.put(b"'");
+    c.len
+}
+
+/// Parses a wait message: the pid, the times, and the length of the exit
+/// message, which is unquoted into `msg` (cut to fit).
+#[must_use]
+pub fn parse_waitmsg(text: &[u8], msg: &mut [u8]) -> Option<(u64, [u64; 3], usize)> {
+    let mut nums = [0u64; 4];
+    let mut rest = text;
+    for n in &mut nums {
+        let end = rest.iter().position(|&b| b == b' ')?;
+        *n = core::str::from_utf8(&rest[..end]).ok()?.parse().ok()?;
+        rest = &rest[end + 1..];
+    }
+    let quoted = rest.strip_prefix(b"'")?.strip_suffix(b"'")?;
+    let mut len = 0;
+    let mut i = 0;
+    while i < quoted.len() {
+        let b = quoted[i];
+        if b == b'\'' {
+            // Inside the quotes, a quote is always doubled.
+            if quoted.get(i + 1) != Some(&b'\'') {
+                return None;
+            }
+            i += 1;
+        }
+        if len < msg.len() {
+            msg[len] = b;
+            len += 1;
+        }
+        i += 1;
+    }
+    Some((nums[0], [nums[1], nums[2], nums[3]], len))
 }
 
 macro_rules! flags {
@@ -377,6 +459,30 @@ impl Whence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waitmsg_round_trip() {
+        let mut out = [0u8; 64];
+        let n = format_waitmsg(12, [1, 2, 300], b"tfault 12: it's bad", &mut out);
+        assert_eq!(&out[..n], b"12 1 2 300 'tfault 12: it''s bad'");
+        let mut msg = [0u8; 64];
+        let (pid, times, len) = parse_waitmsg(&out[..n], &mut msg).unwrap();
+        assert_eq!((pid, times), (12, [1, 2, 300]));
+        assert_eq!(&msg[..len], b"tfault 12: it's bad");
+        let n = format_waitmsg(3, [0, 0, 0], b"", &mut out);
+        assert_eq!(&out[..n], b"3 0 0 0 ''");
+        assert_eq!(parse_waitmsg(&out[..n], &mut msg), Some((3, [0, 0, 0], 0)));
+        // Cut to fit, both ways.
+        let mut small = [0u8; 8];
+        assert_eq!(format_waitmsg(12, [1, 2, 300], b"x", &mut small), 8);
+        assert_eq!(&small, b"12 1 2 3");
+        let mut tiny = [0u8; 3];
+        assert_eq!(parse_waitmsg(b"1 0 0 0 'abcdef'", &mut tiny), Some((1, [0, 0, 0], 3)));
+        assert_eq!(&tiny, b"abc");
+        for bad in [&b"1 0 0 'x'"[..], b"1 0 0 0 x", b"1 0 0 0 'a'b'", b"x 0 0 0 ''"] {
+            assert_eq!(parse_waitmsg(bad, &mut msg), None);
+        }
+    }
 
     #[test]
     fn numbers_round_trip() {

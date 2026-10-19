@@ -6,7 +6,10 @@
   a needed feature forces it, and recorded in an ADR.
 - Kernel and loader use the built-in targets: `x86_64-unknown-none`,
   `aarch64-unknown-none`, `x86_64-unknown-uefi`, `aarch64-unknown-uefi`.
-- User space uses custom target specs `x86_64-unknown-planr.json` /
+- Until then (P2), user programs build for the kernel's `*-unknown-none`
+  targets, linked by `lib/r/user.ld`: static, at 0x400000. On amd64 that
+  makes them soft-float.
+- User space will use custom target specs `x86_64-unknown-planr.json` /
   `aarch64-unknown-planr.json` (ELF, static PIE, our linker script, panic
   = abort at first). `core` and `alloc` are built for them with
   `-Zbuild-std=core,alloc` or a stable equivalent. This is the only

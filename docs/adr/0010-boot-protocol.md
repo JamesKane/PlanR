@@ -13,8 +13,11 @@ there, is much simpler than doing it in position-independent kernel assembly.
 
 ## Decision
 
-**Files.** 9boot loads `\planr\kernel` (static, non-PIE ELF64) and
-`\planr\plan9.ini` (optional) from the volume it was started from.
+**Files.** 9boot loads `\planr\kernel` (static, non-PIE ELF64),
+`\planr\plan9.ini` (optional) and the boot archive `\planr\boot.arc`
+(optional; `lib/bootarc`, version 3 of `BootInfo`) from the volume it was
+started from. The archive goes into pages of its own, which the kernel
+keeps and serves in place.
 
 **Kernel image.** Linked at `KERNEL_BASE = 0xffff_ffff_8000_0000`, with
 three `PT_LOAD` segments (text RX, rodata R, data+bss RW). 9boot refuses
@@ -61,7 +64,7 @@ EL2 stub vector table for that is future work.
 
 **`BootInfo`** (`lib/bootinfo`): magic `PLANR9BI`, a version, entry level,
 memory regions, RSDP, UEFI system table, framebuffer, persistent log
-ring, kernel physical location, and config text. All pointers are
+ring, kernel physical location, config text, and the boot archive. All pointers are
 direct-map addresses.
 
 **Persistent log ring** (`lib/logring`, version 2 of `BootInfo`): 1 MiB at

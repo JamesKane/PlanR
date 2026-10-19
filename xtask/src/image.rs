@@ -16,6 +16,8 @@ const ESP_FIRST_LBA: u64 = 2048;
 pub(crate) struct Contents<'a> {
     pub(crate) loader: &'a Path,
     pub(crate) kernel: &'a Path,
+    /// `\planr\boot.arc`.
+    pub(crate) archive: &'a Path,
     /// `\planr\plan9.ini`.
     pub(crate) config: &'a str,
 }
@@ -25,6 +27,7 @@ pub(crate) fn write(arch: Arch, c: &Contents<'_>, out: &Path) -> Result<(), Stri
     let mut root = Dir::default();
     root.insert(&format!("EFI/BOOT/{}", arch.boot_file()), read(c.loader)?)?;
     root.insert("PLANR/KERNEL", read(c.kernel)?)?;
+    root.insert("PLANR/BOOT.ARC", read(c.archive)?)?;
     root.insert("PLANR/PLAN9.INI", c.config.as_bytes().to_vec())?;
     // Marks the volume as one 9boot may write: it saves the previous boot's
     // log ring here, and never creates the file itself.

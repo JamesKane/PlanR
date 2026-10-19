@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["boot/9boot", "kernel", "lib/abi", "lib/acpi", "lib/bootinfo", "lib/elf", "lib/fbtext", "lib/frames", "lib/heap", "lib/ksyms", "lib/logring", "lib/uefi", "xtask"]
+members = ["boot/9boot", "cmd/utest", "kernel", "lib/abi", "lib/acpi", "lib/bootarc", "lib/bootinfo", "lib/elf", "lib/fbtext", "lib/frames", "lib/heap", "lib/ksyms", "lib/logring", "lib/r", "lib/uefi", "xtask"]
 # Plan R crates build for their own targets via `cargo xtask`; a bare
 # `cargo build` at the root builds only the host tool.
 default-members = ["xtask"]
@@ -34,3 +34,10 @@ panic = "abort"
 panic = "abort"
 codegen-units = 1
 debug = 1
+
+# User programs go into the boot archive: keep their symbols, not their
+# debug info.
+[profile.dev.package.utest]
+strip = "debuginfo"
+[profile.release.package.utest]
+strip = "debuginfo"

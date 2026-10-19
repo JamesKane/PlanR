@@ -5,7 +5,7 @@
 //! `cargo xtask test` reads the console.
 
 use crate::arch;
-use crate::port::{clock, console, cpu, heap, intr, mm, mmu, proc, qlock, syscall, trap, uaccess};
+use crate::port::{clock, console, cpu, exec, heap, intr, mm, mmu, proc, qlock, syscall, trap, uaccess};
 use crate::println;
 
 /// Why a test did not pass.
@@ -71,6 +71,8 @@ const TESTS: &[(&str, TestFn)] = &[
         "syscall: a user fault ends the thread",
         syscall::ktests::user_fault_kills,
     ),
+    ("exec: programs run from the boot archive", exec::ktests::programs_run),
+    ("exec: programs' memory is freed", exec::ktests::memory_freed),
     ("heap: collections allocate", heap::ktests::collections_work),
     ("heap: empty slabs return", heap::ktests::slabs_return),
     ("heap: large aligned block", heap::ktests::large_aligned),

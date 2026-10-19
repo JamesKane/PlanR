@@ -26,7 +26,7 @@ const USAGE: &str = "\
 usage: cargo xtask <command> [options]
 
 commands:
-  build    build 9boot and the kernel for the target arch(es)
+  build    build 9boot, the kernel and the boot archive for the target arch(es)
   image    build, then write the bootable GPT disk image
   qemu     build, write the image, and boot it interactively in QEMU
   test     host unit tests, then headless QEMU boot tests
@@ -173,6 +173,44 @@ struct Built {
     arch: Arch,
     loader: PathBuf,
     kernel: PathBuf,
+    archive: PathBuf,
+}
+
+/// User programs for the boot archive: each package, and the binaries of
+/// it that go into `/boot`.
+const USER_PROGRAMS: &[(&str, &[&str])] = &[("utest", &["tmem", "targs", "texec", "tfault"])];
+
+/// Builds the user programs for `arch` and packs them into the boot
+/// archive, as `boot/<name>`.
+fn build_archive(arch: Arch, release: bool) -> Result<PathBuf, String> {
+    let profile = if release { "release" } else { "debug" };
+    let mut files = Vec::new();
+    for &(package, bins) in USER_PROGRAMS {
+        let mut c = cargo();
+        c.args(["build", "-p", package, "--target", arch.kernel_target()]);
+        if release {
+            c.arg("--release");
+        }
+        sh(c)?;
+        for bin in bins {
+            let path = root().join("target").join(arch.kernel_target()).join(profile).join(bin);
+            let data = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            files.push((format!("boot/{bin}"), data));
+        }
+    }
+    let entries: Vec<bootarc::File<'_>> = files
+        .iter()
+        .map(|(name, data)| bootarc::File {
+            name,
+            mode: 0o755,
+            data,
+        })
+        .collect();
+    let archive = bootarc::build(&entries).map_err(|e| e.to_string())?;
+    let out = build_dir(arch).join("boot.arc");
+    fs::create_dir_all(build_dir(arch)).map_err(|e| e.to_string())?;
+    fs::write(&out, archive).map_err(|e| format!("{}: {e}", out.display()))?;
+    Ok(out)
 }
 
 fn build(opts: &Opts) -> Result<Vec<Built>, String> {
@@ -194,7 +232,13 @@ fn build(opts: &Opts) -> Result<Vec<Built>, String> {
             let kernel = build_dir(arch).join("kernel");
             fs::create_dir_all(build_dir(arch)).map_err(|e| e.to_string())?;
             ksyms::embed(arch, &linked, &kernel)?;
-            Ok(Built { arch, loader, kernel })
+            let archive = build_archive(arch, opts.release)?;
+            Ok(Built {
+                arch,
+                loader,
+                kernel,
+                archive,
+            })
         })
         .collect()
 }
@@ -346,6 +390,7 @@ fn write_images(built: &[Built], name: &str, config: &str) -> Result<Vec<PathBuf
             let contents = image::Contents {
                 loader: &b.loader,
                 kernel: &b.kernel,
+                archive: &b.archive,
                 config,
             };
             image::write(b.arch, &contents, &out)?;
@@ -357,7 +402,7 @@ fn write_images(built: &[Built], name: &str, config: &str) -> Result<Vec<PathBuf
 
 /// Crates with host unit tests (everything except the bare-metal binaries).
 const HOST_TESTED: &[&str] = &[
-    "abi", "acpi", "bootinfo", "elf", "fbtext", "frames", "heap", "ksyms", "logring", "uefi", "xtask",
+    "abi", "acpi", "bootarc", "bootinfo", "elf", "fbtext", "frames", "heap", "ksyms", "logring", "uefi", "xtask",
 ];
 
 fn with_packages(c: &mut Command, packages: &[&str]) {
@@ -420,7 +465,11 @@ fn ci(opts: &Opts) -> Result<(), String> {
     host.args(["--", "-D", "warnings"]);
     sh(host)?;
     for arch in &opts.arches {
-        for (package, target) in [("nineboot", arch.uefi_target()), ("kernel", arch.kernel_target())] {
+        let user = USER_PROGRAMS.iter().map(|&(p, _)| (p, arch.kernel_target()));
+        for (package, target) in [("nineboot", arch.uefi_target()), ("kernel", arch.kernel_target())]
+            .into_iter()
+            .chain(user)
+        {
             let mut c = cargo();
             c.args([
                 "clippy", "-q", "-p", package, "--target", target, "--", "-D", "warnings",

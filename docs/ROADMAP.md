@@ -266,8 +266,8 @@ plus a toy 9P server). All of them pass on both architectures.
    pair), the syscall entry (`syscall`/`sysret` with `swapgs`, `svc #0`),
    checked copy-in/copy-out (`port/uaccess.rs`), `settls`, user FP/SIMD
    state on switch, and user threads entered by hand.
-7. Segments, demand paging, ELF `exec`, `exits`/`await`, and the boot
-   archive.
+7. ✅ Segments, demand paging, ELF `exec`, `exits`/`await`, and the boot
+   archive (`lib/bootarc`), with the first user programs on `lib/r`.
 8. Chan/Dev core: `Dev`, `Chan`, `Qid`, `Dir`, `Pgrp`/`Fgrp`/`Egrp`, the
    mount table, `bind`/`mount`; `#/ #c #e #d #r #P`.
 9. `rfork` with copy-on-write; `qio`/`Block`; `#|` and `#s`.

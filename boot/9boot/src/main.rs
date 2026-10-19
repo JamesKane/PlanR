@@ -1,7 +1,7 @@
 //! 9boot: the Plan R UEFI loader.
 //!
-//! Loads `\planr\kernel` (a static ELF) and `\planr\plan9.ini` from the
-//! volume it was started from, builds the boot page tables, collects the
+//! Loads `\planr\kernel` (a static ELF), `\planr\plan9.ini` and the boot
+//! archive `\planr\boot.arc` from the volume it was started from, builds the boot page tables, collects the
 //! memory map and firmware facts into a `BootInfo`, exits boot services, and
 //! jumps to the kernel (ADR 0010). On the way it saves the log ring the
 //! previous boot left in RAM to `\planr\last.log`.
@@ -39,6 +39,7 @@ const ERROR_MARKER: &str = "9boot: error";
 
 const KERNEL_PATH: &str = "planr\\kernel";
 const CONFIG_PATH: &str = "planr\\plan9.ini";
+const ARCHIVE_PATH: &str = "planr\\boot.arc";
 const STACK_PAGES: usize = 16;
 /// Extra memory-map entries to allow for, since allocating changes the map.
 const MAP_SLACK: usize = 64;
@@ -144,6 +145,7 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     };
     let exit_test = bootdebug(&config);
     let kernel_file = read_file(&root, KERNEL_PATH).ctx("reading kernel")?;
+    let archive = load_archive(st, &root)?;
     // A reset test: read its marker before `setup` saves over it.
     let reset_test = bootnext::config_is(&config, "test", "reset");
     let pending = if reset_test { bootnext::pending(&root) } else { None };
@@ -206,6 +208,7 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     info.kernel_phys = kernel.phys;
     info.kernel_size = kernel.size;
     info.config = Slice::new(phys_to_virt(config_phys) as *const u8, config.len());
+    info.archive = archive;
     let info_ptr = block as *mut BootInfo;
     // SAFETY: the block starts with room for a BootInfo, page aligned.
     unsafe { info_ptr.write(info) };
@@ -370,6 +373,28 @@ fn exit_and_jump(mut st: SystemTable<Boot>, image: Handle, mut p: Prepared) -> !
     println!(st, "{ERROR_MARKER}: could not exit boot services; powering off in 15 s");
     st.boot_services().stall(15_000_000);
     st.runtime_services().reset(ResetType::Shutdown, Status::ABORTED)
+}
+
+/// Reads the boot archive, if there is one, into pages of its own, which
+/// the kernel keeps.
+fn load_archive(st: &SystemTable<Boot>, root: &File<'_>) -> Result<Slice<u8>, Error> {
+    let file = match read_file(root, ARCHIVE_PATH) {
+        Ok(f) => f,
+        Err(Status::NOT_FOUND) => {
+            println!(st, "9boot: no boot archive");
+            return Ok(Slice::empty());
+        }
+        Err(e) => return Err(Error::Uefi("reading boot.arc", e)),
+    };
+    let pages = file.len().div_ceil(PAGE_BYTES).max(1);
+    let phys = st
+        .boot_services()
+        .allocate_pages(MemoryType::LoaderData, pages)
+        .ctx("archive memory")?;
+    // SAFETY: freshly allocated and identity-mapped, `pages` pages long.
+    unsafe { core::ptr::copy_nonoverlapping(file.as_ptr(), phys as *mut u8, file.len()) };
+    println!(st, "9boot: boot archive, {} KiB", file.len().div_ceil(1024));
+    Ok(Slice::new(phys_to_virt(phys) as *const u8, file.len()))
 }
 
 pub(crate) fn read_file(root: &File<'_>, path: &str) -> uefi::Result<Vec<u8>> {

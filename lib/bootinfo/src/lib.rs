@@ -16,7 +16,7 @@ use core::fmt;
 /// `BootInfo::magic`: "PLANR9BI".
 pub const MAGIC: u64 = u64::from_le_bytes(*b"PLANR9BI");
 /// Bumped on any layout change.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Base of the direct map of physical memory: `phys` is at `HHDM_BASE + phys`.
 pub const HHDM_BASE: u64 = 0xffff_8000_0000_0000;
@@ -204,6 +204,9 @@ pub struct BootInfo {
     pub kernel_size: u64,
     /// Contents of `\planr\plan9.ini` (UTF-8), possibly empty.
     pub config: Slice<u8>,
+    /// Contents of `\planr\boot.arc` (`lib/bootarc`), possibly empty;
+    /// page aligned, in `Boot` memory, which the kernel keeps.
+    pub archive: Slice<u8>,
 }
 
 /// Why a handoff was rejected.
@@ -246,6 +249,7 @@ impl BootInfo {
             kernel_phys: 0,
             kernel_size: 0,
             config: Slice::empty(),
+            archive: Slice::empty(),
         }
     }
 
@@ -276,6 +280,12 @@ impl BootInfo {
     pub fn config(&self) -> &str {
         // SAFETY: as for `memory`.
         core::str::from_utf8(unsafe { self.config.as_slice() }).unwrap_or("")
+    }
+
+    #[must_use]
+    pub fn archive(&self) -> &[u8] {
+        // SAFETY: as for `memory`.
+        unsafe { self.archive.as_slice() }
     }
 
     #[must_use]

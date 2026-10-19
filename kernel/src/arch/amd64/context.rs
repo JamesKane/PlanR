@@ -243,7 +243,7 @@ pub(crate) mod ktests {
     // The user test program (`port/syscall.rs`), position independent.
     // rdi = its data page: [0] a tag, [8] the mode (1: fault at once); it
     // writes [16] settls's error word, [24] its verdict (1 passed, 2 FP or
-    // thread pointer lost, 3 a register lost), [32] and [40] errstr's
+    // thread pointer lost, 3 a register lost, the stack pointer included), [32] and [40] errstr's
     // result pair, [48] an unknown call's error word, and swaps the
     // string at 0x100 with its error text. It sits in rodata: the kernel
     // copies it to a user page and never runs it itself.
@@ -263,6 +263,7 @@ pub(crate) mod ktests {
         "    mov qword ptr [r12 + 16], rdx",
         "    movq xmm0, qword ptr [r12]",
         "    mov r14, qword ptr [r12]",
+        "    mov r15, rsp",
         "    mov r13d, 50",
         "2:  mov eax, {sleep}",
         "    xor edi, edi",
@@ -274,6 +275,8 @@ pub(crate) mod ktests {
         "    cmp rax, qword ptr [r12]",
         "    jne 5f",
         "    cmp r14, qword ptr [r12]",
+        "    jne 6f",
+        "    cmp r15, rsp",
         "    jne 6f",
         "    dec r13d",
         "    jnz 2b",
