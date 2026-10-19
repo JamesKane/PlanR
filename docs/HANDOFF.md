@@ -1,7 +1,7 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19, after P2 slice 11.
+2026-10-19, after P2 slice 12 (in CI; the board runs are next).
 
 ## State
 
@@ -108,7 +108,8 @@ Where work stands, for picking it up in a new session. Last updated
        builds text, data, bss and a 16 MiB stack below `USER_TOP`, with
        the arguments laid out as `lib/abi` documents (sp at argc, argv,
        null, strings above; 64 KiB at most). `exec::spawn` starts a
-       program as a child of the caller.
+       program as a child of the caller; since slice 12 only
+       `exec::start_init` uses it.
      - `port/proc.rs`: a `Proc` has `mem: SpinLock<Option<Arc<Memory>>>`
        (taken by `finish_switch` once dead, so it is freed whoever holds
        the `Proc`), a name that `exec` changes, a parent (`Weak`), a count
@@ -343,6 +344,32 @@ Where work stands, for picking it up in a new session. Last updated
        once on arm64 `el2-nvhe`, by a single frame: a table grown for good,
        or another CPU still freeing a dead process's memory. A real leak
        fails every try.
+  12. `init` and the exit test:
+     - `cmd/init` (`/boot/init`): binds `#c` on `/dev`, `#r` and `#P`
+       after it, `#e` on `/env` and `#s` on `/srv` (both `-c`), `#p` on
+       `/proc` and `#d` on `/fd`; opens `/dev/cons` as 0 and 1 and dups
+       2; checks the binds took (`/dev/pid`, its own `/proc/n/status`,
+       `/dev/rtc`, a create and remove in `/env`, `/fd/0ctl`). Then it
+       starts every test program at once, each by `rfork(RFPROC|RFNAMEG|
+       RFENVG|RFFDG|RFNOTEG)` and `exec`, awaits them, checks each wait
+       message as the old `programs_run` ktest did, prints `init: <argv>:
+       ok` (or `FAILED: <msg>`; `-q` prints failures only) and `init: N
+       passed, M failed`, and exits normally only if all passed.
+     - `exec::start_init(argv)` starts it as the child of a kernel thread
+       `boot`, which awaits it and prints `kernel: init exited normally`
+       or `kernel: init exited: <msg>`. A normal boot starts it and idles
+       on (no shell yet). `test=1` runs the ktests, then `init`, waits up
+       to 60 s, and powers off with `kernel: ok` only if it exited
+       normally; xtask's `boot` and `uniprocessor` tests require that
+       line. The `programs_run` ktest is gone; `memory_freed` now runs
+       `init -q`.
+     - `tfile` starts with `rfork(RFCNAMEG)`, since its checks begin from
+       no binds.
+     - 9boot fix: it read the kernel and archive before reserving the
+       previous log ring, against its own comment. With the archive past
+       2 MiB (`init` added), the freed read buffer landed on the ring at
+       the top of RAM, and the amd64 `log-ring` test failed every time.
+       The reads now come after `logring::setup`.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -352,18 +379,17 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-Slice 12: the P2 exit test (ROADMAP: "`init` from the boot archive
-runs, builds a namespace, and starts a set of user-mode test programs
-(fork, exec, pipe, bind/mount, notes, srv plus a toy 9P server). All of
-them pass on both architectures.")
-- An `init` in the boot archive, started as the first user process in
-  place of the kernel's `programs_run` ktest: it builds a name space
-  (`#c` on `/dev`, `#e` on `/env`, `#p` on `/proc`, `#s` on `/srv`, `#|`
-  …), then runs the test programs and reports their wait messages on
-  the console, with a line xtask's boot test can match.
-- In CI on both arches and every profile.
-- Then the hardware runs on both reference boards, under the rules in
-  the memory file and `docs/HARDWARE.md`.
+The board runs, P2's last step, under the rules in the memory file and
+`docs/HARDWARE.md`. They are the user's to run: write the medium with
+`scripts/hwcheck.ini` as for P1, boot it through our own boot entry and
+`BootNext`, and read the screen. Passing means every ktest ok, then
+`init: 11 passed, 0 failed` and `kernel: init exited normally`, then
+`kernel: ok` (with `exit=halt` it stays on screen). Then mark P2 done in
+the ROADMAP and move on to P3.
+
+The slice 12 plan, for reference: an `init` in the boot archive that
+builds a name space, runs the test programs and reports on the console,
+in CI on both arches and every profile.
 
 The slice 11 plan, for reference: `lib/9p` (enums, zero-copy decoder,
 encoder, fuzzed), `#M` with tags, interruptible replies and `Tflush`,

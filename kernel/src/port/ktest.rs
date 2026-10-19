@@ -73,7 +73,6 @@ const TESTS: &[(&str, TestFn)] = &[
         syscall::ktests::user_fault_kills,
     ),
     ("chan: names clean lexically", chan::ktests::names_clean),
-    ("exec: programs run from the boot archive", exec::ktests::programs_run),
     ("exec: programs' memory is freed", exec::ktests::memory_freed),
     ("heap: collections allocate", heap::ktests::collections_work),
     ("heap: empty slabs return", heap::ktests::slabs_return),

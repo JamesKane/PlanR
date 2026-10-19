@@ -178,10 +178,13 @@ struct Built {
 
 /// User programs for the boot archive: each package, and the binaries of
 /// it that go into `/boot`.
-const USER_PROGRAMS: &[(&str, &[&str])] = &[(
-    "utest",
-    &["tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote", "t9p"],
-)];
+const USER_PROGRAMS: &[(&str, &[&str])] = &[
+    ("init", &["init"]),
+    (
+        "utest",
+        &["tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote", "t9p"],
+    ),
+];
 
 /// Builds the user programs for `arch` and packs them into the boot
 /// archive, as `boot/<name>`.
@@ -268,12 +271,17 @@ const FOUR_CPUS: qemu::Machine = qemu::Machine {
     reboot: false,
 };
 
+/// What the kernel prints when init, having run every test program,
+/// exits normally.
+const INIT_OK: &str = "kernel: init exited normally";
+
 const BOOT_TESTS: &[BootTest] = &[
-    // The kernel runs its in-kernel tests and powers off.
+    // The kernel runs its in-kernel tests, then init runs the test
+    // programs, and the kernel powers off.
     BootTest {
         name: "boot",
         config: "# Plan R test image\ntest=1\n",
-        expect: Expect::Ok(&[]),
+        expect: Expect::Ok(&[INIT_OK]),
         every_profile: true,
         only: None,
         machine: FOUR_CPUS,
@@ -282,7 +290,7 @@ const BOOT_TESTS: &[BootTest] = &[
     BootTest {
         name: "uniprocessor",
         config: "# Plan R test image\ntest=1\n",
-        expect: Expect::Ok(&[]),
+        expect: Expect::Ok(&[INIT_OK]),
         every_profile: false,
         only: None,
         machine: qemu::Machine { cpus: 1, reboot: false },

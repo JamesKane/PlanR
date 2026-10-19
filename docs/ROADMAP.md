@@ -274,10 +274,11 @@ plus a toy 9P server). All of them pass on both architectures.
 9. ✅ `rfork` with copy-on-write; `qio`/`Block`; `#|` and `#s`.
 10. ✅ Notes, `#p`, `alarm`, `nsec`, `semacquire`/`tsemacquire`, `segattach`.
 11. ✅ `#M` with a first 9P codec (`lib/9p`), `mount`, `fversion`, `fauth`.
-12. The exit test: `init` and the user test programs, in CI on both arches.
+12. ✅ The exit test: `init` and the user test programs, in CI on both arches
+    (the board runs are still to do).
 
 User test programs are small `no_std` Rust binaries built by `xtask`
-on a first `lib/r` (the full libr is P3). Hardware runs wait for slice 12.
+on a first `lib/r` (the full libr is P3). The board runs come next.
 
 ## P3: Userland bootstrap
 

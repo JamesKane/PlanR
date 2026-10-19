@@ -111,6 +111,9 @@ fn stat_dir<'a>(name: &CStr, buf: &'a mut [u8]) -> Result<Dir<'a>, &'static str>
 }
 
 fn run(_: r::Args) -> Result<(), &'static str> {
+    // A clean name space, so the checks start from no binds whatever the
+    // parent made.
+    r::rfork(r::RforkFlags::CNAMEG).map_err(|_| "rfork(RFCNAMEG) failed")?;
     devices()?;
     environment()?;
     unions()?;

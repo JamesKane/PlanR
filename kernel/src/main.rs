@@ -20,7 +20,7 @@ use bootinfo::{BootInfo, EntryLevel, RegionKind};
 use port::config::{self, Config, TestMode};
 use port::console::{self, ConsoleSource};
 use port::early::{self, Stage};
-use port::{acpi, clock, cpu, devroot, devrtc, intr, ktest, mm, timer, trap};
+use port::{acpi, clock, cpu, devroot, devrtc, exec, intr, ktest, mm, timer, trap};
 
 /// Marker lines `cargo xtask test` scans the serial log for.
 const OK_MARKER: &str = "kernel: ok";
@@ -131,8 +131,7 @@ extern "C" fn boot_main(info: usize) -> ! {
         Some(TestMode::Run) => {
             let failed = ktest::run();
             assert!(failed == 0, "{failed} kernel tests failed");
-            println!("{OK_MARKER}");
-            arch::exit(arch::ExitCode::Success);
+            run_init()
         }
         Some(TestMode::Trap) => {
             println!("ktest: deliberate page fault at {:#x}", trap::UNMAPPED);
@@ -153,8 +152,34 @@ extern "C" fn boot_main(info: usize) -> ! {
         None => {}
     }
     report_interrupts();
+    // There is no shell yet: init runs the test programs and exits, and
+    // the kernel idles on.
+    if let Err(e) = exec::start_init(&["init"]) {
+        println!("kernel: cannot start /boot/init: {e}");
+    }
     println!("kernel: boot complete; idling");
     cpu::idle_loop(cpu::current())
+}
+
+/// After the in-kernel tests: what a real boot does, but waited for. Init
+/// runs the test programs and must exit normally.
+fn run_init() -> ! {
+    let exit = match exec::start_init(&["init"]) {
+        Ok(exit) => exit,
+        Err(e) => panic!("cannot start /boot/init: {e}"),
+    };
+    assert!(
+        clock::wait_until(|| exit.lock().is_some(), 60_000_000_000),
+        "init did not finish within 60 s"
+    );
+    let msg = exit.lock().take().unwrap_or_default();
+    assert!(
+        msg.is_empty(),
+        "init exited: {}",
+        alloc::string::String::from_utf8_lossy(&msg)
+    );
+    println!("{OK_MARKER}");
+    arch::exit(arch::ExitCode::Success);
 }
 
 /// `test=reset`: the first boot of a fresh log ring resets warm; the next

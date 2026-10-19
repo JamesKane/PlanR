@@ -1,0 +1,21 @@
+[package]
+name = "init"
+description = "The first user process: builds the name space and runs the test programs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autobins = false
+
+[[bin]]
+name = "init"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../../lib/abi" }
+r = { path = "../../lib/r" }
+
+[lints]
+workspace = true

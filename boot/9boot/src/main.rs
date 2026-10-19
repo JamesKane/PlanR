@@ -144,8 +144,6 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
         Err(e) => return Err(Error::Uefi("reading plan9.ini", e)),
     };
     let exit_test = bootdebug(&config);
-    let kernel_file = read_file(&root, KERNEL_PATH).ctx("reading kernel")?;
-    let archive = load_archive(st, &root)?;
     // A reset test: read its marker before `setup` saves over it.
     let reset_test = bootnext::config_is(&config, "test", "reset");
     let pending = if reset_test { bootnext::pending(&root) } else { None };
@@ -157,6 +155,10 @@ fn prepare(st: &SystemTable<Boot>, image: Handle, st_phys: u64) -> Result<Prepar
     if reset_test {
         reset_test_boot(st, &root, log_ring, before);
     }
+    // Only now the big reads: their buffers would land on the old ring,
+    // which sits at the top of free RAM.
+    let kernel_file = read_file(&root, KERNEL_PATH).ctx("reading kernel")?;
+    let archive = load_archive(st, &root)?;
 
     let kernel = load_kernel(st, &kernel_file)?;
     let elf = &kernel.elf;

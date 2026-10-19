@@ -13,10 +13,12 @@ use abi::{Access, OpenFlags, OpenMode};
 use elf::{Elf, Machine};
 
 use crate::port::chan::{self, Chan, last_elem};
+use crate::port::clock;
 use crate::port::error::{ENOMEM, Error, Result};
+use crate::port::lock::SpinLock;
 use crate::port::mm::PAGE;
 use crate::port::pgrp::{Files, NameSpace};
-use crate::port::proc::{self, Proc, Spawn};
+use crate::port::proc::{self, PRI_NORMAL, Proc, Spawn};
 use crate::port::segment::{Image, Kind, Memory, Segment};
 use crate::port::sysfile::IO_MAX;
 use crate::port::uaccess::USER_TOP;
@@ -182,143 +184,68 @@ pub(crate) fn spawn(name: &str, argv: &[&str], pri: usize) -> Result<Arc<Proc>> 
     Ok(p)
 }
 
+/// How the boot process exited, once it has: its wait message, empty for
+/// a normal exit.
+pub(crate) type InitExit = Arc<SpinLock<Option<Vec<u8>>>>;
+
+/// Starts `/boot/init` with `argv`, the first user process, as the child
+/// of a kernel thread that awaits it, prints how it exited and fills in
+/// the result.
+pub(crate) fn start_init(argv: &'static [&'static str]) -> Result<InitExit> {
+    let exit: InitExit = Arc::new(SpinLock::new(None));
+    let e = exit.clone();
+    let start: Arc<SpinLock<Option<Result<()>>>> = Arc::new(SpinLock::new(None));
+    let started = start.clone();
+    proc::spawn(Spawn::kproc("boot"), move || {
+        let r = spawn("/boot/init", argv, PRI_NORMAL).map(|_| ());
+        let ok = r.is_ok();
+        *started.lock() = Some(r);
+        if !ok {
+            return;
+        }
+        let sl = proc::sleepable().expect("a thread may sleep");
+        let msg = match proc::await_child(&sl) {
+            Ok(Some(w)) => w.msg,
+            _ => b"init: await found no child".to_vec(),
+        };
+        if msg.is_empty() {
+            crate::println!("kernel: init exited normally");
+        } else {
+            crate::println!("kernel: init exited: {}", String::from_utf8_lossy(&msg));
+        }
+        *e.lock() = Some(msg);
+    })
+    .ok_or(ENOMEM)?;
+    // Loading takes no time to speak of: it maps the file, it doesn't read it.
+    clock::wait_until(|| start.lock().is_some(), 5 * SECOND);
+    let r = start.lock().take();
+    match r {
+        Some(Ok(())) => Ok(exit),
+        Some(Err(e)) => Err(e),
+        None => Err(Error::from("init did not start")),
+    }
+}
+
+const SECOND: u64 = 1_000_000_000;
+
 /// Tests run by [`crate::port::ktest`].
 pub(crate) mod ktests {
-    use alloc::string::String;
-    use alloc::sync::Arc;
-    use alloc::vec::Vec;
-    use core::sync::atomic::{AtomicBool, Ordering};
-
     use crate::port::clock;
     use crate::port::ktest::{Fail, TestResult};
-    use crate::port::lock::SpinLock;
     use crate::port::mm;
-    use crate::port::proc::{self, PRI_NORMAL, Spawn, Wait};
 
-    const SECOND: u64 = 1_000_000_000;
+    use super::SECOND;
 
-    /// What a program should exit with: the status after its name and pid,
-    /// exactly or as a prefix.
-    #[derive(Clone, Copy)]
-    enum Want {
-        Normal,
-        Status(&'static str),
-        Trap,
-    }
-
-    const RUNS: &[(&str, &[&str], Want)] = &[
-        ("/boot/tmem", &["tmem"], Want::Normal),
-        ("/boot/targs", &["targs", "one", "two"], Want::Status("targs one two")),
-        ("/boot/texec", &["texec"], Want::Status("targs from exec")),
-        ("/boot/tfault", &["tfault", "null"], Want::Trap),
-        ("/boot/tfault", &["tfault", "text"], Want::Trap),
-        ("/boot/tfault", &["tfault", "brk"], Want::Trap),
-        ("/boot/tfault", &["tfault", "stack"], Want::Trap),
-        ("/boot/tfile", &["tfile"], Want::Status("targs from env")),
-        ("/boot/tproc", &["tproc"], Want::Normal),
-        ("/boot/tnote", &["tnote"], Want::Normal),
-        ("/boot/t9p", &["t9p"], Want::Normal),
-    ];
-
-    /// Each child's pid and its wait message, as `await` formats it.
-    type Waits = Vec<(u64, Vec<u8>)>;
-
-    /// Runs every program in [`RUNS`] at once as children of a kernel
-    /// thread, which awaits them all, then checks there are no more.
-    /// Returns the wait messages, as `await` formats them, by pid, and the
-    /// pids started.
-    fn run_all() -> Result<(Waits, Vec<u64>), Fail> {
-        type Out = (Waits, Vec<u64>, Result<(), &'static str>);
-        let out: Arc<SpinLock<Option<Out>>> = Arc::new(SpinLock::new(None));
-        let done = Arc::new(AtomicBool::new(false));
-        let (o, d) = (out.clone(), done.clone());
-        proc::spawn(Spawn::kproc("execpar"), move || {
-            let mut pids = Vec::new();
-            let mut r = Ok(());
-            for &(path, argv, _) in RUNS {
-                match super::spawn(path, argv, PRI_NORMAL) {
-                    Ok(p) => pids.push(p.pid()),
-                    Err(e) => {
-                        crate::println!("ktest: cannot run {path}: {e}");
-                        r = Err("a program would not start");
-                    }
-                }
-            }
-            let sl = proc::sleepable().expect("a thread may sleep");
-            let mut waits = Vec::new();
-            for _ in 0..pids.len() {
-                match proc::await_child(&sl) {
-                    Ok(Some(w)) => waits.push((w.pid, wait_text(&w))),
-                    _ => r = Err("await found no child"),
-                }
-            }
-            if !matches!(proc::await_child(&sl), Ok(None)) {
-                r = Err("await found a child too many");
-            }
-            *o.lock() = Some((waits, pids, r));
-            d.store(true, Ordering::Release);
-        })
-        .ok_or("cannot spawn")?;
-        if !clock::wait_until(|| done.load(Ordering::Acquire), 20 * SECOND) {
-            return Err("programs did not finish within 20 s".into());
+    /// Runs `/boot/init -q`, which runs every test program; it must exit
+    /// normally within 60 s.
+    fn run_init() -> Result<(), Fail> {
+        let exit = super::start_init(&["init", "-q"]).map_err(|_| "init would not start")?;
+        if !clock::wait_until(|| exit.lock().is_some(), 60 * SECOND) {
+            return Err("init did not finish within 60 s".into());
         }
-        let (waits, pids, r) = out.lock().take().ok_or("no result")?;
-        r?;
-        Ok((waits, pids))
-    }
-
-    fn wait_text(w: &Wait) -> Vec<u8> {
-        let mut buf = alloc::vec![0u8; 256];
-        let n = abi::format_waitmsg(w.pid, w.times, &w.msg, &mut buf);
-        buf.truncate(n);
-        buf
-    }
-
-    /// Programs from the boot archive run, exit and are awaited: data,
-    /// bss, stack and brk pages appear on first touch, arguments arrive,
-    /// exec replaces a program, faults end one with a trap status, the
-    /// file calls work on every device (`tfile`), and processes fork,
-    /// share or copy their memory and groups, and talk through pipes and
-    /// `#s` (`tproc`), take notes (`tnote`) and mount a 9P server (`t9p`).
-    pub(crate) fn programs_run() -> TestResult {
-        if !crate::port::devroot::has("boot/tmem") {
-            return Err("no boot archive with the test programs".into());
-        }
-        let (waits, pids) = run_all()?;
-        for (i, &(_, _, want)) in RUNS.iter().enumerate() {
-            let pid = pids[i];
-            let text = &waits
-                .iter()
-                .find(|w| w.0 == pid)
-                .ok_or("a child's exit went unreported")?
-                .1;
-            let mut msg = [0u8; 256];
-            let (wpid, _, n) = abi::parse_waitmsg(text, &mut msg).ok_or("bad wait message")?;
-            let msg = &msg[..n];
-            if wpid != pid {
-                return Err("wait message has the wrong pid".into());
-            }
-            // "name pid: status"
-            let status = msg
-                .iter()
-                .position(|&b| b == b':')
-                .map_or(&b""[..], |c| msg.get(c + 2..).unwrap_or(b""));
-            let prefix = alloc::format!(" {pid}: ");
-            let named = msg.is_empty() || msg.windows(prefix.len()).any(|w| w == prefix.as_bytes());
-            let ok = named
-                && match want {
-                    Want::Normal => msg.is_empty(),
-                    Want::Status(s) => status == s.as_bytes(),
-                    Want::Trap => status.starts_with(b"sys: trap: "),
-                };
-            if !ok {
-                crate::println!(
-                    "ktest: {} exited with {:?}",
-                    RUNS[i].1.join(" "),
-                    String::from_utf8_lossy(msg)
-                );
-                return Err("a program exited with the wrong status".into());
-            }
+        let msg = exit.lock().take().unwrap_or_default();
+        if !msg.is_empty() {
+            return Err("init exited with an error".into());
         }
         Ok(())
     }
@@ -331,11 +258,14 @@ pub(crate) mod ktests {
     /// for good (a frame, now and then), so it gets three tries: a leak
     /// loses frames on every one.
     pub(crate) fn memory_freed() -> TestResult {
+        if !crate::port::devroot::has("boot/init") {
+            return Err("no boot archive with init".into());
+        }
         // Once first, so the heap has grown to what a run needs.
-        run_all()?;
+        run_init()?;
         let mut before = mm::frame_counts().0;
         for _ in 0..3 {
-            run_all()?;
+            run_init()?;
             if clock::wait_until(|| mm::frame_counts().0 >= before, 2 * SECOND) {
                 return Ok(());
             }
