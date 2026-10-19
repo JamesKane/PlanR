@@ -55,13 +55,19 @@ In the suggested order:
      - the lost-ring and canary report;
      - the warm PSCI reset;
      - the ring cache flush.
-   - **Ryzen:** not yet run. Write `build/amd64/planr.img` to the same
-     stick, run `boot-once.sh` on Fedora, and reboot. The Ryzen has no
-     serial, so the screen is the console, and the log ring is the main
-     post-mortem path; check it with `hwreset.ini`. Its FADT reset
-     register is an SMI command (port 0xB2, value 0xBE), and the
-     fallback writes 6 (hard reset) to port 0xCF9. If RAM does not
-     survive, try 4 (soft reset) first.
+   - **Ryzen: passed on 2026-10-18** with `hwcheck.ini`, after the AMI
+     ExitBootServices fix (see below). It showed:
+     - SMEP, SMAP and UMIP on, and 24 of 24 CPUs online;
+     - the local APIC in xAPIC mode, as the firmware leaves it, and two
+       I/O APICs;
+     - the TSC at 4691 MHz, calibrated against the HPET, with the APIC
+       timer one-shot (no TSC-deadline);
+     - the RTX 4070's 1920×1080 framebuffer at 0xf800000000;
+     - all 21 in-kernel tests passing.
+     Still to check: log-ring survival (`hwreset.ini`). Its FADT reset
+     register is an SMI command (port 0xB2, value 0xBE), and the fallback
+     writes 6 (hard reset) to port 0xCF9; if RAM is lost, try 4 (soft
+     reset).
 
 ## Things to know
 
