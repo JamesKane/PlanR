@@ -1,8 +1,9 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19: P3 slices 1 to 5 (console input, libr base, libr system
-layer, the 9P server framework and `ramfs`, `rc` part 1) are done.
+2026-10-19: P3 slices 1 to 6 (console input, libr base, libr system
+layer, the 9P server framework and `ramfs`, `rc` parts 1 and 2) are
+done.
 
 ## State
 
@@ -551,12 +552,78 @@ layer, the 9P server framework and `ramfs`, `rc` part 1) are done.
        from slice 8 because rc's tests need it (it is not a builtin).
      - `r::exec` now passes any number of arguments (allocating past
        64); the kernel's limit is 64 KiB of them.
-     - `cmd/utest/trc` (in `init`'s list; `-v` names each case): 43
+     - `cmd/utest/trc` (in `init`'s list; `-v` names each case): 41
        scripts through `rc -c`, stdout, stderr and exit status each
        checked, with `/boot` bound on `/bin` and files made in
        `/tmp/trc` for the patterns.
      - `PLANR_GDB=port cargo xtask test …` starts QEMU with a gdb stub,
        for a test that hangs.
+  6. `rc`, part 2:
+     - The library: here documents (`<<tag`, `<<'tag'`; a tag must be a
+       plain word, else "Bad here tag") are read after the line they are
+       on, whole lines up to the tag (a last line with no newline is
+       dropped), and substituted then, through a callback
+       (`Parser::line_with`), as Plan 9's `readhere`: so `x=1; cat <<EOF`
+       shows the old `$x`. `Redir::Here` shares its text with the parser.
+       `` `split{cmd} `` (plan9port has it) as well as `` `{cmd} ``.
+     - Here documents reach the command through a pipe, not a `/tmp`
+       file: written at once up to 64 KiB, else by an `RFNOWAIT` child.
+       `psubst`'s rules: `$name` is its words joined by blanks, `$n` is
+       `$*(n)`, a `^` after the name goes, `$$` is `$`.
+     - `` `{} `` runs in a child with its output on a pipe, split at
+       `$ifs`'s characters (or the split word's), and leaves `$status`
+       as the child's. `<{}` and `>{}` name `/fd/N` (init binds `#d`
+       there), kept open, out of the way of saved copies, until the
+       simple command they are in (or the line) is done; nobody waits
+       for those children.
+     - Notes (`trap.rs`): the handler only counts the eight Plan 9 knows
+       (`exit hangup interrupt quit alarm kill sys: fp: term`, as
+       prefixes); any other is reported (`rc: note: …`) and ends the
+       shell. `Shell::dotrap`, at the start of every command and after
+       each line, calls `sigint` and so on with `$*`; without one,
+       `interrupt` and `quit` unwind to the interactive loop (or end a
+       script), the rest exit; a forked child just exits. Waits for
+       programs carry on through a note; `wait` and `` `{} `` stop.
+       `sigexit` runs on `exit` and at the end, in the shell itself
+       only, and leaves `$status` as it was. An all-true status exits
+       normally.
+     - Flags (`flag.rs`): Plan 9's `getflags` rules and messages
+       (`srdiIlxepvVc:1m:1`; "Illegal flag -q", "set twice", the usage
+       line, status `bad flags`), `-i` when standard input is the console
+       (`fd2path` ends in `/dev/cons`) and no file is given, `-I`, and a
+       name starting `-` meaning `-l`. `-e` exits after a failed simple
+       command, `@` or `~` outside conditions (`if`, `while`, the left of
+       `&&`/`||`), once rcmain has run `eval` or a second `.`. `-x`
+       prints each simple command's words (quoted as `pwrd` quotes), `-s`
+       a failed `$status` before each command, `-v`/`-V` echo the input
+       into a buffer flushed where Plan 9's buffered stderr is (before
+       reading a command, prompting, an error, a program, `-x`), so the
+       last line's echo is lost at `exit`, as on Plan 9.
+     - rcmain (`cmd/rc/rcmain`, in the archive as `/rc/lib/rcmain`, the
+       first file there that is not a program): the shell imports
+       `/env`'s variables, sets `pid`, `cflag`, `rcname` and `$*`, and
+       runs `. rcmain $*` then exits, as Plan 9's bootstrap. rcmain sets
+       `home`, `ifs`, `prompt` and `path` defaults, takes functions with
+       the new `finit` (not under `-p`), and runs `-c`'s command, the
+       file, or `#d/0` (`. -i` when interactive). `$0` is rcmain's name
+       under `-c`, as on Plan 9. `.` now makes `$0` local too. New
+       builtin `flag c [+-]`.
+     - Interactive input (`fd::Source`): `$prompt(1)` before a command,
+       `$prompt(2)` before each further line (here documents too); an
+       interrupted read is not the end: a newline, the traps, and on.
+     - `cat` (in `cmd/cmds`), pulled forward from slice 8 for the tests.
+     - `init` now binds `/boot` on `/bin`, and `init -i` runs its
+       programs in turn: `tcons`, then `rc -i`, which the `cons` boot
+       test types a session to (a prompt of its own, the continuation
+       prompt, errors that do not end it, a here document, DEL stopping a
+       loop, `sigint`, ^D running `sigexit`).
+     - `trc`: 59 scripts now (and the many-arguments one), with flags
+       before `-c`: here documents,
+       `` `{} ``, `<{}`/`>{}`, `sigexit`, notes posted through
+       `/proc/$pid/note`, `-e -x -v -m`, `flag`, a bad flag, `cat`.
+     - Seen in plan9port, not yet compared: its `whatis` quotes with
+       `pwrd` (not `needsrcquote`), and its error texts carry stray
+       newlines (`< requires singleton\n`). Slice 7 decides.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -566,16 +633,18 @@ layer, the 9P server framework and `ramfs`, `rc` part 1) are done.
 
 ## Next steps
 
-P3 slice 6: `rc`, part 2: here documents, `` `{} ``, `<{}`/`>{}`,
-`$status` details, `$apid`, notes (`sigint`, `sigexit`), `rcmain`,
-`-c -e -i -l -x`, the prompt, and interactive `rc` on the serial console
-in QEMU. The P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`;
+P3 slice 7: the oracle harness. `cargo xtask oracle` runs the scripts
+in `oracle/rc/` on host plan9port and in QEMU and compares stdout,
+stderr and status, with an allow-file for known differences; in CI from
+then on. The P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`;
 `srv` and `9fs` moved to P5).
 
-The oracle harness (slice 7) needs host plan9port, built by
-`scripts/install-plan9port.sh` (as the user, into `$PLAN9` or
-`~/plan9port`, at a fixed revision). On 2026-10-19 this host lacked
-only `libXt-devel` for it.
+plan9port is built on this host (2026-10-19, by
+`scripts/install-plan9port.sh`, in `~/plan9port`; `$PLAN9` is not set,
+so the harness should default to `~/plan9port`). Its rc reads
+`$PLAN9/rcmain` (the Unix one: different lines, so `-x`/`-s` output
+differs from ours), names itself `rc (/home/…/bin/rc)` in errors unless
+run as `rc`, uses `/dev/fd/N` for `<{}`, and `/dev/stdin` interactively.
 
 The slice 12 plan, for reference: an `init` in the boot archive that
 builds a name space, runs the test programs and reports on the console,

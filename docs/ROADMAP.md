@@ -317,13 +317,14 @@ on Plan R and on host plan9port (see [TESTING.md](TESTING.md)).
    interpreter: commands, pipelines, redirections, `& ; && || !`, lists,
    `^`, `$#`, `$"`, quoting, globbing, `if`/`if not`/`for`/`while`/
    `switch`/`~`, functions, core builtins.
-6. `rc`, part 2: here documents, `` `{} ``, `<{}`/`>{}`, `$status`,
+6. ✅ `rc`, part 2: here documents, `` `{} ``, `<{}`/`>{}`, `$status`,
    `$apid`, notes (`sigint`, `sigexit`), `rcmain`, `-c -e -i -l -x`,
    the prompt; interactive `rc` on the serial console in QEMU.
 7. Oracle harness: `cargo xtask oracle` runs `oracle/rc/` scripts on host
    plan9port (`scripts/install-plan9port.sh`) and in QEMU and compares
    stdout, stderr and status, with an allow-file; in CI from then on.
-8. File commands: `echo` (done in slice 5, for rc's tests) `cat ls cp mv rm mkdir pwd touch chmod basename
+8. File commands: `echo` and `cat` (done in slices 5 and 6, for rc's
+   tests) `ls cp mv rm mkdir pwd touch chmod basename
    cleanname seq date sleep wc tee test cmp xd strings tail du`.
 9. Name-space commands (`bind mount unmount ns ps kill`), `newns` with
    `/lib/namespace`, `root/` in the archive; the real `init` (name

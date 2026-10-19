@@ -4,12 +4,20 @@
 //! own descriptors (those copies and the input it reads commands from)
 //! are closed in every program it runs, and moved out of the way of a
 //! redirection that names them.
+//!
+//! Also the inputs commands are read from: a descriptor ([`FdInput`]),
+//! seen through a [`Source`] that prompts and echoes.
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
+use core::sync::atomic::Ordering;
 
 use r::{Access, Fd, OpenFlags, OpenMode};
+use rc::lex::Input;
+
+use crate::flag;
 
 /// Where saved copies start.
 const FIRST: Fd = 10;
@@ -30,6 +38,9 @@ pub(crate) struct Fds {
     private: Vec<Private>,
     /// The descriptors redirected now, which a copy must not take.
     redirected: Vec<Fd>,
+    /// Descriptors kept open for programs to use, which a copy must not
+    /// take either.
+    held: Vec<Fd>,
 }
 
 impl Fds {
@@ -47,11 +58,30 @@ impl Fds {
         let _ = r::close(p.get());
     }
 
+    /// Stops keeping `p` as the shell's own, but keeps it open, where it
+    /// is, for the programs the shell runs; returns it.
+    pub(crate) fn keep(&mut self, p: &Private) -> Fd {
+        self.private.retain(|q| !Rc::ptr_eq(p, q));
+        self.held.push(p.get());
+        p.get()
+    }
+
+    /// Closes `fd`, which [`Fds::keep`] kept.
+    pub(crate) fn forget(&mut self, fd: Fd) {
+        self.held.retain(|&h| h != fd);
+        let _ = r::close(fd);
+    }
+
     /// The lowest descriptor from [`FIRST`], other than `not`, that
     /// nothing of the shell's uses.
     fn free(&self, not: Fd) -> Fd {
         (FIRST..FIRST + 1000)
-            .find(|&n| n != not && !self.private.iter().any(|p| p.get() == n) && !self.redirected.contains(&n))
+            .find(|&n| {
+                n != not
+                    && !self.private.iter().any(|p| p.get() == n)
+                    && !self.redirected.contains(&n)
+                    && !self.held.contains(&n)
+            })
             .unwrap_or(FIRST)
     }
 
@@ -142,6 +172,12 @@ impl rc::lex::Input for FdInput {
                     self.buf.truncate(n);
                     self.at = 0;
                 }
+                // Not the end: an interactive shell reads on.
+                Err(e) if e.as_bytes() == b"interrupted" => {
+                    self.buf.clear();
+                    self.at = 0;
+                    return None;
+                }
                 _ => {
                     self.buf.clear();
                     self.at = 0;
@@ -153,5 +189,69 @@ impl rc::lex::Input for FdInput {
         let c = self.buf[self.at];
         self.at += 1;
         Some(c)
+    }
+}
+
+/// What the shell's inputs share with it: the prompts of an interactive
+/// one, for a command's first line and for the lines after, and the
+/// input echoed for `-v` and `-V`, not yet written. That waits, as in
+/// Plan 9's buffered standard error, until the shell next reads a
+/// command, prompts, reports an error or runs a program
+/// ([`Echo::flush`]).
+#[derive(Debug, Default)]
+pub(crate) struct Echo {
+    pub(crate) first: Vec<u8>,
+    pub(crate) rest: Vec<u8>,
+    echoed: Vec<u8>,
+}
+
+impl Echo {
+    pub(crate) fn flush(&mut self) {
+        if !self.echoed.is_empty() {
+            let _ = r::io::Write::write_all(&mut r::File(2), &self.echoed);
+            self.echoed.clear();
+        }
+    }
+}
+
+/// An input as the lexer reads it: prompting before each line if it is
+/// interactive, and echoing what it reads with `-V`, or with `-v` past
+/// rcmain.
+pub(crate) struct Source {
+    input: Box<dyn Input>,
+    echo: Rc<RefCell<Echo>>,
+    interactive: bool,
+    /// A line starts with the next byte.
+    at_line: bool,
+}
+
+impl Source {
+    pub(crate) fn new(input: Box<dyn Input>, echo: Rc<RefCell<Echo>>, interactive: bool) -> Source {
+        Source {
+            input,
+            echo,
+            interactive,
+            at_line: true,
+        }
+    }
+}
+
+impl Input for Source {
+    fn next(&mut self) -> Option<u8> {
+        let mut e = self.echo.borrow_mut();
+        if self.at_line && self.interactive {
+            let rest = e.rest.clone();
+            let p = core::mem::replace(&mut e.first, rest);
+            e.echoed.extend_from_slice(&p);
+            e.flush();
+        }
+        let c = self.input.next();
+        self.at_line = matches!(c, None | Some(b'\n'));
+        if let Some(c) = c
+            && (flag::get(b'V') || flag::get(b'v') && flag::NDOT.load(Ordering::Relaxed) >= 2)
+        {
+            e.echoed.push(c);
+        }
+        c
     }
 }

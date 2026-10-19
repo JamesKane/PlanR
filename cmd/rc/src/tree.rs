@@ -2,8 +2,10 @@
 //! `whatis` shows of a function and what goes in `/env/fn#name`.
 
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::fmt::{self, Display, Formatter, Write as _};
 
 use crate::lex::RedirKind;
@@ -25,8 +27,9 @@ pub enum Word {
     Concat(Box<Word>, Box<Word>),
     /// `(words)`
     List(Vec<Word>),
-    /// `` `{cmd} ``
-    Backquote(Box<Cmd>),
+    /// `` `{cmd} ``, or with the characters to split its output at,
+    /// `` `split{cmd} ``.
+    Backquote(Option<Box<Word>>, Box<Cmd>),
     /// `<{cmd}` or `>{cmd}`: a pipe to the command, named as a file.
     PipeFd(RedirKind, Box<Cmd>),
 }
@@ -39,6 +42,19 @@ pub enum Redir {
     Dup(u32, u32),
     /// `>[fd=]`
     Close(u32),
+    /// `<<tag`: descriptor, document.
+    Here(u32, Here),
+}
+
+/// A here document: the lines after its command, up to one that is its
+/// tag. Its text is read after the command's line, so it is shared with
+/// the parser that fills it in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Here {
+    pub tag: Vec<u8>,
+    /// A quoted tag: no `$` substitution in the text.
+    pub quoted: bool,
+    pub text: Rc<RefCell<Vec<u8>>>,
 }
 
 /// A simple command's words and redirections, in order.
@@ -152,7 +168,8 @@ impl Display for Word {
                 words(f, ws)?;
                 f.write_char(')')
             }
-            Word::Backquote(c) => write!(f, "`{{{c}}}"),
+            Word::Backquote(None, c) => write!(f, "`{{{c}}}"),
+            Word::Backquote(Some(split), c) => write!(f, "`{split}{{{c}}}"),
             Word::PipeFd(k, c) => {
                 f.write_str(if *k == RedirKind::Read { "<" } else { ">" })?;
                 write!(f, "{{{c}}}")
@@ -180,6 +197,13 @@ impl Display for Redir {
             }
             Redir::Dup(fd, from) => write!(f, ">[{fd}={from}]"),
             Redir::Close(fd) => write!(f, ">[{fd}=]"),
+            Redir::Here(fd, h) => {
+                f.write_str("<<")?;
+                if *fd != 0 {
+                    write!(f, "[{fd}]")?;
+                }
+                if h.quoted { quoted(f, &h.tag) } else { bytes(f, &h.tag) }
+            }
         }
     }
 }

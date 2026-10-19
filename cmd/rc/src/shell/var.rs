@@ -8,12 +8,16 @@
 //! does: a list as its words each followed by a NUL, a function as
 //! `fn#name` holding its definition.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
+use rc::parse::Parser;
 use rc::tree::Cmd;
+
+use crate::fd::mode;
 
 pub(crate) type List = Vec<Vec<u8>>;
 
@@ -99,6 +103,28 @@ impl Vars {
         );
     }
 
+    /// Takes the variables in `/env`, as the shell starts.
+    pub(crate) fn import_vars(&mut self) {
+        for name in env_names() {
+            if !name.starts_with(b"fn#")
+                && let Some(val) = r::env::getenv_list(&name)
+            {
+                self.import(&name, val);
+            }
+        }
+    }
+
+    /// Takes the functions in `/env` (`fn#name`), as `finit` does.
+    pub(crate) fn import_fns(&mut self) {
+        for name in env_names() {
+            if let Some(f) = name.strip_prefix(b"fn#")
+                && let Some(body) = r::env::getenv_raw(&name).and_then(|t| function(&t))
+            {
+                self.import_func(f, body);
+            }
+        }
+    }
+
     /// Marks everything changed, for a fresh environment.
     pub(crate) fn mark_all(&mut self) {
         for v in self.globals.values_mut() {
@@ -147,4 +173,23 @@ fn put(name: &[u8], val: &List) {
 /// `fn name {body}`, as `whatis` prints it and `/env` keeps it.
 pub(crate) fn definition(name: &[u8], body: &Cmd) -> Vec<u8> {
     format!("fn {} {{{body}}}\n", r::RcQuoted(name)).into_bytes()
+}
+
+/// The names in `/env`.
+fn env_names() -> Vec<Vec<u8>> {
+    let Ok(fd) = r::open(c"/env", mode(r::Access::Read, r::OpenFlags::empty())) else {
+        return Vec::new();
+    };
+    let entries = r::dirreadall(fd).unwrap_or_default();
+    let _ = r::close(fd);
+    entries.into_iter().map(|e| e.name.as_bytes().to_vec()).collect()
+}
+
+/// The body of the function that `fn name {body}` defines.
+fn function(text: &[u8]) -> Option<Rc<Cmd>> {
+    let mut p = Parser::new(Box::new(rc::lex::Text::new(text)));
+    match p.line() {
+        Ok(Some(Cmd::Fn(_, Some(body)))) => Some(Rc::new(*body)),
+        _ => None,
+    }
 }

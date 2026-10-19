@@ -1,5 +1,6 @@
-//! Words: variables, subscripts, counts, concatenation, and file name
-//! patterns matched against the directories they name.
+//! Words: variables, subscripts, counts, concatenation, a command's
+//! output, pipes named as files, and file name patterns matched against
+//! the directories they name.
 
 use alloc::format;
 use alloc::vec::Vec;
@@ -52,8 +53,18 @@ impl Shell {
                     .collect()
             }
             Word::List(ws) => self.eval_words(ws)?,
-            Word::Backquote(_) => return self.error("`{} is not yet implemented"),
-            Word::PipeFd(..) => return self.error("<{} and >{} are not yet implemented"),
+            Word::Backquote(split, c) => {
+                let stop = match split {
+                    Some(w) => self.glob_words(core::slice::from_ref(w))?.into_iter().next(),
+                    None => self.vars.get(b"ifs").first().cloned(),
+                };
+                let out = self.backquote(c)?;
+                plain(split_at(&out, &stop.unwrap_or_default()))
+            }
+            Word::PipeFd(kind, c) => {
+                let fd = self.pipefd(*kind, c)?;
+                alloc::vec![Pattern::plain(format!("/fd/{fd}").into_bytes())]
+            }
         })
     }
 
@@ -102,6 +113,35 @@ impl Shell {
 
 fn plain(l: List) -> Vec<Pattern> {
     l.into_iter().map(Pattern::plain).collect()
+}
+
+/// The words of `text` between the characters of `stop`; none are empty.
+fn split_at(text: &[u8], stop: &[u8]) -> List {
+    let mut seps = Vec::new();
+    let mut s = stop;
+    while !s.is_empty() {
+        let (_, n) = r::utf::decode(s);
+        seps.push(&s[..n]);
+        s = &s[n..];
+    }
+    let mut words = Vec::new();
+    let mut word = Vec::new();
+    let mut i = 0;
+    while i < text.len() {
+        if let Some(sep) = seps.iter().find(|&&sep| text[i..].starts_with(sep)) {
+            if !word.is_empty() {
+                words.push(core::mem::take(&mut word));
+            }
+            i += sep.len();
+        } else {
+            word.push(text[i]);
+            i += 1;
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
 }
 
 /// The number `s` starts with, if it starts with a digit.

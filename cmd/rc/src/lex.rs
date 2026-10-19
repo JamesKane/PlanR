@@ -137,12 +137,14 @@ pub enum Tok {
 }
 
 /// The characters that end a word.
-fn wordchr(c: u8) -> bool {
+#[must_use]
+pub fn wordchr(c: u8) -> bool {
     !b"\n \t#;&|^$=`'{}()<>".contains(&c)
 }
 
 /// The characters of a variable's name.
-fn idchr(c: u8) -> bool {
+#[must_use]
+pub fn idchr(c: u8) -> bool {
     c > b' ' && !b"!\"#$%&'()+,-./:;<=>?@[\\]^`{|}~".contains(&c)
 }
 
@@ -291,6 +293,36 @@ impl Lexer {
             }
             self.advance();
         }
+    }
+
+    /// The next byte as it is, for a here document's text: no
+    /// continuations, comments or tokens.
+    pub fn raw(&mut self) -> Option<u8> {
+        if self.peekc.is_some() {
+            return self.advance();
+        }
+        let c = match self.back.take() {
+            Some(c) => Some(c),
+            None if self.eof => None,
+            None => self.input.next(),
+        };
+        match c {
+            None => self.eof = true,
+            Some(b'\n') => self.line += 1,
+            Some(_) => {}
+        }
+        c
+    }
+
+    /// Reads on after the end of the input, which an interrupted read of
+    /// a terminal looks like, as if starting a new line.
+    pub fn clear_eof(&mut self) {
+        self.eof = false;
+        self.peekc = None;
+        self.back = None;
+        self.lastword = false;
+        self.lastdol = false;
+        self.in_quote = false;
     }
 
     /// Skips the rest of the line, after a syntax error.

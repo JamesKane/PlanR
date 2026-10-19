@@ -5,7 +5,8 @@
 //! each one exits. It prints a line for each program (only failures with
 //! `-q`) and a summary; it exits normally only if every program passed.
 //! With `-i` it runs instead the programs that need someone (the test
-//! harness) typing at the console.
+//! harness) typing at the console, one after another: `tcons`, then an
+//! interactive `rc`.
 
 #![no_std]
 #![no_main]
@@ -70,11 +71,15 @@ const PROGRAMS: &[(&CStr, &[&CStr], Want)] = &[
     (c"/boot/trc", &[c"trc"], Want::Normal),
 ];
 
-/// The programs `-i` runs.
-const INTERACTIVE: &[(&CStr, &[&CStr], Want)] = &[(c"/boot/tcons", &[c"tcons"], Want::Normal)];
+/// The programs `-i` runs, in turn.
+const INTERACTIVE: &[(&CStr, &[&CStr], Want)] = &[
+    (c"/boot/tcons", &[c"tcons"], Want::Normal),
+    (c"/boot/rc", &[c"rc", c"-i"], Want::Normal),
+];
 
 /// The binds, in order: what, where, how.
 const NAMESPACE: &[(&CStr, &CStr, BindFlags)] = &[
+    (c"/boot", c"/bin", BindFlags::empty()),
     (c"#c", c"/dev", BindFlags::empty()),
     (c"#r", c"/dev", BindFlags::AFTER),
     (c"#P", c"/dev", BindFlags::AFTER),
@@ -91,20 +96,22 @@ fn say(text: &[u8]) {
 
 fn run(args: r::Args) -> Result<(), &'static str> {
     let quiet = args.get(1) == Some(b"-q");
-    let programs = if args.get(1) == Some(b"-i") {
-        INTERACTIVE
-    } else {
-        PROGRAMS
-    };
+    let in_turn = args.get(1) == Some(b"-i");
+    let programs = if in_turn { INTERACTIVE } else { PROGRAMS };
     namespace()?;
     let mut pids = [0u64; PROGRAMS.len()];
-    for (i, &(path, argv, _)) in programs.iter().enumerate() {
-        pids[i] = start(path, argv)?;
+    if !in_turn {
+        for (i, &(path, argv, _)) in programs.iter().enumerate() {
+            pids[i] = start(path, argv)?;
+        }
     }
     let mut passed = [false; PROGRAMS.len()];
     let mut text = [0u8; 256];
     let mut msg = [0u8; 256];
-    for _ in 0..programs.len() {
+    for k in 0..programs.len() {
+        if in_turn {
+            pids[k] = start(programs[k].0, programs[k].1)?;
+        }
         let n = r::await_child(&mut text).map_err(|_| "await found no child")?;
         let (pid, _, m) = abi::parse_waitmsg(&text[..n], &mut msg).ok_or("bad wait message")?;
         let i = pids[..programs.len()]

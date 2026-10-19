@@ -1,16 +1,19 @@
 //! The builtins: `.`, `builtin` (in [`Shell::command`]), `cd`, `eval`,
-//! `exec`, `exit`, `rfork`, `shift`, `wait` and `whatis`, as Plan 9's.
+//! `exec`, `exit`, `finit`, `flag`, `rfork`, `shift`, `wait` and
+//! `whatis`, as Plan 9's.
 
 // Every builtin has the same type, whether or not it can fail.
 #![allow(clippy::unnecessary_wraps)]
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::sync::atomic::Ordering;
 
 use r::RforkFlags as F;
 
 use crate::exec::{Run, Shell, Unwind};
 use crate::fd::{FdInput, mode};
+use crate::flag;
 use crate::var::{List, definition};
 
 type Builtin = fn(&mut Shell, &[Vec<u8>]) -> Run;
@@ -21,6 +24,8 @@ const BUILTINS: &[(&[u8], Builtin)] = &[
     (b"eval", eval),
     (b"exec", exec),
     (b"exit", exit),
+    (b"finit", finit),
+    (b"flag", flag),
     (b"rfork", rfork),
     (b"shift", shift),
     (b"wait", wait),
@@ -98,7 +103,7 @@ fn cd(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
 }
 
 /// `. [-i] file [args]`: runs the commands in `file`, found in `$path`,
-/// with `$*` set to `args`.
+/// with `$0` set to `file` and `$*` to `args`.
 fn dot(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
     let mut a = &a[1..];
     let mut interactive = false;
@@ -124,9 +129,15 @@ fn dot(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
             return sh.error_r(".: can't open", &e);
         }
     };
+    // Past rcmain, which is the first, `-e` acts.
+    if flag::NDOT.fetch_add(1, Ordering::Relaxed) > 0 {
+        flag::EFLAG_OK.store(true, Ordering::Relaxed);
+    }
     let fd = sh.fds.adopt(fd);
+    sh.vars.push_local(b"0", alloc::vec![file.clone()]);
     sh.vars.push_local(b"*", args.to_vec());
     let res = sh.run_input(Box::new(FdInput::new(fd.clone())), Some(file), interactive);
+    sh.vars.pop_local();
     sh.vars.pop_local();
     sh.fds.release(&fd);
     res
@@ -137,6 +148,7 @@ fn eval(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
     if a.len() < 2 {
         return sh.error("Usage: eval cmd ...");
     }
+    flag::EFLAG_OK.store(true, Ordering::Relaxed);
     let mut text = a[1..].join(&b' ');
     text.push(b'\n');
     sh.eval_text(&text)
@@ -160,6 +172,29 @@ fn exit(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
         sh.set_status(s);
     }
     Err(Unwind::Exit)
+}
+
+/// `finit`: defines the functions in `/env`.
+fn finit(sh: &mut Shell, _: &[Vec<u8>]) -> Run {
+    sh.vars.import_fns();
+    Ok(())
+}
+
+/// `flag c` sets `$status` to whether flag `c` is set; `flag c +` sets
+/// it, and `flag c -` clears it.
+fn flag(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
+    match &a[1..] {
+        [c] => {
+            let on = c.first().is_some_and(|&c| flag::get(c));
+            sh.set_status(if on { b"" } else { b"flag not set" });
+            Ok(())
+        }
+        [c, how] if c.len() == 1 && (how == b"+" || how == b"-") => {
+            flag::set(c[0], how == b"+");
+            Ok(())
+        }
+        _ => sh.error("Usage: flag [letter] [+-]"),
+    }
 }
 
 /// `rfork [nNeEsfFm]`: gives the shell new groups, as `rfork(2)`; with no
@@ -228,15 +263,18 @@ fn wait(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
     match &a[1..] {
         [] => {
             while let Some(&pid) = sh.apids.first() {
-                sh.wait_for(pid)?;
-                sh.apids.retain(|&p| p != pid);
+                sh.wait_for(pid, false)?;
+                if sh.apids.contains(&pid) {
+                    // Interrupted.
+                    break;
+                }
             }
             Ok(())
         }
         [p] => {
             let pid = core::str::from_utf8(p).ok().and_then(|s| s.parse().ok());
             match pid {
-                Some(pid) if sh.apids.contains(&pid) => sh.wait_for(pid),
+                Some(pid) if sh.apids.contains(&pid) => sh.wait_for(pid, false),
                 _ => Ok(()),
             }
         }

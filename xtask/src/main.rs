@@ -187,7 +187,7 @@ const USER_PROGRAMS: &[(&str, &[&str])] = &[
     ("init", &["init"]),
     ("ramfs", &["ramfs"]),
     ("rc", &["rc"]),
-    ("cmds", &["echo"]),
+    ("cmds", &["cat", "echo"]),
     (
         "utest",
         &[
@@ -197,8 +197,12 @@ const USER_PROGRAMS: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// Other files for the boot archive: where each is in the tree, and
+/// where it goes in the archive.
+const ARCHIVE_FILES: &[(&str, &str)] = &[("cmd/rc/rcmain", "rc/lib/rcmain")];
+
 /// Builds the user programs for `arch` and packs them into the boot
-/// archive, as `boot/<name>`.
+/// archive, as `boot/<name>`, with [`ARCHIVE_FILES`].
 fn build_archive(arch: Arch, release: bool) -> Result<PathBuf, String> {
     let profile = if release { "release" } else { "debug" };
     let mut files = Vec::new();
@@ -212,14 +216,19 @@ fn build_archive(arch: Arch, release: bool) -> Result<PathBuf, String> {
         for bin in bins {
             let path = root().join("target").join(arch.kernel_target()).join(profile).join(bin);
             let data = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            files.push((format!("boot/{bin}"), data));
+            files.push((format!("boot/{bin}"), data, 0o755));
         }
+    }
+    for &(from, to) in ARCHIVE_FILES {
+        let path = root().join(from);
+        let data = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        files.push((to.to_string(), data, 0o644));
     }
     let entries: Vec<bootarc::File<'_>> = files
         .iter()
-        .map(|(name, data)| bootarc::File {
+        .map(|(name, data, mode)| bootarc::File {
             name,
-            mode: 0o755,
+            mode: *mode,
             data,
         })
         .collect();
@@ -288,7 +297,10 @@ const FOUR_CPUS: qemu::Machine = qemu::Machine {
 /// exits normally.
 const INIT_OK: &str = "kernel: init exited normally";
 
-/// What `tcons` (run by `init -i`) waits to be typed, step by step.
+/// What `tcons`, then an interactive `rc`, both run by `init -i`, wait
+/// to be typed, step by step. Each `rc` step waits for what the one
+/// before printed, which is worked out (as `$#x^words`) so that the echo
+/// of what was typed cannot match it.
 const CONS_INPUT: &[qemu::Typed] = &[
     qemu::Typed {
         after: "tcons: type a line",
@@ -310,6 +322,53 @@ const CONS_INPUT: &[qemu::Typed] = &[
         after: "tcons: after",
         send: b"still here\r",
     },
+    // rc: a prompt of its own, a variable, and a command.
+    qemu::Typed {
+        after: "init: tcons: ok",
+        send: b"p=rc; prompt=($p^'% ' $p^'+ '); x=(a b c); echo $#x^words\r",
+    },
+    // A syntax error and an error in a command, neither ending it.
+    qemu::Typed {
+        after: "3words",
+        send: b"echo (\r",
+    },
+    qemu::Typed {
+        after: "rc: #d/0: syntax error",
+        send: b"echo (a b)^(c d e)\r",
+    },
+    // A command over two lines, the second prompted for as such.
+    qemu::Typed {
+        after: "mismatched list lengths",
+        send: b"for(i in 1 2)\r echo $i^-loop\r",
+    },
+    // A here document, its lines prompted for too.
+    qemu::Typed {
+        after: "2-loop",
+        send: b"cat <<EOF\rhere $x\rEOF\r",
+    },
+    // DEL stops a loop and gets back to the prompt.
+    qemu::Typed {
+        after: "here a b c",
+        send: b"echo $#x^loops; while(){}\r",
+    },
+    qemu::Typed {
+        after: "3loops",
+        send: b"\x7fecho $#x^after\r",
+    },
+    // Or runs `sigint`.
+    qemu::Typed {
+        after: "3after",
+        send: b"fn sigint {stop=1; echo $#x^caught}; echo $#x^armed; while(~ $#stop 0){}; echo $#x^done\r",
+    },
+    qemu::Typed {
+        after: "3armed",
+        send: b"\x7f",
+    },
+    // ^D ends it, running `sigexit`.
+    qemu::Typed {
+        after: "3done",
+        send: b"fn sigexit {echo $#x^bye}\r\x04",
+    },
 ];
 
 const BOOT_TESTS: &[BootTest] = &[
@@ -324,12 +383,23 @@ const BOOT_TESTS: &[BootTest] = &[
         machine: FOUR_CPUS,
         input: &[],
     },
-    // Console input: init runs tcons, and the harness types to it. The
-    // typed line must be echoed.
+    // Console input: init runs tcons, then an interactive rc, and the
+    // harness types to them. The typed line must be echoed.
     BootTest {
         name: "cons",
         config: "# Plan R console input test image\ntest=cons\n",
-        expect: Expect::Ok(&["cons: input on", "hello, console", "init: tcons: ok", INIT_OK]),
+        expect: Expect::Ok(&[
+            "cons: input on",
+            "hello, console",
+            "init: tcons: ok",
+            // What rc prints beyond what its steps wait for.
+            "rc+ ",
+            "1-loop",
+            "3caught",
+            "3bye",
+            "init: rc -i: ok",
+            INIT_OK,
+        ]),
         every_profile: false,
         only: None,
         machine: FOUR_CPUS,

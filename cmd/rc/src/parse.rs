@@ -2,13 +2,16 @@
 //! its precedences: `if`, `for`, `while` and `switch` take as much as
 //! follows; then `&&` and `||`; then `!`, `@` and prefix redirections and
 //! assignments; then `|`. Input is read and parsed a line at a time, as
-//! rc runs it.
+//! rc runs it, and the text of the line's here documents is read after
+//! it.
 
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use crate::lex::{Input, Keyword, Lexer, RedirKind, SyntaxError, Tok};
-use crate::tree::{Arg, Cmd, Redir, Word};
+use crate::tree::{Arg, Cmd, Here, Redir, Word};
 
 /// How tightly an operator binds.
 const ANDOR: u8 = 1;
@@ -22,6 +25,8 @@ pub struct Parser {
     /// The last command compiled was an `if`, so an `if not` may follow
     /// (Plan 9's `iflast`, kept from line to line).
     iflast: bool,
+    /// The here documents of the line being read, to be read after it.
+    here: Vec<Here>,
 }
 
 type Result<T> = core::result::Result<T, SyntaxError>;
@@ -33,6 +38,7 @@ impl Parser {
             lex: Lexer::new(input),
             peeked: None,
             iflast: false,
+            here: Vec::new(),
         }
     }
 
@@ -76,8 +82,15 @@ impl Parser {
     /// an error the rest of the line is skipped, so the next call starts
     /// afresh.
     pub fn line(&mut self) -> Result<Option<Cmd>> {
+        self.line_with(&|l| l.to_vec())
+    }
+
+    /// [`Parser::line`], with `subst` making each line of a here document
+    /// whose tag is not quoted what goes in its text.
+    pub fn line_with(&mut self, subst: &dyn Fn(&[u8]) -> Vec<u8>) -> Result<Option<Cmd>> {
         let r = self.line_inner();
         if let Err(e) = &r {
+            self.here.clear();
             let at_end = self.peeked.as_ref().is_some_and(|t| *t == Tok::Newline);
             self.peeked = None;
             if !at_end && !self.lex.eof {
@@ -85,7 +98,47 @@ impl Parser {
             }
             return Err(e.clone());
         }
+        for h in core::mem::take(&mut self.here) {
+            self.read_here(&h, subst);
+        }
         r
+    }
+
+    /// Whether the end of the input has been read.
+    #[must_use]
+    pub fn at_eof(&self) -> bool {
+        self.lex.eof
+    }
+
+    /// Reads on after the end of the input (an interrupted read of a
+    /// terminal), from the start of a line.
+    pub fn clear_eof(&mut self) {
+        self.peeked = None;
+        self.lex.clear_eof();
+    }
+
+    /// Reads the text of `h`: whole lines up to its tag, or to the end
+    /// of the input, where a last line with no newline is dropped.
+    fn read_here(&mut self, h: &Here, subst: &dyn Fn(&[u8]) -> Vec<u8>) {
+        let mut text = Vec::new();
+        let mut line = Vec::new();
+        while let Some(c) = self.lex.raw() {
+            if c != b'\n' {
+                line.push(c);
+                continue;
+            }
+            if line == h.tag {
+                break;
+            }
+            if h.quoted {
+                text.extend_from_slice(&line);
+            } else {
+                text.extend(subst(&line));
+            }
+            text.push(b'\n');
+            line.clear();
+        }
+        *h.text.borrow_mut() = text;
     }
 
     fn line_inner(&mut self) -> Result<Option<Cmd>> {
@@ -290,10 +343,20 @@ impl Parser {
                     let c = self.brace()?;
                     return Ok(Err(Word::PipeFd(k, Box::new(c))));
                 }
-                if k == RedirKind::Here {
-                    return self.error("here documents are not yet implemented");
+                let w = self.word()?;
+                if k != RedirKind::Here {
+                    return Ok(Ok(Redir::File(k, fd, w)));
                 }
-                Ok(Ok(Redir::File(k, fd, self.word()?)))
+                let Word::Lit(tag, quoted) = w else {
+                    return self.error("Bad here tag");
+                };
+                let h = Here {
+                    tag,
+                    quoted,
+                    text: Rc::new(RefCell::new(Vec::new())),
+                };
+                self.here.push(h.clone());
+                Ok(Ok(Redir::Here(fd, h)))
             }
             _ => self.error("syntax error"),
         }
@@ -356,7 +419,14 @@ impl Parser {
             }
             Tok::Count => Ok(Word::Count(Box::new(self.comword()?))),
             Tok::Join => Ok(Word::Join(Box::new(self.comword()?))),
-            Tok::Backquote => Ok(Word::Backquote(Box::new(self.brace()?))),
+            Tok::Backquote => {
+                let split = if *self.peek()? == Tok::LBrace {
+                    None
+                } else {
+                    Some(Box::new(self.word()?))
+                };
+                Ok(Word::Backquote(split, Box::new(self.brace()?)))
+            }
             Tok::LParen => {
                 let ws = self.words()?;
                 self.expect(&Tok::RParen)?;
@@ -508,6 +578,49 @@ mod tests {
         assert_eq!(one("fn f g"), "fn f g");
         assert_eq!(one("~ $x *.c a?b [a-z]"), "~ $x *.c a?b [a-z]");
         assert_eq!(one("{\n\ta\n\n\tb\n}"), "{a;b}");
+    }
+
+    #[test]
+    fn here_documents() {
+        let text = "cat <<EOF >f; cat <<'X'\none $x\nEOF\n$y\nX\necho after\ncat <<E\npartial";
+        let mut p = Parser::new(Box::new(Text::new(text.as_bytes())));
+        let upper = |l: &[u8]| l.to_ascii_uppercase();
+        let c = p.line_with(&upper).unwrap().unwrap();
+        assert_eq!(format!("{c}"), "cat <<EOF >f;cat <<'X'");
+        let mut docs = Vec::new();
+        collect(&c, &mut docs);
+        assert_eq!(docs, ["ONE $X\n", "$y\n"]);
+        assert_eq!(format!("{}", p.line().unwrap().unwrap()), "echo after");
+        // At the end of the input, a line with no newline is dropped.
+        let c = p.line().unwrap().unwrap();
+        let mut docs = Vec::new();
+        collect(&c, &mut docs);
+        assert_eq!(docs, [""]);
+        assert!(p.line().unwrap().is_none());
+        assert_eq!(lines("cat <<$x\n"), ["error: Bad here tag at \"\""]);
+    }
+
+    /// The text of each here document in `c`.
+    fn collect(c: &Cmd, out: &mut Vec<String>) {
+        match c {
+            Cmd::Seq(a, b) => {
+                collect(a, out);
+                collect(b, out);
+            }
+            Cmd::Simple(args) => {
+                for a in args {
+                    if let Arg::Redir(Redir::Here(_, h)) = a {
+                        out.push(String::from_utf8(h.text.borrow().clone()).unwrap());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn backquotes() {
+        assert_eq!(one("x=`{ls}; y=`:{a} z=`$s^x{b}"), "x=`{ls};y=`:{a} z=`$s^x{b}");
     }
 
     #[test]
