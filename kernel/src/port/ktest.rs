@@ -5,7 +5,7 @@
 //! `cargo xtask test` reads the console.
 
 use crate::arch;
-use crate::port::{clock, console, cpu, heap, intr, mm, mmu, proc, qlock, trap};
+use crate::port::{clock, console, cpu, heap, intr, mm, mmu, proc, qlock, syscall, trap, uaccess};
 use crate::println;
 
 /// Why a test did not pass.
@@ -62,6 +62,15 @@ const TESTS: &[(&str, TestFn)] = &[
     ("qlock: excludes", qlock::ktests::qlock_excludes),
     ("qlock: rwlock excludes", qlock::ktests::rwlock_excludes),
     ("mmu: address spaces are separate", mmu::ktests::spaces_are_separate),
+    ("uaccess: copies are checked", uaccess::ktests::copies_checked),
+    (
+        "syscall: user threads make system calls",
+        syscall::ktests::user_threads_call,
+    ),
+    (
+        "syscall: a user fault ends the thread",
+        syscall::ktests::user_fault_kills,
+    ),
     ("heap: collections allocate", heap::ktests::collections_work),
     ("heap: empty slabs return", heap::ktests::slabs_return),
     ("heap: large aligned block", heap::ktests::large_aligned),

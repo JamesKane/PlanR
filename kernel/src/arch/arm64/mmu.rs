@@ -51,6 +51,7 @@ impl Mmu for Native {
             MapKind::KernelText => (ATTR_NORMAL << 2) | SH_INNER | AP_READ_ONLY | UXN,
             MapKind::WriteCombining => (ATTR_NORMAL_NC << 2) | SH_INNER | PXN | UXN,
             MapKind::UserReadWrite => (ATTR_NORMAL << 2) | SH_INNER | AP_EL0 | NG | PXN | UXN,
+            MapKind::UserText => (ATTR_NORMAL << 2) | SH_INNER | AP_EL0 | AP_READ_ONLY | NG | PXN,
         };
         phys | VALID | AF | attrs | if block { 0 } else { TABLE_OR_PAGE }
     }
@@ -136,5 +137,31 @@ impl Mmu for Native {
             }
             asm!("dsb ish", "isb", options(nostack));
         }
+    }
+}
+
+/// Makes code just written at `[va, va + len)` (through any mapping)
+/// visible to instruction fetch: cleans the data cache to the point of
+/// unification and drops every instruction cache.
+pub(crate) fn sync_icache(va: u64, len: u64) {
+    let ctr: u64;
+    // SAFETY: reads the cache type register.
+    unsafe { asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack)) };
+    let line = 4 << ((ctr >> 16) & 0xf);
+    let mut a = va & !(line - 1);
+    while a < va + len {
+        // SAFETY: cache maintenance on memory the caller owns.
+        unsafe { asm!("dc cvau, {}", in(reg) a, options(nostack, preserves_flags)) };
+        a += line;
+    }
+    // SAFETY: barriers and an instruction cache invalidate, broadcast.
+    unsafe {
+        asm!(
+            "dsb ish",
+            "ic ialluis",
+            "dsb ish",
+            "isb",
+            options(nostack, preserves_flags)
+        );
     }
 }

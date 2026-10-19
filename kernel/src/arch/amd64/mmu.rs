@@ -58,6 +58,7 @@ impl Mmu for Native {
             MapKind::KernelText => 0,
             MapKind::WriteCombining => WRITABLE | WRITE_THROUGH | NO_EXECUTE,
             MapKind::UserReadWrite => WRITABLE | USER | NO_EXECUTE,
+            MapKind::UserText => USER,
         };
         phys | PRESENT | attrs | if block { HUGE } else { 0 }
     }
@@ -105,3 +106,6 @@ impl Mmu for Native {
         Self::flush_local(va, pages);
     }
 }
+
+/// Nothing to do: instruction fetch sees stores on amd64.
+pub(crate) fn sync_icache(_va: u64, _len: u64) {}

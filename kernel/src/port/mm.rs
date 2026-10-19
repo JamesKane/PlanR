@@ -56,12 +56,14 @@ pub(crate) enum MapKind {
     /// cacheable, never executable. With SMAP or PAN on, the kernel reaches
     /// it only through [`crate::arch::probe_user_read`].
     UserReadWrite,
+    /// User code: cacheable, read-only, executable in user mode only.
+    UserText,
 }
 
 impl MapKind {
     /// True for the kinds that belong in the lower (user) half.
     pub(crate) fn is_user(self) -> bool {
-        self == MapKind::UserReadWrite
+        matches!(self, MapKind::UserReadWrite | MapKind::UserText)
     }
 }
 

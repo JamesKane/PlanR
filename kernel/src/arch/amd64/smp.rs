@@ -298,6 +298,7 @@ extern "C" fn ap_entry(index: usize) -> ! {
     ARRIVED.store(index, Ordering::Release);
     super::mmu::init_cpu();
     super::protect::init_cpu();
+    super::context::init_cpu();
     trap::load(index);
     let Some(cpu) = cpu::get(index) else {
         super::halt();

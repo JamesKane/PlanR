@@ -14,7 +14,7 @@ roles stay: **terminal**, **CPU server** and **file/auth server**. They are
 configurations of one kernel, not different builds.
 
 ```
- user processes ──── syscalls (planr-abi) ────┐
+ user processes ──── syscalls (lib/abi) ──────┐
    rc, acme, rio,                             │
    factotum, fs…                              ▼
         ▲                 ┌──────────── kernel ────────────┐
@@ -42,7 +42,7 @@ PlanR/
 │  ├─ arch/arm64/       entry, MMU, GICv3, exceptions, PSCI
 │  └─ drivers/          virtio, nvme, ahci, xhci, nics, uarts, gop/fb
 ├─ lib/                 no_std libraries, host-testable
-│  ├─ abi/              planr-abi: syscall numbers, typed args, error codes
+│  ├─ abi/              syscall numbers, typed flags, the result pair
 │  ├─ 9p/               9P2000 codec + client/server framework
 │  ├─ acpi/             table parser + AML interpreter
 │  ├─ bootinfo/         9boot → kernel handoff types (ADR 0010)

@@ -1,7 +1,7 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-18, after slice 11 and both reference boards.
+2026-10-18, after P2 slice 6.
 
 ## State
 
@@ -52,6 +52,43 @@ Where work stands, for picking it up in a new session. Last updated
        halting.
      - Separately, `5487d7b`: arm64 trap frames now save q0-q31,
        FPCR and FPSR.
+  6. User mode:
+     - `lib/abi` (crate `abi`): call numbers for the whole Plan 9 set
+       plus `settls`/`getrandom`, the register conventions, the result
+       pair (`encode`/`decode`: value, then an error word that is 0 on
+       success), and typed flags (`OpenMode`, `RforkFlags`, `BindFlags`,
+       `Whence`).
+     - amd64 entry: `syscall` lands in `planr_syscall_entry` (`arch/amd64/
+       trap.rs`), which swaps GS, switches to `CpuLocal.kstack` (at
+       `gs:16`, in `Cpu::arch`) and builds an ordinary `TrapFrame` with
+       vector 256. It returns by `sysret` if rip is below `USER_TOP`,
+       else by the trap exit's `iretq`. Traps from ring 3 `swapgs` on the
+       way in and out. TSS `rsp0` and `kstack` are set at every switch.
+     - arm64 entry: `svc #0` from EL0 arrives in `trap` as
+       `(Origin::User, Svc(0))`; the kernel stack is just `SP_EL1`, which
+       is the stack top whenever the thread is in user mode.
+     - `port/syscall.rs`: `dispatch` runs with interrupts on. Done so
+       far: `errstr` (swaps text both ways), `exits`, `settls`, `sleep`
+       (yields; `sleep(n>0)` yields in a loop until slice 10 brings timed
+       sleep). The rest fail with "system call not yet implemented", and
+       unknown numbers with "bad system call". A user trap other than a
+       syscall or an interrupt ends the thread with a `sys: trap: …`
+       status (`user_trap`).
+     - `port/uaccess.rs`: `copy_in`, `copy_out`, `copy_in_str`, all
+       checked against `USER_TOP` (0x7fff_ffff_f000) before the arch copy
+       (`rep movsb` in a `stac` window; `ldtrb`/`sttrb` on arm64), which
+       stops at a fault through a fixup.
+     - `proc::spawn_user(how, space, pc, sp, arg)`: a `Proc` with a
+       `Space` and `UserRegs` (amd64: the `fxsave` area and FS base;
+       arm64: `TPIDR_EL0`, since the trap frame has the rest). Every
+       switch activates the next thread's space (the kernel space for a
+       kernel thread or a CPU's own context) and saves/loads user
+       registers. `Space::activate` skips a space that is already current.
+     - Tests: two user threads on one CPU (hand-written programs in
+       `arch/*/context.rs` `ktests`) yield to each other 50 times and
+       check their registers, SSE/NEON value and thread pointer, then
+       `errstr` and `exits`; a third reads address 0 and is ended.
+       Disabling the user-register save makes the first fail.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -61,20 +98,20 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-Slice 6, user mode:
-- `lib/abi` (planr-abi): syscall numbers, typed arguments and flags, and
-  the result/error register pair (ADR 0002);
-- the syscall entry: `syscall`/`sysret` with the TSS `rsp0` and
-  `SWAPGS` on amd64, `svc #0` from EL0 on arm64;
-- copy-in/copy-out grown from `arch::probe_user_read`, with fault fixups;
-- `settls`: `FS` base, or `TPIDR_EL0`, saved per thread. The arm64
-  overflow path clobbers `TPIDR_EL0`, so it stays fatal or saves it
-  first;
-- a first user thread entered by hand (`iretq`/`eret` to EL0) that makes
-  a syscall.
-
-User FP/SIMD state needs saving on switch too: amd64 user code will use
-SSE, unlike the kernel.
+Slice 7: segments, demand paging, ELF `exec`, `exits`/`await`, and the
+boot archive.
+- Segments (text, data, bss, stack) that own their frames: `Space::drop`
+  frees only page tables, so today the tests unmap and free their pages
+  themselves (`syscall::TestSpace`).
+- Demand paging: a user-mode fault in a segment maps the page. A kernel
+  fault on a user address inside `uaccess` (a fixup site) must try the
+  same before taking the fixup, or a syscall on a not-yet-touched buffer
+  fails.
+- ELF `exec` on `lib/elf`; `exits`/`await` with a parent and its wait
+  queue (today `exits` only records the status in the `Proc`).
+- The boot archive, with the first user programs as `no_std` Rust built
+  by `xtask` against `lib/abi`; they replace the hand-written test
+  programs.
 
 **Reference boards** (`docs/HARDWARE.md`, "Booting Plan R on a board"):
 no runs until P2's exit test. P1 results, for reference:
@@ -92,10 +129,16 @@ no runs until P2's exit test. P1 results, for reference:
 ## Things to know
 
 - **User memory:** with SMAP or PAN on, the kernel may touch a user page
-  only through `arch::probe_user_read` (a `stac`/`clac` or PAN window
-  with a fixup). P2's copy-in/copy-out should grow from it. `stac`,
-  `clac` and `msr pan` are undefined without the feature, so they sit
-  behind the `protect::SMAP` / `protect::PAN` flags.
+  only through `port/uaccess.rs` (or `arch::probe_user_read`). Its range
+  check is what keeps a user pointer out of kernel memory; SMAP and PAN
+  only keep the kernel out of user pages. `stac`, `clac` and `msr pan`
+  are undefined without the feature, so they sit behind the
+  `protect::SMAP` / `protect::PAN` flags; arm64's copies use the
+  unprivileged `ldtrb`/`sttrb`, which PAN does not affect.
+- **amd64 GS:** an NMI or machine check between `syscall` and its
+  `swapgs` would run with the user's GS base. Both are fatal, so only
+  the report would suffer, but a real NMI handler will need Linux's
+  "paranoid" entry (check the GS base MSR).
 - **BTI is deferred:** it needs `bti` landing pads, and the stable toolchain
   cannot emit them (`-Z branch-protection` is nightly only; the prebuilt
   `core` has none).

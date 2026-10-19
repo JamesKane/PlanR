@@ -236,7 +236,7 @@ The Plan 9 `port/` layer, redesigned in Rust.
   `#d` dup, `#/` root (boot archive), `#M` mnt (9P client), `#r` rtc,
   `#P` arch.
 - The new syscall ABI ([ADR 0002](adr/0002-new-syscall-abi.md)), defined
-  once in `planr-abi` and shared by kernel and `libr`.
+  once in `lib/abi` and shared by kernel and `libr`.
 - ELF loader (static, PIE), `exec`, `exits`/`await`, notes
   (`notify`/`noted`), `rendezvous`, `semacquire`/`tsemacquire`, `nsec`,
   `alarm`, and per-process TLS (`FS` base / `TPIDR_EL0`).
@@ -262,7 +262,10 @@ plus a toy 9P server). All of them pass on both architectures.
 5. ✅ Scheduler: preemptive SMP, per-CPU run queues with Plan 9's 20
    priorities, work stealing and wired threads; `Rendez` sleep/wakeup,
    `QLock`/`RwLock` taking `Sleepable`, and `rendezvous`.
-6. User mode: `lib/abi`, the syscall entry, copy-in/copy-out, `settls`.
+6. ✅ User mode: `lib/abi` (call numbers, typed flags, the result
+   pair), the syscall entry (`syscall`/`sysret` with `swapgs`, `svc #0`),
+   checked copy-in/copy-out (`port/uaccess.rs`), `settls`, user FP/SIMD
+   state on switch, and user threads entered by hand.
 7. Segments, demand paging, ELF `exec`, `exits`/`await`, and the boot
    archive.
 8. Chan/Dev core: `Dev`, `Chan`, `Qid`, `Dir`, `Pgrp`/`Fgrp`/`Egrp`, the
@@ -382,7 +385,7 @@ Can start once P3 is done; runs in parallel with P4–P7. See
    (`core` + `alloc`) and exporting a C ABI. It replaces the old APE so
    standard C/C++ can be built.
 3. The upstream Rust `std` "sys" backend for Plan R, implemented on APE2 or
-   directly on `planr-abi`. It lives in foreign code, per Q2.
+   directly on `lib/abi`. It lives in foreign code, per Q2.
 4. Cross-built LLVM/clang, `rustc` and `cargo` from Linux, then
    native builds on Plan R.
 

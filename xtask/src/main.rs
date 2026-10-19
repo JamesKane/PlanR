@@ -357,7 +357,7 @@ fn write_images(built: &[Built], name: &str, config: &str) -> Result<Vec<PathBuf
 
 /// Crates with host unit tests (everything except the bare-metal binaries).
 const HOST_TESTED: &[&str] = &[
-    "acpi", "bootinfo", "elf", "fbtext", "frames", "heap", "ksyms", "logring", "uefi", "xtask",
+    "abi", "acpi", "bootinfo", "elf", "fbtext", "frames", "heap", "ksyms", "logring", "uefi", "xtask",
 ];
 
 fn with_packages(c: &mut Command, packages: &[&str]) {

@@ -22,6 +22,12 @@
 //! always safe. Interrupt handlers run on the interrupted thread's stack,
 //! which keeps the interrupted state until the thread resumes.
 //!
+//! **User threads.** A user thread is a thread with a user address space.
+//! It starts by leaving the kernel for user mode, and comes back on traps
+//! and system calls. Switching to a thread activates its space (a kernel
+//! thread's is the kernel space), loads its user registers and points the
+//! CPU's way in from user mode at its kernel stack.
+//!
 //! **Switching.** A thread being left is still running on its own stack
 //! until the switch has saved it. So it goes back on a queue (or, if dead,
 //! is freed) only from the context switched to, in [`finish_switch`], and
@@ -33,14 +39,16 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
-use crate::arch::{self, context::Context};
+use crate::arch::{self, context::Context, context::UserRegs};
 use crate::port::cpu::{self, MAXCPU};
 use crate::port::lock::SpinLock;
 use crate::port::mm::Stack;
+use crate::port::mmu::{self, Space};
 
 /// Priorities, 0 (lowest) to `NPRI - 1`, as in Plan 9.
 pub(crate) const NPRI: usize = 20;
@@ -82,16 +90,31 @@ pub(crate) struct Proc {
     /// Saved while the process is not running.
     context: UnsafeCell<Context>,
     /// Freed with the process.
-    _stack: Stack,
+    stack: Stack,
     /// What the thread runs; taken when it starts.
     entry: SpinLock<Option<Entry>>,
+    /// A user thread's address space; `None` for a kernel thread.
+    space: Option<Arc<Space>>,
+    /// A user thread's registers that the switch keeps. Touched only by
+    /// the CPU running the thread, with interrupts off.
+    user: UnsafeCell<UserRegs>,
+    /// The error text of the last failed system call (`errstr`).
+    errstr: SpinLock<Vec<u8>>,
+    /// The exit status, once `exits` or a fatal trap has set it.
+    status: SpinLock<Option<Vec<u8>>>,
 }
 
-type Entry = Box<dyn FnOnce() + Send>;
+/// What a new thread runs.
+enum Entry {
+    /// A kernel thread's function.
+    Kernel(Box<dyn FnOnce() + Send>),
+    /// A user thread's first instruction, stack pointer and argument.
+    User { pc: u64, sp: u64, arg: u64 },
+}
 
-// SAFETY: `context` is touched only by the CPU switching away from or to
-// the process, and `on_cpu` keeps that to one CPU at a time (see the
-// module comment).
+// SAFETY: `context` and `user` are touched only by the CPU running the
+// process or switching away from or to it, and `on_cpu` keeps that to one
+// CPU at a time (see the module comment).
 unsafe impl Sync for Proc {}
 // SAFETY: as above; the entry closure is `Send`.
 unsafe impl Send for Proc {}
@@ -127,6 +150,16 @@ impl Proc {
 
     fn set_state(&self, s: State) {
         self.state.store(s as u8, Ordering::Release);
+    }
+
+    /// The error text of the last failed system call.
+    pub(crate) fn errstr(&self) -> &SpinLock<Vec<u8>> {
+        &self.errstr
+    }
+
+    /// The exit status, if it has exited through `exits` or a trap.
+    pub(crate) fn status(&self) -> Option<Vec<u8>> {
+        self.status.lock().clone()
     }
 }
 
@@ -244,6 +277,16 @@ unsafe fn local() -> &'static mut Local {
 
 /// Makes a kernel thread that runs `f`, and makes it ready.
 pub(crate) fn spawn(how: Spawn<'_>, f: impl FnOnce() + Send + 'static) -> Option<Arc<Proc>> {
+    make(how, None, Entry::Kernel(Box::new(f)))
+}
+
+/// Makes a user thread in `space` that starts at `pc` with stack pointer
+/// `sp` and `arg` in the first argument register, and makes it ready.
+pub(crate) fn spawn_user(how: Spawn<'_>, space: Arc<Space>, pc: u64, sp: u64, arg: u64) -> Option<Arc<Proc>> {
+    make(how, Some(space), Entry::User { pc, sp, arg })
+}
+
+fn make(how: Spawn<'_>, space: Option<Arc<Space>>, entry: Entry) -> Option<Arc<Proc>> {
     assert!(how.pri < NPRI, "priority out of range");
     let stack = Stack::new()?;
     // SAFETY: the stack is new and ours.
@@ -262,8 +305,12 @@ pub(crate) fn spawn(how: Spawn<'_>, f: impl FnOnce() + Send + 'static) -> Option
             wired
         }),
         context: UnsafeCell::new(context),
-        _stack: stack,
-        entry: SpinLock::new(Some(Box::new(f))),
+        stack,
+        entry: SpinLock::new(Some(entry)),
+        space,
+        user: UnsafeCell::new(UserRegs::INITIAL),
+        errstr: SpinLock::new(Vec::new()),
+        status: SpinLock::new(None),
     });
     ready(p.clone());
     Some(p)
@@ -403,6 +450,26 @@ pub(crate) fn tick() {
     }
 }
 
+/// Ends the calling thread with exit status `status`.
+pub(crate) fn exits(status: Vec<u8>) -> ! {
+    if let Some(me) = current() {
+        *me.status.lock() = Some(status);
+    }
+    exit()
+}
+
+/// Sets the calling user thread's thread pointer.
+pub(crate) fn set_tls(tls: u64) {
+    let pl = arch::splhi();
+    // SAFETY: interrupts are off, and the reference is dropped at once.
+    if let Some(me) = &unsafe { local() }.current {
+        // SAFETY: only this CPU, running the thread, touches `user`, and
+        // interrupts are off.
+        unsafe { (*me.user.get()).set_tls(tls) };
+    }
+    arch::splx(pl);
+}
+
 /// Ends the calling thread.
 fn exit() -> ! {
     let _ = arch::splhi();
@@ -464,11 +531,39 @@ fn reschedule(how: Leave) -> Option<Arc<Proc>> {
         }
         None => &raw mut l.own,
     };
+    if let Some((p, _)) = &l.left
+        && p.space.is_some()
+    {
+        // SAFETY: this CPU ran it until now; interrupts are off.
+        unsafe { (*p.user.get()).save() };
+    }
+    enter_space(l.current.as_deref());
     // SAFETY: `to` is a context saved by a switch or made new, and only this
     // CPU resumes it (`on_cpu`); `from` is held in `left` or is this CPU's
     // own, so it stays valid while it is saved.
     unsafe { arch::context::switch(from, to) };
     finish_switch()
+}
+
+/// Makes the calling CPU ready to run `p` (or its own context): its
+/// address space, its user registers, and its kernel stack as the way in
+/// from user mode. Interrupts are off.
+fn enter_space(p: Option<&Proc>) {
+    let Some(p) = p else {
+        mmu::activate_kernel_space();
+        return;
+    };
+    match &p.space {
+        Some(space) => {
+            // SAFETY: `p` holds the space until it is dropped, after a
+            // later switch away from it has activated another.
+            unsafe { space.activate() };
+            // SAFETY: `p` is about to run here; no other CPU touches it.
+            unsafe { (*p.user.get()).restore() };
+        }
+        None => mmu::activate_kernel_space(),
+    }
+    arch::context::set_kernel_stack(p.stack.top());
 }
 
 /// Run in the context switched to, interrupts off: finishes with the
@@ -496,10 +591,18 @@ extern "C" fn thread_start(_: usize) -> ! {
     arch::spllo();
     drop(dead);
     let me = current().expect("a thread runs as itself");
-    let f = me.entry.lock().take().expect("a thread starts once");
+    let entry = me.entry.lock().take().expect("a thread starts once");
+    let top = me.stack.top();
     drop(me);
-    f();
-    exit()
+    match entry {
+        Entry::Kernel(f) => {
+            f();
+            exit()
+        }
+        // SAFETY: nothing on this stack is needed again; the switch to
+        // this thread activated `space`, where `pc` and `sp` are.
+        Entry::User { pc, sp, arg } => unsafe { arch::context::enter_user(pc, sp, arg, top) },
+    }
 }
 
 /// Proof that the caller is a thread that may sleep: not a CPU's own

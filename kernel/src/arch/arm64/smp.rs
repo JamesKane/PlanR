@@ -295,6 +295,7 @@ extern "C" fn ap_entry(index: usize) -> ! {
     mmu::leave_startup();
     super::init_traps();
     super::protect::init_cpu();
+    super::context::init_cpu();
     if let Err(e) = gic::init_cpu() {
         println!("smp: CPU {index}: {e}");
         super::halt();

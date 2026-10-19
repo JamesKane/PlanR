@@ -1,24 +1,56 @@
-//! amd64 traps: the GDT and TSS, the IDT, and the trap entry path.
+//! amd64 traps: the GDT and TSS, the IDT, the trap entry path, and the
+//! system call entry.
 //!
 //! Every vector has a 16-byte stub that pushes a uniform frame (a zero
 //! error code where the CPU pushes none, then the vector number) and jumps
 //! to a common entry, which saves the general registers and calls [`trap`].
 //! Double faults, NMIs and machine checks run on their own IST stacks, so a
 //! kernel stack overflow still produces a report.
+//!
+//! `syscall` enters at `planr_syscall_entry`, which builds the same frame
+//! by hand on the thread's kernel stack and calls [`syscall`]. It returns
+//! with `sysret` when it can, else through the trap exit's `iretq`.
+//!
+//! **GS.** In the kernel the `GS` base points at the CPU's [`Cpu`]; in user
+//! mode it is the user's. Every way in from user mode (`syscall`, or a
+//! trap whose saved CS is ring 3) runs `swapgs` first, and every way out
+//! runs it last. An NMI or machine check that lands between `syscall` and
+//! its `swapgs` would find the user's GS; both are fatal for now, and the
+//! report is the only thing that would go wrong.
+//!
+//! [`Cpu`]: crate::port::cpu::Cpu
 
 use core::arch::{asm, global_asm};
 use core::cell::UnsafeCell;
 use core::fmt;
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::port::cpu::MAXCPU;
-use crate::port::trap;
+use crate::port::cpu::{self, Cpu, MAXCPU};
+use crate::port::{trap, uaccess};
 
 const KERNEL_CS: u16 = 0x08;
 const KERNEL_DS: u16 = 0x10;
 const TSS_SEL: u16 = 0x28;
+/// User selectors, with RPL 3.
+pub(super) const USER_SS: u64 = 0x18 | 3;
+pub(super) const USER_CS: u64 = 0x20 | 3;
+/// The flags user mode starts with: interrupts on (and the reserved bit).
+pub(super) const USER_RFLAGS: u64 = 0x202;
+/// The flags user mode may change: CF PF AF ZF SF TF DF OF AC ID.
+const USER_FLAGS: u64 = 0x0024_0dd5;
+/// The `vector` of a frame built by the system call entry.
+const SYSCALL_VECTOR: u64 = 256;
+
+const IA32_EFER: u32 = 0xc000_0080;
+const EFER_SCE: u64 = 1 << 0;
+const IA32_STAR: u32 = 0xc000_0081;
+const IA32_LSTAR: u32 = 0xc000_0082;
+const IA32_FMASK: u32 = 0xc000_0084;
+/// Flags `syscall` clears: TF IF DF IOPL NT AC.
+const SYSCALL_FMASK: u64 = 0x0004_7700;
 
 /// GDT layout. User data sits below user code so that `SYSRET` (CS =
-/// STAR+16, SS = STAR+8) works with STAR[63:48] = `KERNEL_DS` later.
+/// STAR+16, SS = STAR+8) works with STAR[63:48] = `KERNEL_DS`.
 const GDT: [u64; 5] = [
     0,
     0x00af_9a00_0000_ffff, // 0x08 kernel code: 64-bit, DPL 0
@@ -149,6 +181,8 @@ fn tss_descriptor(base: u64) -> [u64; 2] {
 unsafe extern "C" {
     /// The 256 entry stubs, 16 bytes apart (below).
     static planr_trap_vectors: [u8; 256 * 16];
+    /// Where `syscall` enters (below).
+    static planr_syscall_entry: u8;
 }
 
 /// Builds the IDT and installs it with CPU 0's GDT and TSS on the boot CPU.
@@ -234,6 +268,52 @@ pub(crate) fn load(index: usize) {
             tmp = out(reg) _,
         );
     }
+    let star = u64::from(KERNEL_DS) << 48 | u64::from(KERNEL_CS) << 32;
+    // SAFETY: `syscall` enters at the entry below, on the kernel stack
+    // `set_kernel_stack` gives it; the selectors match the GDT.
+    unsafe {
+        super::cpu::wrmsr(IA32_STAR, star);
+        super::cpu::wrmsr(IA32_LSTAR, (&raw const planr_syscall_entry) as u64);
+        super::cpu::wrmsr(IA32_FMASK, SYSCALL_FMASK);
+        super::cpu::wrmsr(IA32_EFER, super::cpu::rdmsr(IA32_EFER) | EFER_SCE);
+    }
+}
+
+/// The calling CPU's state for the system call entry, at `gs:8` in its
+/// [`Cpu`].
+#[repr(C)]
+#[derive(Debug)]
+pub(crate) struct CpuLocal {
+    /// The user stack pointer, while the entry saves it.
+    scratch: AtomicU64,
+    /// The running thread's kernel stack top.
+    kstack: AtomicU64,
+}
+
+impl CpuLocal {
+    pub(crate) const fn new() -> CpuLocal {
+        CpuLocal {
+            scratch: AtomicU64::new(0),
+            kstack: AtomicU64::new(0),
+        }
+    }
+}
+
+/// Where the entry finds `CpuLocal`'s fields.
+const SCRATCH: usize = core::mem::offset_of!(Cpu, arch) + core::mem::offset_of!(CpuLocal, scratch);
+const KSTACK: usize = core::mem::offset_of!(Cpu, arch) + core::mem::offset_of!(CpuLocal, kstack);
+
+/// Sets the stack the calling CPU enters the kernel on from user mode:
+/// TSS `rsp0` for traps, and `CpuLocal` for `syscall`.
+pub(super) fn set_kernel_stack(top: u64) {
+    let c = cpu::current();
+    c.arch.kstack.store(top, Ordering::Relaxed);
+    // SAFETY: only this CPU uses its TSS, and the CPU reads `rsp0` only on
+    // a trap from user mode, which cannot happen while the kernel runs.
+    unsafe {
+        let t = &raw mut (*TABLES.0.get())[c.index()].tss;
+        (&raw mut (*t).rsp).cast::<u64>().write_unaligned(top);
+    }
 }
 
 // Entry stubs. Vectors 8, 10-14, 17, 21, 29 and 30 push an error code;
@@ -257,7 +337,11 @@ planr_trap_vectors:
     .endr
 
 .Ltrap_entry:
-    pushq %rax
+    // From user mode (the saved CS is ring 3): take the kernel's GS.
+    testb $3, 24(%rsp)
+    jz 1f
+    swapgs
+1:  pushq %rax
     pushq %rbx
     pushq %rcx
     pushq %rdx
@@ -282,6 +366,7 @@ planr_trap_vectors:
     je 1f
     clac
 1:  call {trap}
+.Ltrap_exit:
     popq %r15
     popq %r14
     popq %r13
@@ -298,10 +383,74 @@ planr_trap_vectors:
     popq %rbx
     popq %rax
     addq $16, %rsp
-    iretq
+    testb $3, 8(%rsp)
+    jz 1f
+    swapgs
+1:  iretq
+
+    // syscall: rcx = the user's rip, r11 its rflags, interrupts off
+    // (FMASK). Builds a trap frame on the thread's kernel stack.
+    .global planr_syscall_entry
+planr_syscall_entry:
+    swapgs
+    movq %rsp, %gs:{scratch}
+    movq %gs:{kstack}, %rsp
+    pushq ${user_ss}
+    pushq %gs:{scratch}
+    pushq %r11
+    pushq ${user_cs}
+    pushq %rcx
+    pushq $0
+    pushq ${sysvec}
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+    pushq %rbp
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+    movq %rsp, %rdi
+    cld
+    call {syscall}
+    // False: return through iretq.
+    testb %al, %al
+    jz .Ltrap_exit
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+    // Past the vector and error code: rip, cs, rflags, then rsp.
+    movq 40(%rsp), %rsp
+    swapgs
+    sysretq
     "#,
     trap = sym trap,
+    syscall = sym syscall,
     smap = sym super::protect::SMAP,
+    scratch = const SCRATCH,
+    kstack = const KSTACK,
+    user_ss = const USER_SS,
+    user_cs = const USER_CS,
+    sysvec = const SYSCALL_VECTOR,
     options(att_syntax),
 );
 
@@ -501,29 +650,52 @@ fn cr2() -> u64 {
 /// Called from the entry path with the saved frame; returning resumes it.
 extern "C" fn trap(f: &mut TrapFrame) {
     let ex = Exception::decode(f);
+    let user = f.cs & 3 == 3;
     match ex {
-        // A fault the CPU could not push a frame for, from a stack pointer
-        // in unmapped memory: the stack ran into its guard.
-        Exception::DoubleFault if probe_read(f.rsp.wrapping_sub(8)).is_none() => trap::fatal(
-            &format_args!("kernel stack overflow: double fault, sp {:#x}", f.rsp),
-            f,
-            f.rip,
-            f.rbp,
-        ),
-        // int3 leaves rip after itself, so returning resumes.
-        Exception::Breakpoint => trap::count_breakpoint(),
         Exception::Interrupt(v) => {
             if !super::interrupt(v) {
                 trap::fatal(&ex, f, f.rip, f.rbp);
             }
             crate::port::proc::preempt();
         }
+        // A fault the CPU could not push a frame for, from a stack pointer
+        // in unmapped memory: the stack ran into its guard.
+        Exception::DoubleFault if !user && probe_read(f.rsp.wrapping_sub(8)).is_none() => trap::fatal(
+            &format_args!("kernel stack overflow: double fault, sp {:#x}", f.rsp),
+            f,
+            f.rip,
+            f.rbp,
+        ),
+        // Not the user code's doing, wherever they arrive.
+        Exception::Nmi | Exception::MachineCheck | Exception::DoubleFault => trap::fatal(&ex, f, f.rip, f.rbp),
+        // Anything else from user mode is the thread's own fault.
+        _ if user => crate::port::syscall::user_trap(&ex, f.rip),
+        // int3 leaves rip after itself, so returning resumes.
+        Exception::Breakpoint => trap::count_breakpoint(),
         Exception::PageFault { .. } | Exception::GeneralProtection(_) => match trap::fixup(f.rip) {
             Some(resume) => f.rip = resume,
             None => trap::fatal(&ex, f, f.rip, f.rbp),
         },
         _ => trap::fatal(&ex, f, f.rip, f.rbp),
     }
+}
+
+/// Called from the system call entry with the frame it built, interrupts
+/// off. Returns true if the way back may be `sysret`.
+extern "C" fn syscall(f: &mut TrapFrame) -> bool {
+    super::spllo();
+    let args = [f.rdi, f.rsi, f.rdx, f.r10, f.r8, f.r9];
+    let [value, error] = crate::port::syscall::dispatch(f.rax, args);
+    let _ = super::splhi();
+    f.rax = value;
+    f.rdx = error;
+    f.rflags = (f.rflags & USER_FLAGS) | USER_RFLAGS;
+    // What sysret loads rip and rflags from.
+    f.rcx = f.rip;
+    f.r11 = f.rflags;
+    // sysret faults in ring 0 on a non-canonical rip, so keep it to the
+    // user half proper.
+    f.rip < uaccess::USER_TOP
 }
 
 // Reads a word, recovering from any fault through a fixup entry.
@@ -570,9 +742,56 @@ global_asm!(
     smap = sym super::protect::SMAP,
 );
 
+// Copies `rdx` bytes from `rsi` to `rdi`, one side user memory, inside a
+// `stac`/`clac` window as above, and returns how many were not copied: a
+// fault in `rep movsb` resumes at 3 with rcx counting what is left.
+global_asm!(
+    ".section .text.probe, \"ax\"",
+    ".global planr_copy_user",
+    "planr_copy_user:",
+    "    mov rcx, rdx",
+    "    cmp byte ptr [rip + {smap}], 0",
+    "    je 2f",
+    "    stac",
+    "2:  rep movsb",
+    "3:  je 4f",
+    "    clac",
+    "4:  mov rax, rcx",
+    "    ret",
+    ".pushsection .fixup, \"a\"",
+    ".balign 8",
+    ".quad 2b, 3b",
+    ".popsection",
+    smap = sym super::protect::SMAP,
+);
+
 unsafe extern "C" {
     fn planr_probe_read(addr: u64, out: *mut u64) -> bool;
     fn planr_probe_user_read(addr: u64, out: *mut u64) -> bool;
+    fn planr_copy_user(dst: *mut u8, src: *const u8, len: usize) -> usize;
+}
+
+/// Copies `len` bytes from the user address `src` to `dst`, stopping at a
+/// fault; returns how many were not copied. The caller checks that the
+/// range is in the user half ([`crate::port::uaccess`]).
+///
+/// # Safety
+///
+/// `dst` is valid for `len` bytes of writes.
+pub(crate) unsafe fn copy_in(dst: *mut u8, src: u64, len: usize) -> usize {
+    // SAFETY: the caller's contract; a fault reading `src` is fixed up.
+    unsafe { planr_copy_user(dst, src as *const u8, len) }
+}
+
+/// Copies `len` bytes from `src` to the user address `dst`, stopping at a
+/// fault; returns how many were not copied.
+///
+/// # Safety
+///
+/// `src` is valid for `len` bytes of reads.
+pub(crate) unsafe fn copy_out(dst: u64, src: *const u8, len: usize) -> usize {
+    // SAFETY: the caller's contract; a fault writing `dst` is fixed up.
+    unsafe { planr_copy_user(dst as *mut u8, src, len) }
 }
 
 /// Reads the word at `addr`, or `None` if the read faults.

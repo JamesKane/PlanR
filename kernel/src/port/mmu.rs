@@ -427,8 +427,11 @@ impl Space {
     /// The space must stay alive until the CPU activates another.
     pub(crate) unsafe fn activate(&self) {
         let me = cpu::current().index();
-        let root = self.table.lock().root;
         let this = core::ptr::from_ref(self).expose_provenance();
+        if CURRENT[me].load(Ordering::Relaxed) == this {
+            return;
+        }
+        let root = self.table.lock().root;
         let prev = CURRENT[me].swap(this, Ordering::AcqRel);
         if prev != 0 && prev != this {
             // SAFETY: the previous space was live until now, by the

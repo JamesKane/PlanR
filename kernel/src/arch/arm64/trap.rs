@@ -104,7 +104,8 @@ global_asm!(
     "",
     // x0 = the frame address, sp = frame + x0. The interrupted x0 and the
     // frame address go to the EL0 thread registers, which nothing at EL1
-    // reads; the report is fatal, so their values do not matter after.
+    // reads. That loses the running user thread's TPIDR_EL0, but the
+    // report is fatal, so nothing runs after it.
     ".Lstack_overflow:",
     "    msr tpidr_el0, x0",
     "    sub x0, sp, x0",
@@ -457,26 +458,52 @@ extern "C" fn trap(f: &mut TrapFrame) {
         2 => Origin::User,
         _ => Origin::User32,
     };
-    if origin != Origin::Kernel {
-        trap::fatal(&format_args!("{ex} (from {origin:?})"), f, f.elr, f.x[29]);
-    }
-    match ex {
-        // elr points at the brk itself; step over it.
-        Exception::Irq => {
+    match (origin, ex) {
+        (Origin::Kernel | Origin::User, Exception::Irq) => {
             if !super::interrupt() {
                 trap::fatal(&format_args!("unhandled IRQ"), f, f.elr, f.x[29]);
             }
             crate::port::proc::preempt();
         }
-        Exception::Breakpoint(_) => {
+        // Not the user code's doing.
+        (Origin::User, Exception::Fiq | Exception::SError(_)) | (Origin::KernelSp0 | Origin::User32, _) => {
+            trap::fatal(&format_args!("{ex} (from {origin:?})"), f, f.elr, f.x[29]);
+        }
+        // elr is already past the svc.
+        (Origin::User, Exception::Svc(0)) => syscall(f),
+        (Origin::User, _) => crate::port::syscall::user_trap(&ex, f.elr),
+        // elr points at the brk itself; step over it.
+        (_, Exception::Breakpoint(_)) => {
             trap::count_breakpoint();
             f.elr += 4;
         }
-        Exception::DataAbort { .. } => match trap::fixup(f.elr) {
+        (_, Exception::DataAbort { .. }) => match trap::fixup(f.elr) {
             Some(resume) => f.elr = resume,
             None => trap::fatal(&ex, f, f.elr, f.x[29]),
         },
         _ => trap::fatal(&ex, f, f.elr, f.x[29]),
+    }
+}
+
+/// A system call: the number in x8, arguments in x0-x5, results back in
+/// x0 and x1. Runs with interrupts on.
+fn syscall(f: &mut TrapFrame) {
+    super::spllo();
+    let args = [f.x[0], f.x[1], f.x[2], f.x[3], f.x[4], f.x[5]];
+    let [value, error] = crate::port::syscall::dispatch(f.x[8], args);
+    let _ = super::splhi();
+    f.x[0] = value;
+    f.x[1] = error;
+}
+
+/// Nothing per CPU: an exception from EL0 is taken on `SP_EL1` as it was
+/// left.
+#[derive(Debug)]
+pub(crate) struct CpuLocal;
+
+impl CpuLocal {
+    pub(crate) const fn new() -> CpuLocal {
+        CpuLocal
     }
 }
 
@@ -527,9 +554,71 @@ global_asm!(
     pan = sym super::protect::PAN,
 );
 
+// Byte copies with the unprivileged loads and stores, which access memory
+// as EL0 would: PAN does not stop them, and they fault on kernel pages. A
+// fault resumes at 9 with x2 counting the bytes left.
+global_asm!(
+    ".section .text.probe, \"ax\"",
+    // planr_copy_in(dst: kernel, src: user, len)
+    ".global planr_copy_in",
+    "planr_copy_in:",
+    "    cbz x2, 9f",
+    "2:  ldtrb w3, [x1]",
+    "    strb w3, [x0], #1",
+    "    add x1, x1, #1",
+    "    subs x2, x2, #1",
+    "    b.ne 2b",
+    "9:  mov x0, x2",
+    "    ret",
+    ".pushsection .fixup, \"a\"",
+    ".balign 8",
+    ".quad 2b, 9b",
+    ".popsection",
+    // planr_copy_out(dst: user, src: kernel, len)
+    ".global planr_copy_out",
+    "planr_copy_out:",
+    "    cbz x2, 9f",
+    "1:  ldrb w3, [x1], #1",
+    "2:  sttrb w3, [x0]",
+    "    add x0, x0, #1",
+    "    subs x2, x2, #1",
+    "    b.ne 1b",
+    "9:  mov x0, x2",
+    "    ret",
+    ".pushsection .fixup, \"a\"",
+    ".balign 8",
+    ".quad 2b, 9b",
+    ".popsection",
+);
+
 unsafe extern "C" {
     fn planr_probe_read(addr: u64, out: *mut u64) -> bool;
     fn planr_probe_user_read(addr: u64, out: *mut u64) -> bool;
+    fn planr_copy_in(dst: *mut u8, src: u64, len: usize) -> usize;
+    fn planr_copy_out(dst: u64, src: *const u8, len: usize) -> usize;
+}
+
+/// Copies `len` bytes from the user address `src` to `dst`, stopping at a
+/// fault; returns how many were not copied. The caller checks that the
+/// range is in the user half ([`crate::port::uaccess`]).
+///
+/// # Safety
+///
+/// `dst` is valid for `len` bytes of writes.
+pub(crate) unsafe fn copy_in(dst: *mut u8, src: u64, len: usize) -> usize {
+    // SAFETY: the caller's contract; a fault reading `src` is fixed up.
+    unsafe { planr_copy_in(dst, src, len) }
+}
+
+/// Copies `len` bytes from `src` to the user address `dst`, stopping at a
+/// fault; returns how many were not copied.
+///
+/// # Safety
+///
+/// `src` is valid for `len` bytes of reads.
+pub(crate) unsafe fn copy_out(dst: u64, src: *const u8, len: usize) -> usize {
+    // SAFETY: the caller's contract; a fault writing `dst` is fixed up.
+    unsafe { planr_copy_out(dst, src, len) }
 }
 
 /// Reads the word at `addr`, or `None` if the read faults.

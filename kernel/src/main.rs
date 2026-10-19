@@ -35,6 +35,7 @@ extern "C" fn kmain(info: &'static BootInfo) -> ! {
     early::mark(info, Stage::Traps, true);
     arch::mmu::init_cpu();
     arch::protect::init_cpu();
+    arch::context::init_cpu();
     cpu::init_boot();
     if info.validate().is_err() {
         // No console yet: the magenta mark is all there is to say.

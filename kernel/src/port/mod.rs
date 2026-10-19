@@ -14,4 +14,6 @@ pub(crate) mod mm;
 pub(crate) mod mmu;
 pub(crate) mod proc;
 pub(crate) mod qlock;
+pub(crate) mod syscall;
 pub(crate) mod trap;
+pub(crate) mod uaccess;

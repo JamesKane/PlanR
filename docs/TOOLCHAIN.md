@@ -68,7 +68,7 @@ APE2 goals:
 
 1. **`std` for Plan R.** Upstream `library/std` needs a platform module
    (`std/src/sys/pal/planr`). It can be built on APE2 (like a Unix target)
-   or directly on `planr-abi` (cleaner, more work). The proposal: directly
+   or directly on `lib/abi` (cleaner, more work). The proposal: directly
    on the native ABI for fs/process/thread/time and APE2 only where `std`
    expects libc symbols (e.g. `libunwind`). This code is upstream-shaped
    and so lives in `foreign/` (Q2).

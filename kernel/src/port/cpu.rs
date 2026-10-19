@@ -28,6 +28,9 @@ const START_TIMEOUT_NS: u64 = 1_000_000_000;
 pub(crate) struct Cpu {
     /// Must stay first: amd64 reads it at `gs:0`.
     index: usize,
+    /// The architecture's own per-CPU state, which its entry code reaches
+    /// through the per-CPU register.
+    pub(crate) arch: arch::CpuLocal,
     /// The local APIC ID (amd64) or MPIDR affinity (arm64).
     hwid: AtomicU64,
     online: AtomicBool,
@@ -42,6 +45,7 @@ impl Cpu {
     const fn new(index: usize) -> Cpu {
         Cpu {
             index,
+            arch: arch::CpuLocal::new(),
             hwid: AtomicU64::new(0),
             online: AtomicBool::new(false),
             clock: clock::Local::new(),
