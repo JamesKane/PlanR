@@ -65,6 +65,7 @@ const PROGRAMS: &[(&CStr, &[&CStr], Want)] = &[
         &[c"tlibr", c"-v", c"-o", c"out", c"file1", c"file2"],
         Want::Normal,
     ),
+    (c"/boot/tsys", &[c"tsys"], Want::Normal),
 ];
 
 /// The programs `-i` runs.

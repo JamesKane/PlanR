@@ -188,7 +188,7 @@ const USER_PROGRAMS: &[(&str, &[&str])] = &[
     (
         "utest",
         &[
-            "tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote", "t9p", "tcons", "tlibr",
+            "tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote", "t9p", "tcons", "tlibr", "tsys",
         ],
     ),
 ];

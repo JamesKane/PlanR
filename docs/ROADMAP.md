@@ -308,7 +308,7 @@ on Plan R and on host plan9port (see [TESTING.md](TESTING.md)).
 2. ✅ libr base: a user heap (`#[global_allocator]` on `brk`), `print!` and
    `fprint!` on `core::fmt` with helpers for `%q` and `%r`, an
    `ARGBEGIN` replacement, UTF-8/Rune, `bio`.
-3. libr system layer: directory reads, stat helpers, `cleanname`, `/env`,
+3. ✅ libr system layer: directory reads, stat helpers, `cleanname`, `/env`,
    exec with a `$path` search, `wait`, `postnote`, time and date,
    `tokenize`, `getfields`, `quote`.
 4. Our lib9p server framework (fid table, dispatch, file trees) on

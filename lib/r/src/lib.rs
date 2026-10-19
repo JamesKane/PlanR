@@ -1,7 +1,9 @@
 //! libr: the Plan R user runtime. It will replace libc, lib9, bio and
 //! thread. So far: the start-up code, the system calls, an exit on panic,
 //! the heap ([`heap`]), formatted output ([`print`]), options ([`arg`]),
-//! UTF-8 ([`utf`]) and buffered I/O ([`bio`], on [`io`]).
+//! UTF-8 ([`utf`]), buffered I/O ([`bio`], on [`io`]), directory entries
+//! ([`dir`]), the environment and `$path` ([`env`]), waiting and notes
+//! ([`proc`]), time ([`time`]) and text utilities ([`text`]).
 //!
 //! The file calls take names as `&CStr` and give errors as [`Error`].
 //!
@@ -24,9 +26,14 @@ extern crate alloc;
 
 pub mod arg;
 pub mod bio;
+pub mod dir;
+pub mod env;
 pub mod heap;
 pub mod io;
 pub mod print;
+pub mod proc;
+pub mod text;
+pub mod time;
 pub mod utf;
 
 use core::arch::asm;
@@ -37,8 +44,12 @@ use core::fmt;
 
 pub use arg::Opts;
 pub use bio::{Bin, Bout};
+pub use dir::{DirBuf, dirfstat, dirfwstat, dirread, dirreadall, dirstat, dirwstat};
+pub use env::{exec_path, getenv, getenv_list, putenv, putenv_list};
 pub use io::{File, Read, STDERR, STDIN, STDOUT, Write};
 pub use print::{Quoted, RcQuoted, Rerr, Text};
+pub use proc::{Waitmsg, Whom, getpid, postnote, wait, waitpid};
+pub use text::{cleanname, getfields, gettokens, quote, rc_quote, tokenize, unquote};
 
 pub use abi::{
     Access, BindFlags, Dir, ERRMAX, Failed, NoteHow, OpenFlags, OpenMode, Qid, RforkFlags, SegAttr, Sys, Ureg, Whence,
@@ -685,6 +696,31 @@ pub fn chdir(name: &CStr) -> Result<(), Error> {
 pub fn bind(name: &CStr, old: &CStr, flags: BindFlags) -> Result<(), Error> {
     // SAFETY: both names are NUL-terminated.
     unsafe { call_n(Sys::Bind, [ptr(name), ptr(old), flags.bits(), 0, 0, 0]) }.map(drop)
+}
+
+/// `b` as a C string; fails if it holds a NUL.
+pub fn cstr(b: &[u8]) -> Result<alloc::ffi::CString, Error> {
+    alloc::ffi::CString::new(b).map_err(|_| Error::from_text(b"bad character in file name"))
+}
+
+/// The whole of file `name`.
+pub fn read_all(name: &CStr) -> Result<alloc::vec::Vec<u8>, Error> {
+    let mode = OpenMode {
+        access: Access::Read,
+        flags: OpenFlags::empty(),
+    };
+    let fd = open(name, mode)?;
+    let mut v = alloc::vec::Vec::new();
+    let mut buf = [0u8; 8192];
+    let r = loop {
+        match read(fd, &mut buf) {
+            Ok(0) => break Ok(v),
+            Ok(n) => v.extend_from_slice(&buf[..n]),
+            Err(e) => break Err(e),
+        }
+    };
+    let _ = close(fd);
+    r
 }
 
 /// Unmounts `name` from `old`, or everything there if `name` is `None`.

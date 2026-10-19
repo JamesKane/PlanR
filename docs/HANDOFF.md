@@ -1,7 +1,8 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19: P3 slices 1 and 2 (console input, libr base) are done.
+2026-10-19: P3 slices 1 to 3 (console input, libr base, libr system
+layer) are done.
 
 ## State
 
@@ -438,6 +439,31 @@ Where work stands, for picking it up in a new session. Last updated
        collections, a 3 MiB block, the break unmoved over 1000 rounds of
        freeing, two `RFMEM` processes churning the shared heap (it fails
        with the lock removed), and `print!`/`Bout`/`Bin` through a pipe.
+  3. libr system layer:
+     - `dir`: `DirBuf` (an owned `Dir`; `as_dir`, `null` for wstat,
+       `is_dir`), `dirstat`/`dirfstat` (the buffer grows to the size the
+       kernel reports), `dirwstat`/`dirfwstat`, `dirread` (one 16 KiB
+       read) and `dirreadall`.
+     - `env`: `getenv` (NULs between words as spaces, as Plan 9's),
+       `getenv_raw`, `getenv_list` (rc's NUL-ended words), `putenv`,
+       `putenv_list`; `exec_path` looks in `$path` (default `.` and
+       `/bin`) unless the name starts `/`, `#`, `./` or `../`, and returns
+       the first error that is not "file does not exist".
+     - `proc`: `Waitmsg` (`parse`, `status` after `name pid: `), `wait`,
+       `waitpid`, `postnote(Whom::Proc | Group, pid, note)` through
+       `#p` (so `/proc` need not be bound), `getpid` from `#c/pid`.
+     - `time`: `Tm`, `gmtime` and `tm2sec` (civil-date arithmetic, any
+       `i64`), `Zone` (Plan 9's `/env/timezone` format; GMT without one),
+       `localtime`, `asctime`/`ctime` (`Thu Jan  1 00:00:00 GMT 1970\n`),
+       `time`, `month_days`.
+     - `text`: `cleanname` (Plan 9's, including `#X` device roots with
+       their spec), `gettokens`, `tokenize`, `unquote`, `getfields`
+       (a port of Plan 9's loop, `max` and `multi` included), `quote`,
+       `rc_quote`. Also `r::cstr` and `r::read_all`.
+     - `cmd/utest/tsys` (in `init`'s list): dirstat and dirreadall of
+       `/dev`, a wstat error passed through, the environment, `exec`
+       through `$path`, notes to a process and a group, `getpid`, and
+       `ctime`/`localtime` with a zone.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -447,11 +473,10 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-P3 slice 3, the libr system layer: directory reads, stat helpers,
-`cleanname`, the environment through `/env`, exec with a `$path` search,
-`wait`, `postnote`, time and date, `tokenize`, `getfields`, `quote`. The
-P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`; `srv` and `9fs`
-moved to P5).
+P3 slice 4: our lib9p server framework (a fid table, request dispatch,
+file trees) on `lib/9p`'s codec, and `ramfs`, which `init` mounts on
+`/tmp`. The P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`;
+`srv` and `9fs` moved to P5).
 
 The oracle harness (slice 7) needs host plan9port, built by
 `scripts/install-plan9port.sh` (as the user, into `$PLAN9` or
