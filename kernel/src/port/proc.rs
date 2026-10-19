@@ -34,6 +34,13 @@
 //! When it exits, its parent gets a [`Wait`] message, which [`await_child`]
 //! returns, as Plan 9's `await` does.
 //!
+//! **Sleeps cut short.** A sleep may end early for a note
+//! ([`Rendez::sleep_intr`]) or at a time ([`Rendez::tsleep`]). The note's
+//! poster or the clock's process readies the sleeper only while it is
+//! armed for that, under its `wake` lock, so a thread that has gone on to
+//! sleep elsewhere (in a `QLock`, which takes no spurious wake-ups) is
+//! never woken by mistake.
+//!
 //! **Switching.** A thread being left is still running on its own stack
 //! until the switch has saved it. So it goes back on a queue (or, if dead,
 //! is freed) only from the context switched to, in [`finish_switch`], and
@@ -42,7 +49,7 @@
 //! `on_cpu` clears.
 
 use alloc::boxed::Box;
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -53,11 +60,14 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering}
 use crate::arch::{self, context::Context, context::UserRegs};
 use crate::port::clock;
 use crate::port::cpu::{self, MAXCPU};
+use crate::port::error::{EINTR, Error};
 use crate::port::lock::SpinLock;
 use crate::port::mm::Stack;
 use crate::port::mmu;
+use crate::port::note::{self, Notes};
 use crate::port::pgrp::{Fgrp, Files};
 use crate::port::segment::Memory;
+use crate::port::timer;
 
 /// Priorities, 0 (lowest) to `NPRI - 1`, as in Plan 9.
 pub(crate) const NPRI: usize = 20;
@@ -125,13 +135,40 @@ pub(crate) struct Proc {
     /// The parent's pid, or 0.
     ppid: u64,
     /// Its note group: its own pid, its parent's group, or a new one
-    /// (`RFNOTEG`). Notes arrive in slice 10.
+    /// (`RFNOTEG`).
     noteid: AtomicU64,
+    notes: SpinLock<Notes>,
+    /// Set when a note is posted or the process is killed, cleared once
+    /// [`note::notify`] finds nothing left to do: read on every way out to
+    /// user mode.
+    note_waiting: AtomicBool,
+    /// Plan 9's `notepending`: a note came, and an interruptible sleep
+    /// should end. Cleared by the sleep it ends.
+    interrupted: AtomicBool,
+    /// Whether a note or a timer may wake the thread now.
+    wake: SpinLock<Wake>,
+    /// The pending alarm: when it is due and its timer.
+    alarm: SpinLock<Option<(u64, u64)>>,
+    /// The arguments it was started with, separated by spaces.
+    args: SpinLock<Vec<u8>>,
     children: SpinLock<Children>,
     /// Woken when a child exits.
     child_exited: Rendez,
     /// When it was made, for [`Wait::times`].
     started_ns: u64,
+}
+
+/// What may end the sleep a thread is in.
+#[derive(Debug, Default)]
+struct Wake {
+    /// Numbers the thread's sleeps, so a timer set for one does not end
+    /// another.
+    seq: u64,
+    /// The thread sleeps in sleep `seq` and may be readied for its note or
+    /// timer.
+    armed: bool,
+    /// A note ends it.
+    intr: bool,
 }
 
 /// A thread's children: how many are alive, and the wait messages of those
@@ -229,6 +266,95 @@ impl Proc {
     pub(crate) fn new_noteg(&self) {
         self.noteid
             .store(NEXT_PID.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
+    }
+
+    /// Joins note group `id`.
+    pub(crate) fn set_noteid(&self, id: u64) {
+        self.noteid.store(id, Ordering::Relaxed);
+    }
+
+    pub(crate) fn is_user(&self) -> bool {
+        self.is_user
+    }
+
+    pub(crate) fn pri(&self) -> usize {
+        self.pri
+    }
+
+    /// When it was made, in counter nanoseconds.
+    pub(crate) fn started_ns(&self) -> u64 {
+        self.started_ns
+    }
+
+    pub(crate) fn notes(&self) -> &SpinLock<Notes> {
+        &self.notes
+    }
+
+    /// The arguments it was started with, separated by spaces.
+    pub(crate) fn args(&self) -> Vec<u8> {
+        self.args.lock().clone()
+    }
+
+    pub(crate) fn set_args(&self, argv: &[Vec<u8>]) {
+        *self.args.lock() = argv.join(&b' ');
+    }
+
+    /// Marks a note posted: an interruptible sleep ends, and the way out to
+    /// user mode looks at the notes.
+    pub(crate) fn interrupt(self: &Arc<Proc>) {
+        self.note_waiting.store(true, Ordering::SeqCst);
+        self.interrupted.store(true, Ordering::SeqCst);
+        let w = self.wake.lock();
+        if w.armed && w.intr {
+            ready(self.clone());
+        }
+    }
+
+    /// Forgets that a note came, once [`note::notify`] takes the notes in
+    /// hand (Plan 9's `popnote`): a sleep after is not cut short for them.
+    pub(crate) fn clear_interrupted(&self) {
+        self.interrupted.store(false, Ordering::SeqCst);
+    }
+
+    /// Records whether notes still wait, once [`note::notify`] has looked.
+    pub(crate) fn notes_checked(&self) {
+        let n = self.notes.lock();
+        self.note_waiting.store(n.waiting(), Ordering::SeqCst);
+    }
+
+    /// Readies the thread if it still sleeps in sleep `seq`: its timer
+    /// came due.
+    pub(crate) fn timer_wake(self: &Arc<Proc>, seq: u64) {
+        let w = self.wake.lock();
+        if w.armed && w.seq == seq {
+            ready(self.clone());
+        }
+    }
+
+    /// Sets the alarm to go off at `when` (0 for none) and returns when the
+    /// previous one was due (0 if none).
+    pub(crate) fn set_alarm(self: &Arc<Proc>, when: u64) -> u64 {
+        let new = (when != 0).then(|| (when, timer::add(when, self, timer::What::Alarm)));
+        let old = core::mem::replace(&mut *self.alarm.lock(), new);
+        old.map_or(0, |(due, id)| {
+            timer::cancel(id);
+            due
+        })
+    }
+
+    /// The alarm due at `when` went off: posts `alarm` if it is still set.
+    pub(crate) fn alarm_fired(self: &Arc<Proc>, when: u64) {
+        let fired = {
+            let mut a = self.alarm.lock();
+            let due = a.is_some_and(|(w, _)| w == when);
+            if due {
+                *a = None;
+            }
+            due
+        };
+        if fired {
+            note::post(self, b"alarm", note::From::User);
+        }
     }
 
     /// A user thread's name space and files.
@@ -361,6 +487,8 @@ pub(crate) fn spawn(how: Spawn<'_>, f: impl FnOnce() + Send + 'static) -> Option
         files: None,
         parent: None,
         noteid: None,
+        notes: Notes::new(),
+        args: Vec::new(),
         user: UserRegs::INITIAL,
         entry: Entry::Kernel(Box::new(f)),
         reserved: 0,
@@ -384,6 +512,8 @@ pub(crate) fn spawn_user(
         files: Some(files),
         parent: current(),
         noteid: None,
+        notes: Notes::new(),
+        args: Vec::new(),
         user: UserRegs::INITIAL,
         entry: Entry::User { pc, sp, arg },
         reserved: 0,
@@ -407,6 +537,7 @@ pub(crate) fn fork(mem: Arc<Memory>, files: Files, wait: bool, noteg: bool) -> O
     let user = unsafe { (*me.user.get()).snapshot() };
     arch::splx(pl);
     let name = me.name();
+    let inherited = me.notes.lock().inherit();
     let how = Spawn {
         name: &name,
         pri: me.pri,
@@ -416,6 +547,8 @@ pub(crate) fn fork(mem: Arc<Memory>, files: Files, wait: bool, noteg: bool) -> O
         mem: Some(mem),
         files: Some(files),
         noteid: (!noteg).then(|| me.noteid()),
+        notes: inherited,
+        args: me.args(),
         parent: wait.then_some(me),
         user,
         entry: Entry::Fork,
@@ -432,6 +565,8 @@ struct Birth {
     parent: Option<Arc<Proc>>,
     /// Its note group, if not a new one.
     noteid: Option<u64>,
+    notes: Notes,
+    args: Vec<u8>,
     user: UserRegs,
     entry: Entry,
     /// Bytes at the top of the stack already in use: a forked child's
@@ -470,6 +605,12 @@ fn make(how: Spawn<'_>, stack: Stack, b: Birth) -> Arc<Proc> {
         parent: b.parent.as_ref().map(Arc::downgrade),
         ppid: b.parent.as_ref().map_or(0, |p| p.pid),
         noteid: AtomicU64::new(b.noteid.unwrap_or(pid)),
+        notes: SpinLock::new(b.notes),
+        note_waiting: AtomicBool::new(false),
+        interrupted: AtomicBool::new(false),
+        wake: SpinLock::new(Wake::default()),
+        alarm: SpinLock::new(None),
+        args: SpinLock::new(b.args),
         children: SpinLock::new(Children {
             live: 0,
             exited: VecDeque::new(),
@@ -480,8 +621,35 @@ fn make(how: Spawn<'_>, stack: Stack, b: Birth) -> Arc<Proc> {
     if let Some(parent) = b.parent {
         parent.children.lock().live += 1;
     }
+    PROCS.lock().insert(pid, Arc::downgrade(&p));
     ready(p.clone());
     p
+}
+
+/// Every thread not yet exited, by pid.
+static PROCS: SpinLock<BTreeMap<u64, Weak<Proc>>> = SpinLock::new(BTreeMap::new());
+
+/// The thread `pid`, if it has not exited.
+pub(crate) fn find(pid: u64) -> Option<Arc<Proc>> {
+    PROCS.lock().get(&pid).and_then(Weak::upgrade)
+}
+
+/// Every thread not yet exited, by pid.
+pub(crate) fn all() -> Vec<Arc<Proc>> {
+    PROCS.lock().values().filter_map(Weak::upgrade).collect()
+}
+
+/// True if the calling thread has notes for [`note::notify`] to look at:
+/// asked on every way out to user mode, so it takes no lock.
+pub(crate) fn notes_waiting() -> bool {
+    let pl = arch::splhi();
+    // SAFETY: interrupts are off, and the reference is dropped at once.
+    let w = unsafe { local() }
+        .current
+        .as_ref()
+        .is_some_and(|p| p.note_waiting.load(Ordering::SeqCst));
+    arch::splx(pl);
+    w
 }
 
 /// The thread running on this CPU, if any.
@@ -663,14 +831,21 @@ pub(crate) fn exec(mem: Arc<Memory>, name: String, pc: u64, sp: u64) -> ! {
 }
 
 /// Waits for a child of the calling thread to exit and returns its wait
-/// message, or `None` if it has no children left to wait for.
-pub(crate) fn await_child(s: &Sleepable) -> Option<Wait> {
+/// message, or `None` if it has no children left to wait for. A note cuts
+/// the wait short.
+pub(crate) fn await_child(s: &Sleepable) -> Result<Option<Wait>, Error> {
     let me = current().expect("a Sleepable proves a thread");
-    me.child_exited.sleep(s, || {
-        let c = me.children.lock();
+    await_of(&me, s)
+}
+
+/// Waits for a child of `p` to exit, as [`await_child`] does for the
+/// caller (`#p/n/wait`).
+pub(crate) fn await_of(p: &Proc, s: &Sleepable) -> Result<Option<Wait>, Error> {
+    p.child_exited.sleep_intr(s, || {
+        let c = p.children.lock();
         !c.exited.is_empty() || c.live == 0
-    });
-    me.children.lock().exited.pop_front()
+    })?;
+    Ok(p.children.lock().exited.pop_front())
 }
 
 /// Tells the calling thread's parent, if it has one still, that it is
@@ -712,6 +887,10 @@ fn exit() -> ! {
         drop(fds);
         let files = me.files.lock().take();
         drop(files);
+        if let Some((_, id)) = me.alarm.lock().take() {
+            timer::cancel(id);
+        }
+        PROCS.lock().remove(&me.pid);
         tell_parent(&me);
     }
     let _ = arch::splhi();
@@ -889,25 +1068,97 @@ impl Rendez {
     /// Sleeps until `cond` holds. `cond` is checked under the rendez's
     /// lock, so a waker that makes it true and then calls
     /// [`wakeup`](Rendez::wakeup) is never missed.
-    pub(crate) fn sleep(&self, _: &Sleepable, cond: impl Fn() -> bool) {
-        loop {
-            let pl = arch::splhi();
-            {
-                let mut s = self.sleepers.lock();
-                if cond() {
-                    drop(s);
-                    arch::splx(pl);
-                    return;
-                }
-                // SAFETY: interrupts are off; dropped before the switch.
-                let me = unsafe { local() }.current.clone().expect("a Sleepable proves a thread");
-                me.set_state(State::Sleeping);
-                s.push_back(me);
+    pub(crate) fn sleep(&self, s: &Sleepable, cond: impl Fn() -> bool) {
+        self.sleep_for(s, cond, false, None);
+    }
+
+    /// Sleeps until `cond` holds, or fails with "interrupted" if a note
+    /// comes first.
+    pub(crate) fn sleep_intr(&self, s: &Sleepable, cond: impl Fn() -> bool) -> Result<(), Error> {
+        match self.sleep_for(s, cond, true, None) {
+            Woke::Cond => Ok(()),
+            _ => Err(EINTR.into()),
+        }
+    }
+
+    /// Sleeps until `cond` holds or the counter reaches `deadline` (in
+    /// nanoseconds, [`clock::now_ns`]); a note ends it too if `intr`.
+    pub(crate) fn tsleep(&self, s: &Sleepable, cond: impl Fn() -> bool, deadline: u64, intr: bool) -> Woke {
+        self.sleep_for(s, cond, intr, Some(deadline))
+    }
+
+    fn sleep_for(&self, _: &Sleepable, cond: impl Fn() -> bool, intr: bool, deadline: Option<u64>) -> Woke {
+        let me = current().expect("a Sleepable proves a thread");
+        let seq = {
+            let mut w = me.wake.lock();
+            w.seq += 1;
+            w.seq
+        };
+        let timer = deadline.map(|d| timer::add(d, &me, timer::What::Wake(seq)));
+        let ended = || {
+            if intr && me.interrupted.load(Ordering::SeqCst) {
+                Some(Woke::Interrupted)
+            } else if deadline.is_some_and(|d| clock::now_ns() >= d) {
+                Some(Woke::Timeout)
+            } else {
+                None
             }
+        };
+        // Whether it was asleep in the queue, and so may still be there.
+        let mut queued = false;
+        let woke = loop {
+            let pl = arch::splhi();
+            let mut q = self.sleepers.lock();
+            // Taken off the queue by a waker, rather than readied by a note
+            // or a timer.
+            let mut popped = false;
+            if queued {
+                let n = q.len();
+                q.retain(|p| !Arc::ptr_eq(p, &me));
+                popped = q.len() == n;
+                queued = false;
+            }
+            let end = if cond() { Some(Woke::Cond) } else { ended() };
+            if let Some(end) = end {
+                drop(q);
+                arch::splx(pl);
+                if popped && end != Woke::Cond {
+                    // The wake-up was meant for a sleeper: pass it on.
+                    self.wakeup();
+                }
+                break end;
+            }
+            me.set_state(State::Sleeping);
+            q.push_back(me.clone());
+            {
+                let mut w = me.wake.lock();
+                // A note posted, or the timer run, before the arming: no
+                // one will ready it, and only it can still change its state.
+                if ended().is_some() {
+                    drop(w);
+                    q.pop_back();
+                    me.set_state(State::Running);
+                    drop(q);
+                    arch::splx(pl);
+                    continue;
+                }
+                w.armed = true;
+                w.intr = intr;
+            }
+            drop(q);
             let dead = reschedule(Leave::Sleep);
+            me.wake.lock().armed = false;
             arch::splx(pl);
             drop(dead);
+            queued = true;
+        };
+        if let Some(id) = timer {
+            timer::cancel(id);
         }
+        if woke == Woke::Interrupted {
+            me.interrupted.store(false, Ordering::SeqCst);
+        }
+        woke
     }
 
     /// Wakes the first sleeper, if any; true if there was one.
@@ -923,6 +1174,17 @@ impl Rendez {
         all.into_iter().for_each(ready);
         n
     }
+}
+
+/// How a sleep that may be cut short ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Woke {
+    /// Its condition held.
+    Cond,
+    /// A note came.
+    Interrupted,
+    /// Its time ran out.
+    Timeout,
 }
 
 /// Puts the calling thread to sleep, having queued it somewhere a waker
@@ -966,8 +1228,9 @@ impl Rgrp {
     }
 
     /// Plan 9's `rendezvous`: the first caller with `tag` waits, and the
-    /// second wakes it; each returns the other's `value`.
-    pub(crate) fn rendezvous(&self, s: &Sleepable, tag: u64, value: u64) -> u64 {
+    /// second wakes it; each returns the other's `value`. A note ends the
+    /// wait, unless the other has come already.
+    pub(crate) fn rendezvous(&self, s: &Sleepable, tag: u64, value: u64) -> Result<u64, Error> {
         let mut meets = self.meets.lock();
         if let Some(i) = meets.iter().position(|m| m.tag == tag) {
             let m = meets.swap_remove(i);
@@ -975,7 +1238,7 @@ impl Rgrp {
             m.reply.store(value, Ordering::Relaxed);
             m.done.store(true, Ordering::Release);
             m.r.wakeup();
-            return m.value;
+            return Ok(m.value);
         }
         let m = Arc::new(Meet {
             tag,
@@ -986,8 +1249,17 @@ impl Rgrp {
         });
         meets.push(m.clone());
         drop(meets);
-        m.r.sleep(s, || m.done.load(Ordering::Acquire));
-        m.reply.load(Ordering::Relaxed)
+        if m.r.sleep_intr(s, || m.done.load(Ordering::Acquire)).is_err() {
+            let mut meets = self.meets.lock();
+            if let Some(i) = meets.iter().position(|x| Arc::ptr_eq(x, &m)) {
+                meets.swap_remove(i);
+                return Err(EINTR.into());
+            }
+            drop(meets);
+            // The other took it, and is about to say so.
+            m.r.sleep(s, || m.done.load(Ordering::Acquire));
+        }
+        Ok(m.reply.load(Ordering::Relaxed))
     }
 }
 
@@ -997,7 +1269,7 @@ pub(crate) mod ktests {
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-    use super::{PRI_NORMAL, Rendez, Rgrp, Spawn, current, sleepable, spawn, yield_now};
+    use super::{PRI_NORMAL, Rendez, Rgrp, Spawn, Woke, current, sleepable, spawn, yield_now};
     use crate::arch;
     use crate::port::clock;
     use crate::port::cpu;
@@ -1238,7 +1510,8 @@ pub(crate) mod ktests {
             let (got, done) = (got.clone(), done.clone());
             spawn(Spawn::kproc("meet"), move || {
                 let sl = sleepable().expect("a thread may sleep");
-                got[i].store(RG.rendezvous(&sl, 0x7a9, 100 + i as u64), Ordering::Relaxed);
+                let v = RG.rendezvous(&sl, 0x7a9, 100 + i as u64).unwrap_or(0);
+                got[i].store(v, Ordering::Relaxed);
                 done.fetch_add(1, Ordering::Release);
             })
             .ok_or("cannot spawn")?;
@@ -1246,6 +1519,34 @@ pub(crate) mod ktests {
         wait_for(&done, 2)?;
         if got[0].load(Ordering::Relaxed) != 101 || got[1].load(Ordering::Relaxed) != 100 {
             return Err("values not swapped".into());
+        }
+        Ok(())
+    }
+
+    /// A timed sleep whose condition never holds ends at its time, not
+    /// before, and one whose condition comes true ends then.
+    pub(crate) fn timed_sleep_ends() -> TestResult {
+        let out = Arc::new(SpinLock::new(None));
+        let done = Arc::new(AtomicUsize::new(0));
+        let (o, d) = (out.clone(), done.clone());
+        spawn(Spawn::kproc("tsleep"), move || {
+            let sl = sleepable().expect("a thread may sleep");
+            let r = Rendez::new();
+            let start = clock::now_ns();
+            let woke = r.tsleep(&sl, || false, start + 20_000_000, false);
+            let took = clock::now_ns() - start;
+            let early = r.tsleep(&sl, || true, clock::now_ns() + SECOND, false);
+            *o.lock() = Some((woke, took, early));
+            d.fetch_add(1, Ordering::Release);
+        })
+        .ok_or("cannot spawn")?;
+        wait_for(&done, 1)?;
+        let (woke, took, early) = out.lock().take().ok_or("no result")?;
+        if woke != Woke::Timeout || took < 20_000_000 {
+            return Err("a timed sleep did not last its time".into());
+        }
+        if early != Woke::Cond {
+            return Err("a timed sleep outlasted its condition".into());
         }
         Ok(())
     }

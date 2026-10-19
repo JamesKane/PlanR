@@ -16,8 +16,8 @@ use crate::port::chan::Chan;
 use crate::port::dev::{self, Dev, Entry};
 use crate::port::error::{EBADARG, EBADSPEC, ENONEXIST, EPERM, Result};
 use crate::port::lock::SpinLock;
-use crate::port::proc;
 use crate::port::qio::Queue;
+use crate::port::{note, proc};
 
 /// What a pipe buffers each way before writers wait (Plan 9's
 /// `conf.pipeqsize` on a multiprocessor).
@@ -155,8 +155,13 @@ impl Dev for PipeDev {
             return Err(EPERM.into());
         }
         let s = proc::sleepable().ok_or(EPERM)?;
-        // Plan 9 also posts the writer a "sys: write on closed pipe"
-        // note here; notes arrive in slice 10.
-        pipe(c)?.q[1 - side(c)].write(&s, buf)
+        let r = pipe(c)?.q[1 - side(c)].write(&s, buf);
+        if r.is_err()
+            && let Some(me) = proc::current()
+        {
+            // As in Plan 9: a writer that does not look at the error dies.
+            note::post(&me, b"sys: write on closed pipe", note::From::User);
+        }
+        r
     }
 }

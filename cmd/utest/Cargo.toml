@@ -43,6 +43,12 @@ path = "src/bin/tproc.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "tnote"
+path = "src/bin/tnote.rs"
+test = false
+bench = false
+
 [dependencies]
 r = { path = "../../lib/r" }
 

@@ -178,7 +178,10 @@ struct Built {
 
 /// User programs for the boot archive: each package, and the binaries of
 /// it that go into `/boot`.
-const USER_PROGRAMS: &[(&str, &[&str])] = &[("utest", &["tmem", "targs", "texec", "tfault", "tfile", "tproc"])];
+const USER_PROGRAMS: &[(&str, &[&str])] = &[(
+    "utest",
+    &["tmem", "targs", "texec", "tfault", "tfile", "tproc", "tnote"],
+)];
 
 /// Builds the user programs for `arch` and packs them into the boot
 /// archive, as `boot/<name>`.

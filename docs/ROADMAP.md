@@ -272,7 +272,7 @@ plus a toy 9P server). All of them pass on both architectures.
    the mount table, `bind`/`unmount` (`mount` waits for `#M`); `#/ #c #e
    #d #r #P`; `exec` through the name space.
 9. ✅ `rfork` with copy-on-write; `qio`/`Block`; `#|` and `#s`.
-10. Notes, `#p`, `alarm`, `nsec`, `semacquire`/`tsemacquire`, `segattach`.
+10. ✅ Notes, `#p`, `alarm`, `nsec`, `semacquire`/`tsemacquire`, `segattach`.
 11. `#M` with a first 9P codec (`lib/9p`).
 12. The exit test: `init` and the user test programs, in CI on both arches.
 

@@ -59,6 +59,7 @@ const TESTS: &[(&str, TestFn)] = &[
     ("proc: dead threads are freed", proc::ktests::dead_threads_freed),
     ("proc: sleep and wakeup", proc::ktests::sleep_and_wakeup),
     ("proc: rendezvous swaps values", proc::ktests::rendezvous_swaps),
+    ("proc: a timed sleep ends on time", proc::ktests::timed_sleep_ends),
     ("qlock: excludes", qlock::ktests::qlock_excludes),
     ("qlock: rwlock excludes", qlock::ktests::rwlock_excludes),
     ("mmu: address spaces are separate", mmu::ktests::spaces_are_separate),

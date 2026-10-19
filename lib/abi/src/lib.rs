@@ -36,12 +36,16 @@
 //!
 //! **Files.** A `stat` buffer, a `wstat` buffer and each entry of a
 //! directory read hold a [`Dir`] in Plan 9's encoding.
+//!
+//! **Notes** are delivered to a handler on the user stack ([`note`]).
 
 #![cfg_attr(not(test), no_std)]
 
 mod dir;
+pub mod note;
 
 pub use dir::*;
+pub use note::{NOTE_GAP, NoteHow, Ureg};
 
 /// The longest error string, NUL included (Plan 9's `ERRMAX`).
 pub const ERRMAX: usize = 128;
@@ -173,38 +177,46 @@ calls! {
     Errstr = 34,
     /// `sleep(ms)`
     Sleep = 35,
-    /// `alarm(ms) -> ms left of the previous alarm`
+    /// `alarm(ms) -> ms left of the previous alarm`: posts the note
+    /// `alarm` after `ms` milliseconds; 0 cancels
     Alarm = 36,
     /// `nsec() -> ns since the epoch`
     Nsec = 37,
 
     // Notes.
-    /// `notify(handler)`
+    /// `notify(handler)`: the note handler ([`note`]), or 0 for none
     Notify = 40,
-    /// `noted(how)`
+    /// `noted(how: NoteHow)`: ends a note handler
     Noted = 41,
 
     // Synchronization.
     /// `rendezvous(tag, value) -> value`
     Rendezvous = 50,
-    /// `semacquire(addr: *mut u64, block) -> acquired`
+    /// `semacquire(addr: *mut u64, block) -> acquired`: takes one from
+    /// the count at `addr` (8-byte aligned, a signed count) if it is
+    /// positive; else 0 at once, or waits if `block`
     Semacquire = 51,
-    /// `tsemacquire(addr: *mut u64, ms) -> acquired`
+    /// `tsemacquire(addr: *mut u64, ms) -> acquired`: waits at most `ms`
     Tsemacquire = 52,
-    /// `semrelease(addr: *mut u64, count) -> count`
+    /// `semrelease(addr: *mut u64, count) -> count`: adds `count` and
+    /// wakes waiters; returns the new count
     Semrelease = 53,
 
     // Memory.
     /// `brk(addr)`: moves the end of the bss segment to `addr`, rounded up
     /// to a page
     Brk = 60,
-    /// `segattach(attr, class, va, len) -> va`
+    /// `segattach(attr: SegAttr, class, va, len) -> va`: a new segment of
+    /// `class` (`shared` or `memory`) over `[va, va + len)`, rounded out
+    /// to pages; `va` 0 lets the kernel choose
     Segattach = 61,
-    /// `segdetach(va)`
+    /// `segdetach(va)`: removes the attached segment holding `va`
     Segdetach = 62,
-    /// `segfree(va, len)`
+    /// `segfree(va, len)`: lets go of the pages in the range, which read
+    /// as zeros after
     Segfree = 63,
-    /// `segflush(va, len)`
+    /// `segflush(va, len)`: makes writes in the range visible to
+    /// instruction fetch
     Segflush = 64,
 
     // New in Plan R (ADR 0002).
@@ -427,6 +439,16 @@ flags! {
         REND = 1 << 13,
         /// No device attaches (`#` names) after this.
         NOMNT = 1 << 14,
+    }
+}
+
+flags! {
+    /// How `segattach` makes a segment.
+    SegAttr {
+        /// Read-only.
+        RONLY = 0o40,
+        /// Detached by `exec` (else kept).
+        CEXEC = 0o100,
     }
 }
 

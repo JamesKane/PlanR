@@ -17,9 +17,14 @@
 //! and over (more than three times) fails too, as in Plan 9.
 //! [`Queue::close`] also throws away what is queued.
 //!
+//! **Notes.** A note ends a reader's wait with "interrupted", taking
+//! nothing. A writer's block is queued before it waits for room, so a note
+//! then ends the write early, with what it queued so far.
+//!
 //! Readers are served one at a time, as are writers, each under a
 //! [`QLock`]; the queue itself is a spin lock held only to look and
-//! change, never while copying a block in or out of user memory.
+//! change, never while copying a block in or out of user memory. Waiting
+//! for the `QLock` is not cut short by a note.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -112,10 +117,10 @@ impl Queue {
     /// Takes the next block, waiting for one; `None` at end of file.
     pub(crate) fn bread(&self, s: &Sleepable, max: usize) -> Result<Option<Block>> {
         let _r = self.readers.lock(s);
-        self.rr.sleep(s, || {
+        self.rr.sleep_intr(s, || {
             let st = self.st.lock();
             st.closed || !st.blocks.is_empty()
-        });
+        })?;
         let mut st = self.st.lock();
         let Some(mut b) = st.blocks.pop_front() else {
             // Closed and empty.
@@ -156,8 +161,9 @@ impl Queue {
         Ok(b.len())
     }
 
-    /// Queues `b`, then waits while the queue is full.
-    pub(crate) fn bwrite(&self, s: &Sleepable, b: Block) -> Result<usize> {
+    /// Queues `b`, then waits while the queue is full; false if a note
+    /// cut the wait short.
+    pub(crate) fn bwrite(&self, s: &Sleepable, b: Block) -> Result<bool> {
         let n = b.len();
         let _w = self.writers.lock(s);
         {
@@ -176,24 +182,29 @@ impl Queue {
         };
         while !room() {
             self.st.lock().flow = true;
-            self.wr.sleep(s, room);
+            if self.wr.sleep_intr(s, room).is_err() {
+                return Ok(false);
+            }
         }
-        Ok(n)
+        Ok(true)
     }
 
     /// Writes `buf`, a block at a time; a message queue takes only the
-    /// first block's worth.
+    /// first block's worth. A note ends it early, with the count queued.
     pub(crate) fn write(&self, s: &Sleepable, buf: &[u8]) -> Result<usize> {
+        if buf.is_empty() {
+            self.bwrite(s, Block::new(Vec::new()))?;
+            return Ok(0);
+        }
+        let mut done = 0;
         for chunk in buf.chunks(MAX_ATOMIC) {
-            self.bwrite(s, Block::new(chunk.to_vec()))?;
-            if self.msg {
+            let whole = self.bwrite(s, Block::new(chunk.to_vec()))?;
+            done += chunk.len();
+            if self.msg || !whole {
                 break;
             }
         }
-        if buf.is_empty() {
-            self.bwrite(s, Block::new(Vec::new()))?;
-        }
-        Ok(buf.len())
+        Ok(if self.msg { buf.len() } else { done })
     }
 
     /// Takes no more writes, failing them with `err` (or "i/o on hungup

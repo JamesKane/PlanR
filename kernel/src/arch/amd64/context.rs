@@ -241,7 +241,7 @@ pub(crate) unsafe fn enter_user(pc: u64, sp: u64, arg: u64, top: u64) -> ! {
     }
 }
 
-pub(crate) use super::trap::{fork_frame, resume_user};
+pub(crate) use super::trap::{fork_frame, resume_user, sanitize};
 
 /// Sets the stack the calling CPU enters the kernel on from user mode,
 /// for the thread it is switching to.

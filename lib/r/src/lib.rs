@@ -23,7 +23,10 @@ use core::arch::{asm, global_asm};
 use core::ffi::CStr;
 use core::fmt;
 
-pub use abi::{Access, BindFlags, Dir, ERRMAX, Failed, OpenFlags, OpenMode, Qid, RforkFlags, Sys, Whence, dirs};
+pub use abi::{
+    Access, BindFlags, Dir, ERRMAX, Failed, NoteHow, OpenFlags, OpenMode, Qid, RforkFlags, SegAttr, Sys, Ureg, Whence,
+    dirs,
+};
 
 /// Makes `$f`, a `fn(Args) -> Result<(), &'static str>`, the program's
 /// main function.
@@ -353,10 +356,12 @@ pub fn settls(addr: u64) -> Result<(), Error> {
         .or_else(failed)
 }
 
-/// Sleeps for `ms` milliseconds; 0 yields.
-pub fn sleep(ms: u64) {
+/// Sleeps for `ms` milliseconds; 0 yields. A note cuts it short.
+pub fn sleep(ms: u64) -> Result<(), Error> {
     // SAFETY: no memory is involved.
-    let _ = unsafe { syscall(Sys::Sleep, [ms, 0, 0, 0, 0, 0]) };
+    unsafe { syscall(Sys::Sleep, [ms, 0, 0, 0, 0, 0]) }
+        .map(drop)
+        .or_else(failed)
 }
 
 /// Waits for a child to exit and puts its wait message in `buf`; returns
@@ -382,6 +387,110 @@ pub fn rfork(flags: RforkFlags) -> Result<u64, Error> {
 pub fn rendezvous(tag: u64, value: u64) -> Result<u64, Error> {
     // SAFETY: no memory is involved.
     unsafe { syscall(Sys::Rendezvous, [tag, value, 0, 0, 0, 0]) }.or_else(failed)
+}
+
+/// A note handler: called with the interrupted registers and the note's
+/// NUL-terminated text, it must end with [`noted`].
+pub type Handler = extern "C" fn(*mut Ureg, *const u8);
+
+/// Sets the note handler; `None` lets notes end the process.
+pub fn notify(f: Option<Handler>) -> Result<(), Error> {
+    let addr = f.map_or(0, |f| f as usize as u64);
+    // SAFETY: the kernel calls the handler as a `Handler`.
+    unsafe { syscall(Sys::Notify, [addr, 0, 0, 0, 0, 0]) }
+        .map(drop)
+        .or_else(failed)
+}
+
+/// Ends a note handler as `how` says; returns only if that fails.
+#[must_use]
+pub fn noted(how: NoteHow) -> Error {
+    // SAFETY: resumes the code the note interrupted, from its `Ureg`.
+    let _ = unsafe { syscall(Sys::Noted, [how as u64, 0, 0, 0, 0, 0]) };
+    Error::last()
+}
+
+/// Posts the note `alarm` in `ms` milliseconds, in place of any alarm set
+/// before (0 sets none); returns the milliseconds that one had left.
+#[allow(clippy::must_use_candidate)] // setting it is the point
+pub fn alarm(ms: u64) -> u64 {
+    // SAFETY: no memory is involved.
+    unsafe { syscall(Sys::Alarm, [ms, 0, 0, 0, 0, 0]) }.unwrap_or(0)
+}
+
+/// Nanoseconds since 1970-01-01 UTC.
+#[must_use]
+pub fn nsec() -> u64 {
+    // SAFETY: no memory is involved.
+    unsafe { syscall(Sys::Nsec, [0; 6]) }.unwrap_or(0)
+}
+
+/// Takes one from the count at `addr` if it is positive; else, if
+/// `block`, waits until it is. True if one was taken.
+pub fn semacquire(addr: &core::sync::atomic::AtomicI64, block: bool) -> Result<bool, Error> {
+    // SAFETY: the kernel changes the word only atomically.
+    unsafe { syscall(Sys::Semacquire, [addr.as_ptr() as u64, u64::from(block), 0, 0, 0, 0]) }
+        .map(|v| v != 0)
+        .or_else(failed)
+}
+
+/// [`semacquire`], waiting at most `ms` milliseconds.
+pub fn tsemacquire(addr: &core::sync::atomic::AtomicI64, ms: u64) -> Result<bool, Error> {
+    // SAFETY: as for `semacquire`.
+    unsafe { syscall(Sys::Tsemacquire, [addr.as_ptr() as u64, ms, 0, 0, 0, 0]) }
+        .map(|v| v != 0)
+        .or_else(failed)
+}
+
+/// Adds `count` to the count at `addr` and wakes its waiters; returns the
+/// new count.
+pub fn semrelease(addr: &core::sync::atomic::AtomicI64, count: u64) -> Result<i64, Error> {
+    // SAFETY: as for `semacquire`.
+    match unsafe { syscall(Sys::Semrelease, [addr.as_ptr() as u64, count, 0, 0, 0, 0]) } {
+        #[allow(clippy::cast_possible_wrap)] // a signed count
+        Ok(v) => Ok(v as i64),
+        Err(f) => failed(f),
+    }
+}
+
+/// Attaches a new segment of `class` (`shared` or `memory`), `len`
+/// bytes, at `va` or, if 0, where the kernel chooses; returns its base.
+pub fn segattach(attr: SegAttr, class: &CStr, va: u64, len: u64) -> Result<u64, Error> {
+    // SAFETY: a new segment only adds memory, where nothing is.
+    unsafe { syscall(Sys::Segattach, [attr.bits(), ptr(class), va, len, 0, 0]) }.or_else(failed)
+}
+
+/// Detaches the attached segment holding `va`.
+///
+/// # Safety
+///
+/// Nothing may use the segment's memory after.
+pub unsafe fn segdetach(va: u64) -> Result<(), Error> {
+    // SAFETY: the caller's contract.
+    unsafe { syscall(Sys::Segdetach, [va, 0, 0, 0, 0, 0]) }
+        .map(drop)
+        .or_else(failed)
+}
+
+/// Lets go of the pages wholly inside `[va, va + len)`, which read as
+/// zeros after.
+///
+/// # Safety
+///
+/// Nothing may count on what those pages held.
+pub unsafe fn segfree(va: u64, len: u64) -> Result<(), Error> {
+    // SAFETY: the caller's contract.
+    unsafe { syscall(Sys::Segfree, [va, len, 0, 0, 0, 0]) }
+        .map(drop)
+        .or_else(failed)
+}
+
+/// Makes writes in `[va, va + len)` visible to instruction fetch.
+pub fn segflush(va: u64, len: u64) -> Result<(), Error> {
+    // SAFETY: changes nothing in memory.
+    unsafe { syscall(Sys::Segflush, [va, len, 0, 0, 0, 0]) }
+        .map(drop)
+        .or_else(failed)
 }
 
 /// A file descriptor.

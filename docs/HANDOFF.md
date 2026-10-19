@@ -1,7 +1,7 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19, after P2 slice 9.
+2026-10-19, after P2 slice 10.
 
 ## State
 
@@ -237,6 +237,68 @@ Where work stands, for picking it up in a new session. Last updated
        and a grandchild's copy of a shared segment), pipe boundaries, end
        of file, hangup errors, 1 MiB through a pipe, `#s`, rendezvous,
        each group flag, `RFNOMNT`, `RFNOWAIT` and exec in a forked child.
+  10. Notes, `#p`, timers, semaphores and attached segments:
+     - `port/note.rs`: a process's `Notes` (at most 5 queued, its
+       handler, `notified`, the handler's `Ureg` on the user stack, and
+       `killed`). `note::post` queues a note and calls
+       `Proc::interrupt`. A kernel note (`From::Kernel`, the `sys: …`
+       ones) to a process with no handler, or one already running,
+       empties the queue first. `notify` runs on every way out to user
+       mode while `Proc::note_waiting` is set. It delivers as Plan 9
+       does: the `Ureg`, a link to the previous handler frame and the
+       text go below the user stack pointer less 256 bytes, and the
+       handler is called with them. With no handler, or a kernel note
+       during one, the process exits with the note's text as its status.
+       It prints a line when a kernel note kills it. User notes wait
+       while a handler runs. `noted` implements NCONT, NDFLT, NSAVE and
+       NRSTR. A handler is inherited by `rfork` and cleared by `exec`.
+     - `abi::Ureg` *is* the trap frame on both arches, checked by
+       `const` asserts. `dispatch` takes `&mut Ureg` and returns `None`
+       after `noted`; amd64 then returns by `iretq`, so `rcx` and `r11`
+       survive. On arm64, `TrapFrame::with_ureg` puts `SP_EL0` in the
+       frame's `sp` while port code runs, and `arch::context::sanitize`
+       fixes up what `noted` restores. User faults are notes now
+       (`syscall::user_trap` posts one and returns).
+     - Sleeps that a note or a timer ends (`Rendez::sleep_intr`,
+       `tsleep`, both via `sleep_for`, returning `Woke`). A poster or
+       timer readies a sleeper only while its `wake` lock says it is
+       armed for that sleep (`seq`), so a `QLock` waiter never gets a
+       spurious wakeup. A sleeper that a note or timer readied removes
+       itself from the queue. If a waker had already popped it, it passes
+       the wakeup on. `interrupted` is Plan 9's `notepending`; delivery
+       and an interrupted sleep both clear it. qio reads, the flow-control
+       wait in qio writes, `rendezvous`, `await` and semaphores are
+       interruptible. The pipe write that hits a hangup posts
+       `sys: write on closed pipe`.
+     - `port/timer.rs`: a list of timers (`Wake(seq)` or `Alarm`). CPU
+       0's tick compares `NEXT` with the time and wakes the `clock`
+       kproc, which runs the timers that are due (so posting a note never
+       happens in an interrupt). `sleep(ms)` is a `tsleep`, `alarm` sets
+       `Proc::alarm` (not inherited, cancelled at exit), and `nsec` is
+       `devrtc::nanoseconds`.
+     - `port/sema.rs`: semaphores on 64-bit signed words. They change
+       through the direct map with atomics (`Memory::with_word`, which
+       resolves the page for writing; `peek_word`, safe under a spin
+       lock, for the sleep's condition). Waiters sleep on a `Rendez`
+       keyed by (segment, address), and a release wakes them all.
+     - Segments: `Kind::Shared` (shared with every child) and
+       `Kind::Memory` (copied unless `RFMEM`), with `RONLY` and `CEXEC`.
+       `segattach` places them below the stack, top-down, when `va` is 0.
+       `segdetach` unmaps the segment and drops this space from it;
+       `segfree` drops pages; `segflush` only checks the range. `exec`
+       keeps the segments not marked `CEXEC` (`Memory::inherit`).
+     - `#p` (`port/devproc.rs`): `args ctl fd mem note noteid notepg
+       ns segment status wait` per pid, found again by pid on every
+       operation (`proc::find`/`all`, the `PROCS` table). `ctl` takes
+       `kill`.
+     - libr: `notify`, `noted`, `alarm`, `nsec`, semaphores, the `seg*`
+       calls; `sleep` now returns its error. `cmd/utest/tnote` covers
+       notes from itself, the kernel and the clock, a caught fault,
+       interrupted sleep, pipe read, rendezvous, await and semaphore,
+       `alarm`'s remainder, no handler and NDFLT, `notepg`, `kill` of a
+       sleeping and a spinning process, semaphores, attached segments
+       and every `#p` file. `tproc` now expects the closed-pipe note to
+       end the writer. A ktest checks `tsleep`.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -246,34 +308,27 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-Slice 10: notes, `#p`, `alarm`, `nsec`, `semacquire`/`tsemacquire`,
-`segattach`.
-- Notes: `notify`/`noted`, a note queue per process, delivery on the
-  way out of the kernel (a user frame for the handler, as Plan 9's
-  `notify` builds), `postnote` to a pid or note group (`noteid`, kept
-  since slice 9). Sleeps must become interruptible: `Rendez::sleep`
-  needs a way to return early for a note, and `qio`, `rendezvous` and
-  `await` an error for it ("interrupted"). The pipe write that fails on
-  a hung-up pipe also posts "sys: write on closed pipe".
-- `#p`: per-process `ctl`, `note`, `notepg`, `status`, `ns`, `fd`,
-  `args`, `wait`, `mem`/`segment` as far as they are cheap.
-- `alarm` and timed sleep (`tsleep`), which `sleep` and `tsemacquire`
-  then use instead of yielding in a loop. `nsec` from `devrtc`.
-- `semacquire`/`tsemacquire`/`semrelease` on user words (read and
-  written outside spin locks, as Plan 9 notes).
-- `segattach`/`segdetach`/`segfree` for shared segments: the shared
-  segment model from slice 9 (segments as `Arc`s with their spaces)
-  should carry them; detaching must clear the segment from the space.
+Slice 11: `#M` with a first 9P codec (`lib/9p`).
+- `lib/9p`: 9P2000 `Tmsg`/`Rmsg` as Rust enums with a zero-copy
+  decoder and an encoder, host-tested (and fuzzed, as ARCHITECTURE.md
+  asks).
+- `#M` (`devmnt`): a mount driver over a chan (a pipe end, or a `#s`
+  service): `version`, `attach`, `walk`, `open`, `create`, `read`,
+  `write`, `clunk`, `remove`, `stat`, `wstat`, with tags so several
+  processes' requests are outstanding at once. Waiting for a reply
+  should be interruptible (`Rendez::sleep_intr`), and an interrupted
+  request sends `Tflush`, as Plan 9 does.
+- The `mount` system call (and `fversion`, `fauth` as far as needed). It
+  must check `Pgrp::noattach`.
+- `Dev::close` may sleep once `#M` exists: see "Never drop an open
+  `Chan` under a spin lock" below.
+- A toy 9P server in a user test program, mounted through a pipe.
 
-The slice 9 plan, for reference:
-- `rfork`: share or copy each part of `Files` as the flags say
-  (`NAMEG` copies the `Pgrp`, `CNAMEG` starts clean, neither shares it;
-  likewise `FDG`/`CFDG` and `ENVG`/`CENVG`); `NOMNT`; `REND`; `NOWAIT`;
-  `NOTEG`, recorded for slice 10.
-- Copy-on-write for data, bss and stack on `RFPROC` without `RFMEM`;
-  `RFMEM` shares data and bss (not the stack, as in Plan 9); text is
-  shared.
-- `qio`, then `#|` and `#s`, with per-file state on a chan.
+The slice 10 plan, for reference: notes (`notify`/`noted`, a queue per
+process, delivery on the way out, `postnote` to a pid or note group,
+interruptible sleeps and "sys: write on closed pipe"); `#p`; `alarm`
+and `tsleep`; `nsec`; `semacquire`/`tsemacquire`/`semrelease`;
+`segattach`/`segdetach`/`segfree`.
 
 **Reference boards** (`docs/HARDWARE.md`, "Booting Plan R on a board"):
 no runs until P2's exit test. P1 results, for reference:
@@ -308,9 +363,19 @@ no runs until P2's exit test. P1 results, for reference:
   slice-6 test missed it because both its threads used one stack address.
 - **Never drop an open `Chan` under a spin lock:** `Dev::close` may
   sleep once `#M` exists, so the groups take chans out under their locks
-  and drop them after. The exception is `exit` from `user_trap`, which
-  runs with interrupts off. That is fine for slice 8's devices, but it
-  will need a proper context once closes can sleep.
+  and drop them after. A fault no longer exits from the trap handler
+  with interrupts off: it posts a note, and the process exits in
+  `note::notify`, with interrupts on and nothing held.
+- **Notes, and what they do not cover yet:**
+  - A `QLock` wait cannot be cut short. A second reader of a pipe,
+    queued behind a first one that is blocked, is not interrupted or
+    killed until it gets the lock.
+  - On amd64 a note handler shares the interrupted code's x87/SSE
+    state. Plan 9's `fpunotify` saves it, but user code is soft-float
+    for now, so the kernel does not.
+  - Notes to kernel threads are refused.
+  - `#p/n/ctl` takes only `kill`.
+  - Timers run at tick resolution (10 ms).
 - **`rfork`'s group flags copy:** `RFNAMEG`, `RFFDG` and `RFENVG` give
   the child a copy; leaving them out shares the group (Plan 9's rule;
   `lib/abi` said otherwise until slice 9). `RFNOMNT` without `RFNAMEG`

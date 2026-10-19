@@ -187,7 +187,8 @@ fn shared_memory() -> Check {
 }
 
 /// Pipes keep write boundaries and partial reads, give end of file once
-/// the other end is closed, and refuse writes nothing can read.
+/// the other end is closed, and refuse writes nothing can read, with a
+/// note that ends the writer.
 fn pipes() -> Check {
     let [a, b] = r::pipe().map_err(|_| "pipe failed")?;
     write_all(a, b"hello")?;
@@ -213,7 +214,13 @@ fn pipes() -> Check {
         r::read(a, &mut buf) == Ok(0),
         "no end of file once the other end closed",
     )?;
-    fails(r::write(a, b"x"), b"i/o on hungup channel", "a write nothing can read")?;
+    // The write fails, and the note that says so ends a writer with no
+    // handler.
+    child(F::FDG, || {
+        fails(r::write(a, b"x"), b"i/o on hungup channel", "a write nothing can read")?;
+        Err("lived on past a write on a closed pipe")
+    })?;
+    reap_with(b"sys: write on closed pipe")?;
     close(a)
 }
 

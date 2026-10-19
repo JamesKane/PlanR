@@ -11,6 +11,10 @@
 //! by hand on the thread's kernel stack and calls [`syscall`]. It returns
 //! with `sysret` when it can, else through the trap exit's `iretq`.
 //!
+//! **Notes.** The frame is laid out as `abi::Ureg`, what a note handler
+//! sees. Every way back to user mode, from a system call or a trap, hands
+//! it to `note::notify` while notes wait.
+//!
 //! **GS.** In the kernel the `GS` base points at the CPU's [`Cpu`]; in user
 //! mode it is the user's. Every way in from user mode (`syscall`, or a
 //! trap whose saved CS is ring 3) runs `swapgs` first, and every way out
@@ -25,9 +29,11 @@ use core::cell::UnsafeCell;
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use abi::Ureg;
+
 use crate::port::cpu::{self, Cpu, MAXCPU};
 use crate::port::segment::{self, Access};
-use crate::port::{trap, uaccess};
+use crate::port::{note, proc, trap, uaccess};
 
 const KERNEL_CS: u16 = 0x08;
 const KERNEL_DS: u16 = 0x10;
@@ -490,6 +496,40 @@ pub(crate) struct TrapFrame {
     ss: u64,
 }
 
+const _: () = assert!(size_of::<TrapFrame>() == size_of::<Ureg>());
+const _: () = assert!(core::mem::offset_of!(TrapFrame, rip) == core::mem::offset_of!(Ureg, rip));
+const _: () = assert!(core::mem::offset_of!(TrapFrame, ss) == core::mem::offset_of!(Ureg, ss));
+
+impl TrapFrame {
+    /// The frame as a note handler sees it.
+    fn ureg(&mut self) -> &mut Ureg {
+        // SAFETY: the same 22 words in the same order (checked above).
+        unsafe { &mut *(&raw mut *self).cast::<Ureg>() }
+    }
+}
+
+/// On the way out to user mode with `f`, interrupts off: delivers a
+/// waiting note, if any. True if `f` changed.
+fn deliver_notes(f: &mut TrapFrame) -> bool {
+    if !proc::notes_waiting() {
+        return false;
+    }
+    super::spllo();
+    let changed = note::notify(f.ureg());
+    let _ = super::splhi();
+    changed
+}
+
+/// Makes registers a user's `noted` restores safe to return with: user
+/// selectors and flags, as `cur` (the frame returning now) has them.
+pub(crate) fn sanitize(u: &mut Ureg, cur: &Ureg) {
+    u.cs = cur.cs;
+    u.ss = cur.ss;
+    u.trap = cur.trap;
+    u.error = cur.error;
+    u.rflags = (u.rflags & USER_FLAGS) | USER_RFLAGS;
+}
+
 impl fmt::Display for TrapFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let regs = [
@@ -715,6 +755,9 @@ extern "C" fn trap(f: &mut TrapFrame) {
         },
         _ => trap::fatal(&ex, f, f.rip, f.rbp),
     }
+    if user {
+        deliver_notes(f);
+    }
 }
 
 /// Called from the system call entry with the frame it built, interrupts
@@ -722,17 +765,28 @@ extern "C" fn trap(f: &mut TrapFrame) {
 extern "C" fn syscall(f: &mut TrapFrame) -> bool {
     super::spllo();
     let args = [f.rdi, f.rsi, f.rdx, f.r10, f.r8, f.r9];
-    let [value, error] = crate::port::syscall::dispatch(f.rax, args);
+    let r = crate::port::syscall::dispatch(f.rax, args, f.ureg());
     let _ = super::splhi();
-    f.rax = value;
-    f.rdx = error;
+    // A frame `noted` restored keeps every register, rcx and r11 too, so
+    // it goes back by iretq.
+    let sysret = match r {
+        Some([value, error]) => {
+            f.rax = value;
+            f.rdx = error;
+            true
+        }
+        None => false,
+    };
+    deliver_notes(f);
     f.rflags = (f.rflags & USER_FLAGS) | USER_RFLAGS;
-    // What sysret loads rip and rflags from.
-    f.rcx = f.rip;
-    f.r11 = f.rflags;
+    if sysret {
+        // What sysret loads rip and rflags from.
+        f.rcx = f.rip;
+        f.r11 = f.rflags;
+    }
     // sysret faults in ring 0 on a non-canonical rip, so keep it to the
     // user half proper.
-    f.rip < uaccess::USER_TOP
+    sysret && f.rip < uaccess::USER_TOP
 }
 
 /// The bytes of the frame a system call builds at the top of the kernel

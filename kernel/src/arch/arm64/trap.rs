@@ -13,14 +13,21 @@
 //! pointer within one has bit 16 clear (see `port/mm.rs`). If the frame's
 //! address has it set, the vector switches to this CPU's overflow stack
 //! before saving anything, and the handler reports the overflow.
+//!
+//! **Notes.** The frame is laid out as `abi::Ureg`, what a note handler
+//! sees, but for `sp`: the frame holds the kernel's, and `SP_EL0` the
+//! user's. Every way back to EL0 puts the user's in the frame, hands it
+//! to `note::notify` while notes wait, and loads `SP_EL0` from it after.
 
 use core::arch::{asm, global_asm};
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use abi::Ureg;
+
 use crate::port::cpu::MAXCPU;
 use crate::port::segment::{self, Access};
-use crate::port::{mm, trap};
+use crate::port::{mm, note, proc, trap};
 
 /// The saved state of the interrupted code, as the entry path builds it.
 #[repr(C)]
@@ -48,6 +55,48 @@ const FP_OFFSET: usize = 304;
 const FRAME_BYTES: usize = FP_OFFSET + 32 * 16 + 16;
 const _: () = assert!(core::mem::offset_of!(TrapFrame, q) == FP_OFFSET);
 const _: () = assert!(size_of::<TrapFrame>() == FRAME_BYTES);
+const _: () = assert!(size_of::<TrapFrame>() == size_of::<Ureg>());
+const _: () = assert!(core::mem::offset_of!(TrapFrame, sp) == core::mem::offset_of!(Ureg, sp));
+const _: () = assert!(core::mem::offset_of!(TrapFrame, q) == core::mem::offset_of!(Ureg, v));
+
+impl TrapFrame {
+    /// The frame as a note handler sees it, with the user stack pointer
+    /// in place of the kernel's, for `f` to change; `SP_EL0` is loaded
+    /// from it after. Interrupts may be on in `f`: a switch keeps `SP_EL0`.
+    fn with_ureg<R>(&mut self, f: impl FnOnce(&mut Ureg) -> R) -> R {
+        // SAFETY: reads EL0's register.
+        unsafe { asm!("mrs {}, sp_el0", out(reg) self.sp, options(nomem, nostack, preserves_flags)) };
+        // SAFETY: the same layout (checked above).
+        let r = f(unsafe { &mut *(&raw mut *self).cast::<Ureg>() });
+        // SAFETY: EL0's register; the kernel runs on SP_EL1.
+        unsafe { asm!("msr sp_el0, {}", in(reg) self.sp, options(nomem, nostack, preserves_flags)) };
+        r
+    }
+}
+
+/// On the way out to EL0 with `f`, interrupts off: delivers a waiting
+/// note, if any.
+fn deliver_notes(f: &mut TrapFrame) {
+    if !proc::notes_waiting() {
+        return;
+    }
+    super::spllo();
+    f.with_ureg(note::notify);
+    let _ = super::splhi();
+}
+
+/// The condition flags, all `SPSR_EL1` may change from EL0.
+const SPSR_NZCV: u64 = 0xf000_0000;
+
+/// Makes registers a user's `noted` restores safe to return with: EL0,
+/// nothing masked, only the condition flags its own; the trap's details
+/// as `cur` has them.
+pub(crate) fn sanitize(u: &mut Ureg, cur: &Ureg) {
+    u.psr &= SPSR_NZCV;
+    u.esr = cur.esr;
+    u.far = cur.far;
+    u.vector = cur.vector;
+}
 
 /// The `vector` a frame built on the overflow stack carries: which vector
 /// was taken is lost, but an overflow is a synchronous abort.
@@ -516,6 +565,9 @@ extern "C" fn trap(f: &mut TrapFrame) {
         },
         _ => trap::fatal(&ex, f, f.elr, f.x[29]),
     }
+    if origin == Origin::User {
+        deliver_notes(f);
+    }
 }
 
 /// A system call: the number in x8, arguments in x0-x5, results back in
@@ -523,10 +575,13 @@ extern "C" fn trap(f: &mut TrapFrame) {
 fn syscall(f: &mut TrapFrame) {
     super::spllo();
     let args = [f.x[0], f.x[1], f.x[2], f.x[3], f.x[4], f.x[5]];
-    let [value, error] = crate::port::syscall::dispatch(f.x[8], args);
+    let number = f.x[8];
+    let r = f.with_ureg(|u| crate::port::syscall::dispatch(number, args, u));
     let _ = super::splhi();
-    f.x[0] = value;
-    f.x[1] = error;
+    if let Some([value, error]) = r {
+        f.x[0] = value;
+        f.x[1] = error;
+    }
 }
 
 /// Copies the user frame of the system call being made, at the top of the

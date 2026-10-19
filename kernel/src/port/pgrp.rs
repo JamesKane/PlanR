@@ -7,6 +7,7 @@
 //! ([`Files::fork`]), so each locks itself. A lock is a spin lock held only to look or swap:
 //! nothing that might sleep, closing a chan included, happens under one.
 
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -27,6 +28,17 @@ use crate::port::proc::{self, Rgrp};
 pub(crate) struct Mount {
     pub(crate) to: Arc<Chan>,
     pub(crate) create: bool,
+}
+
+/// A member of a union, as [`Pgrp::describe`] gives it.
+#[derive(Debug)]
+pub(crate) struct Member {
+    pub(crate) name: String,
+    /// Creates in the union go to it.
+    pub(crate) create: bool,
+    /// It is the mount point itself, in a union made by `BEFORE` or
+    /// `AFTER`.
+    pub(crate) itself: bool,
 }
 
 /// A mount point and the union mounted on it.
@@ -140,6 +152,27 @@ impl Pgrp {
         drop(mounts);
         drop((old_head, old_members));
         Ok(())
+    }
+
+    /// The table, for `#p/n/ns`: each mount point's name and its union's
+    /// members.
+    pub(crate) fn describe(&self) -> Vec<(String, Vec<Member>)> {
+        self.mounts
+            .lock()
+            .iter()
+            .map(|m| {
+                let members = m
+                    .members
+                    .iter()
+                    .map(|u| Member {
+                        name: u.to.name.clone(),
+                        create: u.create,
+                        itself: u.to.same_file(&m.from),
+                    })
+                    .collect();
+                (m.from.name.clone(), members)
+            })
+            .collect()
     }
 
     /// Unmounts `new` from `old`, or everything mounted there if `new` is

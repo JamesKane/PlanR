@@ -20,7 +20,7 @@ use bootinfo::{BootInfo, EntryLevel, RegionKind};
 use port::config::{self, Config, TestMode};
 use port::console::{self, ConsoleSource};
 use port::early::{self, Stage};
-use port::{acpi, clock, cpu, devroot, devrtc, intr, ktest, mm, trap};
+use port::{acpi, clock, cpu, devroot, devrtc, intr, ktest, mm, timer, trap};
 
 /// Marker lines `cargo xtask test` scans the serial log for.
 const OK_MARKER: &str = "kernel: ok";
@@ -118,6 +118,7 @@ extern "C" fn boot_main(info: usize) -> ! {
         Ok(counter_hz) => {
             clock::init(counter_hz);
             clock::start();
+            timer::start();
             arch::spllo();
             println!("clock: ticking at {} Hz", clock::HZ);
             cpu::start_others(acpi.as_ref().ok());

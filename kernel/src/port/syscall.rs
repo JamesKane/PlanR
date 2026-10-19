@@ -6,20 +6,21 @@
 //! it may sleep. A failure sets the thread's error text, which `errstr`
 //! fetches, and returns the error word. Calls that never return (`exits`,
 //! `exec`) leave nothing on the stack that needs dropping: the dispatcher
-//! holds no reference to the thread while a call runs.
+//! holds no reference to the thread while a call runs. A call that blocks
+//! may be cut short by a note, and fails with "interrupted".
 
 use alloc::vec::Vec;
 use core::fmt;
 
-use abi::{ERRMAX, Failed, RforkFlags, Sys};
+use abi::{ERRMAX, Failed, RforkFlags, SegAttr, Sys, Ureg};
 
-use crate::port::error::{EBADARG, ENOMEM, Error};
+use crate::port::error::{EBADARG, EINTR, ENOMEM, Error};
+use crate::port::note::{self, From};
 use crate::port::pgrp::{self, NameSpace};
-use crate::port::proc;
-use crate::port::segment::SegError;
+use crate::port::proc::{self, Rendez, Woke};
+use crate::port::segment::{Kind, SegError};
 use crate::port::uaccess::{self, BadAddress};
-use crate::port::{clock, exec, sysfile};
-use crate::println;
+use crate::port::{clock, devrtc, exec, sema, sysfile};
 
 const EBADSYS: &str = "bad system call";
 const ENOTYET: &str = "system call not yet implemented";
@@ -29,10 +30,15 @@ const ESOVERLAP: &str = "segments overlap";
 type SysResult = Result<u64, Error>;
 
 /// Runs system call `number` for the calling thread and returns the
-/// register pair its caller sees.
-pub(crate) fn dispatch(number: u64, args: [u64; abi::MAX_ARGS]) -> [u64; 2] {
+/// register pair its caller sees, or `None` if the call replaced the
+/// registers it returns with, `u` (`noted`).
+pub(crate) fn dispatch(number: u64, args: [u64; abi::MAX_ARGS], u: &mut Ureg) -> Option<[u64; 2]> {
     let [a0, a1, a2, a3, ..] = args;
     let r = match Sys::from_raw(number) {
+        Some(Sys::Noted) => match note::noted(a0, u) {
+            Ok(()) => return None,
+            Err(e) => Err(e),
+        },
         Some(Sys::Open) => sysfile::open(a0, a1),
         Some(Sys::Create) => sysfile::create(a0, a1, a2),
         Some(Sys::Close) => sysfile::close(a0),
@@ -61,15 +67,25 @@ pub(crate) fn dispatch(number: u64, args: [u64; abi::MAX_ARGS]) -> [u64; 2] {
         Some(Sys::Brk) => brk(args[0]),
         Some(Sys::Settls) => settls(args[0]),
         Some(Sys::Sleep) => sleep(args[0]),
+        Some(Sys::Alarm) => Ok(alarm(a0)),
+        Some(Sys::Nsec) => Ok(devrtc::nanoseconds()),
+        Some(Sys::Notify) => note::set_handler(a0).map(|()| 0),
+        Some(Sys::Semacquire) => sema::acquire(a0, a1 != 0, None).map(u64::from),
+        Some(Sys::Tsemacquire) => tsemacquire(a0, a1),
+        Some(Sys::Semrelease) => sema::release(a0, a1),
+        Some(Sys::Segattach) => segattach(a0, a1, a2, a3),
+        Some(Sys::Segdetach) => segdetach(a0),
+        Some(Sys::Segfree) => segfree(a0, a1),
+        Some(Sys::Segflush) => segflush(a0, a1),
         Some(_) => Err(Error::from(ENOTYET)),
         None => Err(Error::from(EBADSYS)),
     };
-    abi::encode(r.map_err(|e| {
+    Some(abi::encode(r.map_err(|e| {
         let mut e = e.as_str().as_bytes().to_vec();
         e.truncate(ERRMAX - 1);
         *me().errstr().lock() = e;
         Failed
-    }))
+    })))
 }
 
 fn me() -> alloc::sync::Arc<proc::Proc> {
@@ -144,7 +160,7 @@ fn rfork(flags: u64) -> SysResult {
 fn rendezvous(tag: u64, value: u64) -> SysResult {
     let rgrp = pgrp::rgrp()?;
     let s = proc::sleepable().expect("a system call may sleep");
-    Ok(rgrp.rendezvous(&s, tag, value))
+    rgrp.rendezvous(&s, tag, value)
 }
 
 /// `exec(name, argv)`: replaces the thread's program, closing the
@@ -153,6 +169,11 @@ fn exec(name: u64, argv: u64) -> SysResult {
     let name = sysfile::name_arg(name)?;
     let argv = read_argv(argv)?;
     let l = exec::load(&NameSpace::current()?, &name, &argv)?;
+    if let Some(old) = me().memory() {
+        l.mem.inherit(&old).map_err(|_| ESOVERLAP)?;
+    }
+    me().set_args(&argv);
+    me().notes().lock().exec();
     drop((name, argv));
     drop(pgrp::fgrp()?.close_on_exec());
     proc::exec(l.mem, l.name, l.pc, l.sp)
@@ -190,7 +211,7 @@ fn await_(buf: u64, n: u64) -> SysResult {
     let n = usize::try_from(n).map_err(|_| EBADARG)?.min(4 * ERRMAX);
     uaccess::check(buf, n)?;
     let s = proc::sleepable().expect("a system call may sleep");
-    let w = proc::await_child(&s).ok_or(ENOCHILD)?;
+    let w = proc::await_child(&s)?.ok_or(ENOCHILD)?;
     let mut text = alloc::vec![0u8; n];
     let len = abi::format_waitmsg(w.pid, w.times, &w.msg, &mut text);
     uaccess::copy_out(buf, &text[..len])?;
@@ -214,31 +235,88 @@ fn settls(addr: u64) -> SysResult {
     Ok(0)
 }
 
+/// The counter time `ms` milliseconds from now.
+fn after_ms(ms: u64) -> u64 {
+    clock::now_ns().saturating_add(ms.saturating_mul(1_000_000))
+}
+
 /// `sleep(ms)`: gives up the processor for at least `ms` milliseconds;
-/// `sleep(0)` just yields. Until timed sleep arrives with `alarm`, a
-/// longer sleep yields repeatedly until the time has passed.
+/// `sleep(0)` just yields.
 fn sleep(ms: u64) -> SysResult {
-    let end = clock::now_ns().saturating_add(ms.saturating_mul(1_000_000));
-    loop {
+    if ms == 0 {
         proc::yield_now();
-        if clock::now_ns() >= end {
-            return Ok(0);
-        }
-        crate::arch::idle();
+        return Ok(0);
+    }
+    let s = proc::sleepable().expect("a system call may sleep");
+    match Rendez::new().tsleep(&s, || false, after_ms(ms), true) {
+        Woke::Interrupted => Err(Error::from(EINTR)),
+        _ => Ok(0),
     }
 }
 
+/// `alarm(ms)`: posts the note `alarm` in `ms` milliseconds (none if 0),
+/// in place of any alarm set before; returns the milliseconds that one
+/// had left.
+fn alarm(ms: u64) -> u64 {
+    let now = clock::now_ns();
+    let old = me().set_alarm(if ms == 0 { 0 } else { after_ms(ms) });
+    old.saturating_sub(now).div_ceil(1_000_000)
+}
+
+/// `tsemacquire(addr, ms)`: `semacquire` waiting at most `ms`.
+fn tsemacquire(addr: u64, ms: u64) -> SysResult {
+    sema::acquire(addr, ms > 0, Some(after_ms(ms))).map(u64::from)
+}
+
+fn seg_error(e: SegError) -> Error {
+    match e {
+        SegError::BadAddress => Error::from(EBADARG),
+        SegError::Overlap => Error::from(ESOVERLAP),
+    }
+}
+
+/// `segattach(attr, class, va, len) -> va`.
+fn segattach(attr: u64, class: u64, va: u64, len: u64) -> SysResult {
+    let attr = SegAttr::from_bits(attr).ok_or(EBADARG)?;
+    let kind = match sysfile::name_arg(class)?.as_str() {
+        "shared" => Kind::Shared,
+        "memory" => Kind::Memory,
+        _ => return Err(Error::from("bad segment type")),
+    };
+    let mem = me().memory().ok_or(EBADARG)?;
+    mem.attach(kind, attr, va, len).map_err(seg_error)
+}
+
+/// `segdetach(va)`.
+fn segdetach(va: u64) -> SysResult {
+    let mem = me().memory().ok_or(EBADARG)?;
+    mem.detach(va).map(|()| 0).map_err(seg_error)
+}
+
+/// `segfree(va, len)`.
+fn segfree(va: u64, len: u64) -> SysResult {
+    let mem = me().memory().ok_or(EBADARG)?;
+    mem.free(va, len).map(|()| 0).map_err(seg_error)
+}
+
+/// `segflush(va, len)`: nothing to do once the range is checked, since
+/// only text is executable and the kernel fills it coherently.
+fn segflush(va: u64, len: u64) -> SysResult {
+    let mem = me().memory().ok_or(EBADARG)?;
+    if !mem.covers(va, len) {
+        return Err(Error::from(EBADARG));
+    }
+    Ok(0)
+}
+
 /// Called when user code traps for any reason but a system call or an
-/// interrupt: ends the thread, as Plan 9 would once the note went
-/// unhandled. Interrupts are off.
-pub(crate) fn user_trap(what: &dyn fmt::Display, pc: u64) -> ! {
+/// interrupt: posts the note that says so, which ends the thread unless
+/// its handler takes it. Interrupts are off.
+pub(crate) fn user_trap(what: &dyn fmt::Display, pc: u64) {
     let msg = alloc::format!("sys: trap: {what} pc={pc:#x}");
     if let Some(me) = proc::current() {
-        println!("{} {}: {msg}", me.pid(), me.name());
+        note::post(&me, msg.as_bytes(), From::Kernel);
     }
-    let mut status = msg.into_bytes();
-    status.truncate(ERRMAX - 1);
-    proc::exits(status)
 }
 
 /// Tests run by [`crate::port::ktest`].

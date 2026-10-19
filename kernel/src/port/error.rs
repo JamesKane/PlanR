@@ -69,3 +69,6 @@ pub(crate) const ENOMEM: &str = "out of memory";
 pub(crate) const EHUNGUP: &str = "i/o on hungup channel";
 pub(crate) const ESHUTDOWN: &str = "device shut down";
 pub(crate) const ENOATTACH: &str = "mount/attach disallowed";
+pub(crate) const EINTR: &str = "interrupted";
+pub(crate) const EPROCDIED: &str = "process exited";
+pub(crate) const EBADCTL: &str = "bad process or channel control request";

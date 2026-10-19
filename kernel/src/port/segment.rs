@@ -14,7 +14,8 @@
 //! on a buffer not yet touched works.
 //!
 //! **Sharing.** A segment may belong to several memories, as `rfork`
-//! leaves them: text always, data and bss with `RFMEM`. Each memory's
+//! leaves them: text and attached shared segments always, data, bss and
+//! attached memory with `RFMEM`. Each memory's
 //! space maps the segment's pages as they are touched there, and the
 //! segment keeps a list of those spaces, so that a page it gives up or
 //! replaces is cleared from all of them. The stack is never shared.
@@ -25,6 +26,11 @@
 //! both copies copy-on-write: mapped read-only. A write fault on such a
 //! page copies the frame if anything else still holds it, or else just
 //! takes it back; either way the page is then the writer's alone.
+//!
+//! **Attaching.** `segattach` adds a segment of zeros, of class `shared`
+//! (shared by every child) or `memory` (copied as data is), anywhere free
+//! in the user half; `segdetach` takes one away again. Both survive
+//! `exec` unless attached with `CEXEC`.
 //!
 //! **Freeing.** A frame goes back when the last page holding it lets go:
 //! after the page was cleared from every space and flushed ([`Pending`]),
@@ -40,7 +46,9 @@ use alloc::collections::BTreeMap;
 use alloc::collections::btree_map::Entry;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use core::sync::atomic::AtomicU64;
 
+use abi::SegAttr;
 use bootinfo::phys_to_virt;
 
 use crate::arch;
@@ -63,25 +71,40 @@ pub(crate) enum Kind {
     Bss,
     /// The stack: read-write.
     Stack,
+    /// Attached (`segattach`), shared by every child.
+    Shared,
+    /// Attached, copied for a child as data is.
+    Memory,
 }
 
 impl Kind {
-    /// How a page of the segment is mapped, read-only if `cow`.
-    fn map_kind(self, cow: bool) -> MapKind {
+    /// The name `#p/n/segment` gives it.
+    pub(crate) fn name(self) -> &'static str {
         match self {
-            Kind::Text => MapKind::UserText,
-            Kind::Data | Kind::Bss | Kind::Stack if cow => MapKind::UserReadOnly,
-            Kind::Data | Kind::Bss | Kind::Stack => MapKind::UserReadWrite,
+            Kind::Text => "Text",
+            Kind::Data => "Data",
+            Kind::Bss => "Bss",
+            Kind::Stack => "Stack",
+            Kind::Shared => "Shared",
+            Kind::Memory => "Memory",
         }
     }
 
-    fn allows(self, access: Access) -> bool {
-        match access {
-            Access::Read => true,
-            Access::Write => self != Kind::Text,
-            Access::Exec => self == Kind::Text,
-        }
+    fn attached(self) -> bool {
+        matches!(self, Kind::Shared | Kind::Memory)
     }
+}
+
+/// A segment as `#p/n/segment` lists it.
+#[derive(Debug, Clone)]
+pub(crate) struct SegInfo {
+    pub(crate) kind: Kind,
+    pub(crate) ronly: bool,
+    pub(crate) cexec: bool,
+    pub(crate) base: u64,
+    pub(crate) top: u64,
+    /// The memories holding it.
+    pub(crate) refs: usize,
 }
 
 /// What a faulting access tried to do.
@@ -184,6 +207,10 @@ struct Page {
 #[derive(Debug)]
 pub(crate) struct Segment {
     kind: Kind,
+    /// Never written (an attached segment's `RONLY`); text never is.
+    ronly: bool,
+    /// Detached by `exec`.
+    cexec: bool,
     base: u64,
     /// Bytes that belong at `image_at`, filling the pages they overlap.
     image: Image,
@@ -250,6 +277,8 @@ impl Segment {
         );
         Segment {
             kind,
+            ronly: false,
+            cexec: false,
             base,
             image,
             image_at,
@@ -258,6 +287,23 @@ impl Segment {
                 pages: BTreeMap::new(),
                 spaces: Vec::new(),
             }),
+        }
+    }
+
+    /// How a page of the segment is mapped, read-only if `cow`.
+    fn map_kind(&self, cow: bool) -> MapKind {
+        match self.kind {
+            Kind::Text => MapKind::UserText,
+            _ if cow || self.ronly => MapKind::UserReadOnly,
+            _ => MapKind::UserReadWrite,
+        }
+    }
+
+    fn allows(&self, access: Access) -> bool {
+        match access {
+            Access::Read => true,
+            Access::Write => self.kind != Kind::Text && !self.ronly,
+            Access::Exec => self.kind == Kind::Text,
         }
     }
 
@@ -307,7 +353,7 @@ impl Segment {
         if !(self.base <= page && page < inner.top) {
             return Err(FaultError::NoSegment);
         }
-        if !self.kind.allows(access) {
+        if !self.allows(access) {
             return Err(FaultError::Denied);
         }
         let p = match inner.pages.entry(page) {
@@ -340,7 +386,7 @@ impl Segment {
             }
             p.cow = false;
         }
-        let (frame, kind) = (p.frame.0, self.kind.map_kind(p.cow));
+        let (frame, kind) = (p.frame.0, self.map_kind(p.cow));
         if moved {
             inner.clear(page, pending);
         }
@@ -380,6 +426,8 @@ impl Segment {
         }
         Segment {
             kind: self.kind,
+            ronly: self.ronly,
+            cexec: self.cexec,
             base: self.base,
             image: self.image.clone(),
             image_at: self.image_at,
@@ -468,9 +516,9 @@ impl Memory {
             let mut copies = Vec::with_capacity(segs.len());
             for s in segs.iter() {
                 let seg = match s.kind {
-                    Kind::Text => s.clone(),
-                    Kind::Data | Kind::Bss if share => s.clone(),
-                    Kind::Data | Kind::Bss | Kind::Stack => Arc::new(s.copy(&mut pending)),
+                    Kind::Text | Kind::Shared => s.clone(),
+                    Kind::Data | Kind::Bss | Kind::Memory if share => s.clone(),
+                    Kind::Data | Kind::Bss | Kind::Memory | Kind::Stack => Arc::new(s.copy(&mut pending)),
                 };
                 child.join(&seg);
                 copies.push(seg);
@@ -634,7 +682,198 @@ impl Memory {
         pending.finish();
         Ok(())
     }
+
+    /// `segattach`: adds a segment of `kind` (attached: shared or memory)
+    /// of `len` bytes rounded up to pages, at `va` rounded down to one, or,
+    /// if `va` is 0, at the highest free place below the stack; returns
+    /// its base.
+    pub(crate) fn attach(&self, kind: Kind, attr: SegAttr, va: u64, len: u64) -> Result<u64, SegError> {
+        assert!(kind.attached(), "only shared and memory segments attach");
+        let len = len
+            .checked_next_multiple_of(PAGE)
+            .filter(|&l| l > 0)
+            .ok_or(SegError::BadAddress)?;
+        let mut segs = self.segs.lock();
+        let base = if va == 0 {
+            // Down from the stack, below each segment in the way.
+            let mut top = segs
+                .iter()
+                .find(|s| s.kind == Kind::Stack)
+                .map_or(uaccess::USER_TOP, |s| s.base);
+            loop {
+                let base = top.checked_sub(len).filter(|&b| b >= LOWEST).ok_or(SegError::Overlap)?;
+                match segs.iter().rev().find(|s| s.base < top && base < s.top()) {
+                    Some(s) => top = s.base,
+                    None => break base,
+                }
+            }
+        } else {
+            va & !(PAGE - 1)
+        };
+        let top = base.checked_add(len).ok_or(SegError::Overlap)?;
+        if base < LOWEST || top > uaccess::USER_TOP || segs.iter().any(|s| s.base < top && base < s.top()) {
+            return Err(SegError::Overlap);
+        }
+        let mut seg = Segment::new(kind, base, top, Image::NONE, 0);
+        seg.ronly = attr.contains(SegAttr::RONLY);
+        seg.cexec = attr.contains(SegAttr::CEXEC);
+        let seg = Arc::new(seg);
+        self.join(&seg);
+        let at = segs.partition_point(|s| s.base < base);
+        segs.insert(at, seg);
+        Ok(base)
+    }
+
+    /// `segdetach`: takes away the attached segment holding `va`; its pages
+    /// leave this memory's space, and go once no other memory holds it.
+    /// Must be called with no spin lock held.
+    pub(crate) fn detach(&self, va: u64) -> Result<(), SegError> {
+        let mut pending = Pending::default();
+        let gone = {
+            let mut segs = self.segs.lock();
+            let i = segs
+                .iter()
+                .position(|s| s.kind.attached() && s.base <= va && va < s.top())
+                .ok_or(SegError::BadAddress)?;
+            let seg = segs.remove(i);
+            let mut inner = seg.inner.lock();
+            let me = Arc::as_ptr(&self.space);
+            inner.spaces.retain(|w| w.as_ptr() != me);
+            let mut cleared = false;
+            for &va in inner.pages.keys() {
+                cleared |= self.space.clear(va).is_some();
+            }
+            if cleared {
+                pending.flush(self.space.clone(), seg.base, (inner.top - seg.base) / PAGE);
+            }
+            drop(inner);
+            seg
+        };
+        pending.finish();
+        drop(gone);
+        Ok(())
+    }
+
+    /// `segfree`: lets go of the pages wholly inside `[va, va + len)`,
+    /// which read as zeros (or their image) when next touched. Must be
+    /// called with no spin lock held.
+    pub(crate) fn free(&self, va: u64, len: u64) -> Result<(), SegError> {
+        let from = va.checked_next_multiple_of(PAGE).ok_or(SegError::BadAddress)?;
+        let to = va.checked_add(len).ok_or(SegError::BadAddress)? & !(PAGE - 1);
+        let mut pending = Pending::default();
+        {
+            let segs = self.segs.lock();
+            for s in segs.iter().filter(|s| s.base < to && from < s.top()) {
+                let mut inner = s.inner.lock();
+                let gone: Vec<u64> = inner.pages.range(from..to).map(|(&va, _)| va).collect();
+                for va in gone {
+                    inner.clear(va, &mut pending);
+                    if let Some(p) = inner.pages.remove(&va) {
+                        pending.free.push(p.frame);
+                    }
+                }
+            }
+        }
+        pending.finish();
+        Ok(())
+    }
+
+    /// True if segments cover all of `[va, va + len)` (`segflush`).
+    pub(crate) fn covers(&self, va: u64, len: u64) -> bool {
+        let Some(end) = va.checked_add(len) else {
+            return false;
+        };
+        let segs = self.segs.lock();
+        let mut at = va;
+        while at < end {
+            match segs.iter().find(|s| s.base <= at && at < s.top()) {
+                Some(s) => at = s.top(),
+                None => return false,
+            }
+        }
+        true
+    }
+
+    /// Takes over `old`'s attached segments that `exec` keeps: those not
+    /// attached with `CEXEC`.
+    pub(crate) fn inherit(&self, old: &Memory) -> Result<(), SegError> {
+        let kept: Vec<Arc<Segment>> = old
+            .segs
+            .lock()
+            .iter()
+            .filter(|s| s.kind.attached() && !s.cexec)
+            .cloned()
+            .collect();
+        let mut segs = self.segs.lock();
+        for seg in kept {
+            if segs.iter().any(|s| s.base < seg.top() && seg.base < s.top()) {
+                return Err(SegError::Overlap);
+            }
+            self.join(&seg);
+            let at = segs.partition_point(|s| s.base < seg.base);
+            segs.insert(at, seg);
+        }
+        Ok(())
+    }
+
+    /// The segments, for `#p/n/segment`.
+    pub(crate) fn info(&self) -> Vec<SegInfo> {
+        self.segs
+            .lock()
+            .iter()
+            .map(|s| SegInfo {
+                kind: s.kind,
+                ronly: s.ronly,
+                cexec: s.cexec,
+                base: s.base,
+                top: s.top(),
+                refs: Arc::strong_count(s) - 1,
+            })
+            .collect()
+    }
+
+    /// Runs `f` on the word at `va`, 8-byte aligned, made writable first,
+    /// under its segment's lock; returns what `f` did and the segment's
+    /// identity, which names the word with `va` across the memories that
+    /// share it. Must be called with no spin lock held.
+    pub(crate) fn with_word<R>(&self, va: u64, f: impl FnOnce(&AtomicU64) -> R) -> Result<(R, usize), BadAddress> {
+        uaccess::check(va, 8)?;
+        if !va.is_multiple_of(8) {
+            return Err(BadAddress);
+        }
+        let seg = self.segment_at(va).ok_or(BadAddress)?;
+        let mut pending = Pending::default();
+        let r = {
+            let mut inner = seg.inner.lock();
+            seg.resolve(&mut inner, &self.space, va & !(PAGE - 1), Access::Write, &mut pending)
+                .map(|frame| {
+                    // SAFETY: the frame is the segment's, written only as
+                    // whole aligned words through `AtomicU64`s here and by
+                    // user code, and it stays while the segment is locked.
+                    f(unsafe { &*((phys_to_virt(frame) + va % PAGE) as *const AtomicU64) })
+                })
+        };
+        pending.finish();
+        Ok((r.map_err(|_| BadAddress)?, Arc::as_ptr(&seg) as usize))
+    }
+
+    /// Runs `f` on the word at `va` if its page is there and the
+    /// segment's own (as [`with_word`](Memory::with_word) leaves it),
+    /// changing nothing else, so it may run under a spin lock.
+    pub(crate) fn peek_word<R>(&self, va: u64, f: impl FnOnce(&AtomicU64) -> R) -> Option<R> {
+        let seg = self.segment_at(va)?;
+        let inner = seg.inner.lock();
+        let p = inner.pages.get(&(va & !(PAGE - 1))).filter(|p| !p.cow)?;
+        // SAFETY: as for `with_word`.
+        Some(f(unsafe {
+            &*((phys_to_virt(p.frame.0) + va % PAGE) as *const AtomicU64)
+        }))
+    }
 }
+
+/// Nothing is attached below this, so null pointers and small offsets
+/// from them always fault (as `exec` leaves the bottom of the user half).
+const LOWEST: u64 = 0x1_0000;
 
 /// Resolves a fault on user address `addr` in the running process's
 /// memory: true if the page is now mapped and the access should be retried.

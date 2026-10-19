@@ -177,7 +177,9 @@ pub(crate) fn spawn(name: &str, argv: &[&str], pri: usize) -> Result<Arc<Proc>> 
         pri,
         wired: None,
     };
-    proc::spawn_user(how, l.mem, files, l.pc, l.sp, l.sp).ok_or_else(|| ENOMEM.into())
+    let p = proc::spawn_user(how, l.mem, files, l.pc, l.sp, l.sp).ok_or(ENOMEM)?;
+    p.set_args(&argv);
+    Ok(p)
 }
 
 /// Tests run by [`crate::port::ktest`].
@@ -214,6 +216,7 @@ pub(crate) mod ktests {
         ("/boot/tfault", &["tfault", "stack"], Want::Trap),
         ("/boot/tfile", &["tfile"], Want::Status("targs from env")),
         ("/boot/tproc", &["tproc"], Want::Normal),
+        ("/boot/tnote", &["tnote"], Want::Normal),
     ];
 
     /// Each child's pid and its wait message, as `await` formats it.
@@ -244,11 +247,11 @@ pub(crate) mod ktests {
             let mut waits = Vec::new();
             for _ in 0..pids.len() {
                 match proc::await_child(&sl) {
-                    Some(w) => waits.push((w.pid, wait_text(&w))),
-                    None => r = Err("await found no child"),
+                    Ok(Some(w)) => waits.push((w.pid, wait_text(&w))),
+                    _ => r = Err("await found no child"),
                 }
             }
-            if proc::await_child(&sl).is_some() {
+            if !matches!(proc::await_child(&sl), Ok(None)) {
                 r = Err("await found a child too many");
             }
             *o.lock() = Some((waits, pids, r));

@@ -261,7 +261,7 @@ pub(crate) unsafe fn enter_user(pc: u64, sp: u64, arg: u64, top: u64) -> ! {
     }
 }
 
-pub(crate) use super::trap::{fork_frame, resume_user};
+pub(crate) use super::trap::{fork_frame, resume_user, sanitize};
 
 /// Nothing to do: an exception from EL0 is taken on `SP_EL1`, which is
 /// the top of the thread's kernel stack whenever it is in user mode
