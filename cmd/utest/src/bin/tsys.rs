@@ -1,7 +1,7 @@
 //! libr's system layer, in a real process: directory entries, the
 //! environment, `exec` through `$path`, `wait`, `postnote`, the pid and
-//! the time. `init` runs it with its name space (`/dev`, `/env`, `/proc`)
-//! built.
+//! the time. `/sys/test/run` runs it in the name space `/lib/namespace`
+//! builds (`/dev`, `/env`, `/proc`).
 
 #![no_std]
 #![no_main]
@@ -41,8 +41,8 @@ fn dirs() -> Check {
     let f = r::dirfstat(fd).map_err(|_| "dirfstat failed")?;
     r::close(fd).map_err(|_| "close failed")?;
     ensure(f.is_dir(), "dirfstat of /dev")?;
-    // `#c`, `#r` and `#P` are all bound there.
-    for want in ["cons", "consctl", "pid", "rtc", "cputype"] {
+    // `#c` and `#P` are both bound there.
+    for want in ["cons", "consctl", "pid", "cputype"] {
         ensure(all.iter().any(|d| d.name == want), "an entry missing from /dev")?;
     }
     // The devices here take no wstat; the error is theirs, not ours.
@@ -90,10 +90,10 @@ fn run_child(name: &[u8], argv: &[&core::ffi::CStr]) -> Result<Vec<u8>, &'static
 }
 
 fn exec_path() -> Check {
-    r::putenv_list(b"path", &[b"/nowhere", b"/boot"]).map_err(|_| "putenv path failed")?;
+    r::putenv_list(b"path", &[b"/nowhere", b"/bin"]).map_err(|_| "putenv path failed")?;
     let s = run_child(b"targs", &[c"targs", c"via", c"path"])?;
     ensure(s == b"targs via path", "targs through $path")?;
-    let s = run_child(b"/boot/targs", &[c"targs", c"rooted"])?;
+    let s = run_child(b"/bin/targs", &[c"targs", c"rooted"])?;
     ensure(s == b"targs rooted", "targs by its full name")?;
     let s = run_child(b"nonesuch", &[c"nonesuch"])?;
     ensure(s == b"file does not exist", "a command that is nowhere")?;

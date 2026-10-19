@@ -1,5 +1,5 @@
-//! `ramfs` through the kernel: the one `init` mounted on `/tmp`, and a
-//! second one posted in `/srv` and mounted twice. Files written, read,
+//! `ramfs` through the kernel: the one `/sys/test/run` mounted on `/tmp`,
+//! and a second one posted in `/srv` and mounted twice. Files written, read,
 //! truncated and renamed (`dirwstat`), permissions, directories read
 //! across several messages, a megabyte file, `ORCLOSE`, a removed file
 //! still open (gone, as on Plan 9), two processes writing at once, and
@@ -247,7 +247,7 @@ fn ramfs(argv: &[&CStr]) -> Check {
     match r::rfork(F::PROC | F::FDG) {
         Err(_) => Err("rfork failed"),
         Ok(0) => {
-            let e = r::exec(c"/boot/ramfs", argv);
+            let e = r::exec(c"/bin/ramfs", argv);
             r::exits(Some(e.as_bytes()))
         }
         Ok(pid) => {
@@ -264,7 +264,8 @@ fn second() -> Check {
     ramfs(&[c"ramfs", c"-S", c"tramfs"])?;
     let fd = r::open(c"/srv/tramfs", RDWR).map_err(|_| "open /srv/tramfs failed")?;
     r::mount(fd, None, c"/n", BindFlags::CREATE, c"").map_err(|_| "mount from /srv failed")?;
-    r::close(fd).map_err(|_| "close failed")?;
+    // The mount closed it, as Plan 9's does.
+    fails(r::close(fd), b"fd out of range or not open", "mount left its fd open")?;
     put(c"/n/file", b"in the second")?;
     fails(
         r::dirstat(c"/tmp/file"),
@@ -273,7 +274,8 @@ fn second() -> Check {
     )?;
     let fd = r::open(c"/srv/tramfs", RDWR).map_err(|_| "open /srv/tramfs failed")?;
     r::mount(fd, None, c"/mnt", BindFlags::empty(), c"").map_err(|_| "mount from /srv failed")?;
-    r::close(fd).map_err(|_| "close failed")?;
+    // The mount closed it, as Plan 9's does.
+    fails(r::close(fd), b"fd out of range or not open", "mount left its fd open")?;
     ensure(get(c"/mnt/file")? == b"in the second", "the same tree twice")?;
     fails(
         r::create(c"/mnt/x", WRITE, 0o664),

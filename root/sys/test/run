@@ -1,0 +1,119 @@
+#!/bin/rc
+# The test programs, for test=1: the kernel's boot runs this through
+# auth/newns, in the name space /lib/namespace builds. It checks the
+# name space came out and mounts a ramfs on /tmp, then starts every
+# program at once, each in a copy of the name space, and checks how
+# each one exits. A line for each check (with -q, failures only), then
+# a count; it exits normally only if every one passed.
+rfork e
+quiet=()
+if(~ $1 -q)
+	quiet=1
+fn ok {
+	if(~ $#quiet 0)
+		echo test: $1: ok
+}
+fn failed {
+	echo test: $1: FAILED: $2
+}
+
+# The name space, then /tmp.
+nsok=()
+nsfailed=()
+fn check {
+	name=$1
+	shift
+	if($*){
+		nsok=($nsok $name)
+		ok $name
+	}
+	if not{
+		nsfailed=($nsfailed $name)
+		failed $name 'not so: '^$"*
+	}
+}
+st=`{cat /proc/$pid/status}
+check /proc test $#st -gt 0
+check /env eval '>/env/test-run echo started && ~ `{cat /env/test-run} started && rm /env/test-run'
+check /fd test -e /fd/0ctl
+check /bin test -x /bin/rc
+check '#r' test -e '#r/rtc'
+ramfs
+check /tmp eval '>/tmp/test-run echo started && ~ `{cat /tmp/test-run} started && rm /tmp/test-run'
+
+# The programs: what each is run as, and the status it should exit
+# with after its name and pid: '' for a normal exit, trap for a trap.
+progs=()
+fn prog {
+	progs=($progs $1 $2)
+}
+prog tmem ''
+prog 'targs one two' 'targs one two'
+prog texec 'targs from exec'
+prog 'tfault null' trap
+prog 'tfault text' trap
+prog 'tfault brk' trap
+prog 'tfault stack' trap
+prog tfile 'targs from env'
+prog tproc ''
+prog tnote ''
+prog t9p ''
+prog 'tlibr -v -o out file1 file2' ''
+prog tsys ''
+prog tramfs ''
+prog trc ''
+
+# Each runs in a subshell of its own, which checks how it exited and
+# leaves N.ok or N.failed in /tmp/run: rc keeps no status for a
+# process another wait has had.
+fn result {
+	# Only $cputype in the environment, as the programs expect, not
+	# this script's variables.
+	rfork nE
+	cputype=$cputype
+	# A note group of its own, without this shell.
+	@{rfork s; eval exec $2}
+	st=$status
+	good=()
+	switch($3){
+	case ''
+		if(~ $st '')
+			good=1
+	case trap
+		if(~ $st *': sys: trap: '*)
+			good=1
+	case *
+		if(~ $st *': '$3)
+			good=1
+	}
+	if(~ $#good 1){
+		ok $2
+		touch /tmp/run/$1.ok
+	}
+	if not{
+		failed $2 $st
+		touch /tmp/run/$1.failed
+	}
+}
+mkdir /tmp/run
+p=($progs)
+n=()
+while(! ~ $#p 0){
+	n=($n x)
+	result $#n $p(1) $p(2) &
+	p=$p(3-)
+}
+wait
+passed=(/tmp/run/*.ok)
+if(~ $passed '/tmp/run/*.ok')
+	passed=()
+failed=(/tmp/run/*.failed)
+if(~ $failed '/tmp/run/*.failed')
+	failed=()
+rm -r /tmp/run
+passed=($nsok $passed)
+failed=($nsfailed $failed)
+echo test: $#passed passed, $#failed failed
+if(! ~ $#failed 0)
+	exit failed
+exit ''

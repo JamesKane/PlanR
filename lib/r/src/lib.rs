@@ -30,6 +30,7 @@ pub mod dir;
 pub mod env;
 pub mod heap;
 pub mod io;
+pub mod ns;
 pub mod num;
 pub mod print;
 pub mod proc;
@@ -48,6 +49,7 @@ pub use bio::{Bin, Bout};
 pub use dir::{DirBuf, dirfstat, dirfwstat, dirread, dirreadall, dirstat, dirwstat};
 pub use env::{exec_path, getenv, getenv_list, putenv, putenv_list};
 pub use io::{File, Read, STDERR, STDIN, STDOUT, Write};
+pub use ns::{addns, newns};
 pub use print::{Mode, Quoted, RcQuoted, Rerr, Text};
 pub use proc::{Waitmsg, Whom, getpid, postnote, wait, waitpid};
 pub use text::{cleanname, getfields, gettokens, quote, rc_quote, tokenize, unquote};
@@ -224,12 +226,11 @@ pub struct Error {
 }
 
 impl Error {
-    /// Takes the error text of the last failed call, leaving none.
+    /// The error text of the last failed call, left in place as Plan 9
+    /// leaves it, so `%r` ([`Rerr`]) still shows it.
     #[must_use]
     pub fn last() -> Error {
-        let mut text = [0; ERRMAX];
-        let _ = errstr(&mut text);
-        Error { text }
+        rerrstr()
     }
 
     /// The text, without its NUL.

@@ -1,0 +1,5 @@
+unmount: u: not mounted
+usage: unmount mountpoint
+       unmount mounted mountpoint
+usage: unmount mountpoint
+       unmount mounted mountpoint

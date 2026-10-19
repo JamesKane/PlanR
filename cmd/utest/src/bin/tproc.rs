@@ -405,7 +405,7 @@ fn no_wait() -> Check {
 fn fork_exec() -> Check {
     set(&DATA, 5);
     child(F::empty(), || {
-        let _ = r::exec(c"/boot/targs", &[c"targs", c"forked"]);
+        let _ = r::exec(c"/bin/targs", &[c"targs", c"forked"]);
         Err("exec failed")
     })?;
     reap_with(b"targs forked")?;

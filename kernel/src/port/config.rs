@@ -2,9 +2,13 @@
 //!
 //! Keys the kernel reads:
 //!
-//! - `test=1` runs the in-kernel tests and powers off; `test=trap` takes a
-//!   deliberate fatal fault; `test=reset` resets warm once and checks that
-//!   9boot recovered the log ring.
+//! - `test=1` runs the in-kernel tests, then boots to `/sys/test/run`
+//!   and powers off; `test=trap` takes a deliberate fatal fault;
+//!   `test=reset` resets warm once and checks that 9boot recovered the log
+//!   ring.
+//!
+//! Every setting is in the boot process's environment too, as Plan 9 puts
+//! `plan9.ini`'s there.
 //! - `apic=xapic` (amd64) keeps the local APIC in xAPIC mode even if the
 //!   CPU has x2APIC.
 //! - `apictimer=oneshot` (amd64) uses the local APIC timer's one-shot count
@@ -33,7 +37,9 @@ pub(crate) struct Config<'a> {
 /// What a test image asks the kernel to do (`test=`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TestMode {
-    /// `test=1`: run the in-kernel tests, report, and power off.
+    /// `test=1`: run the in-kernel tests, then boot with `init` set to
+    /// `/sys/test/run` (through `auth/newns`), and power off once it exits
+    /// normally.
     Run,
     /// `test=trap`: take a deliberate fatal page fault, so the harness can
     /// check the trap report.
@@ -48,11 +54,13 @@ pub(crate) enum TestMode {
     /// and reset warm; on the next, power off. The harness checks that
     /// 9boot reported saving the first boot's log, ending with that line.
     Reset,
-    /// `test=cons`: run `init -i`, whose console test the harness types
-    /// to, and power off once it exits normally.
+    /// `test=cons`: boot as usual, to init and rc on the console, which the
+    /// harness types to (`tcons` among it) until it halts the machine
+    /// through `/dev/reboot`.
     Cons,
-    /// `test=oracle`: run `init -o`, whose `toracle` runs the oracle
-    /// scripts for `xtask oracle`, and power off once it exits normally.
+    /// `test=oracle`: boot with `init` set to `/sys/test/oracle`, whose
+    /// `toracle` runs the oracle scripts for `xtask oracle`, and power off
+    /// once it exits normally.
     Oracle,
 }
 
@@ -71,6 +79,16 @@ impl<'a> Config<'a> {
             .filter(|(k, _)| k.trim() == key)
             .map(|(_, v)| v.trim())
             .next_back()
+    }
+
+    /// Every setting, in order, as `(key, value)`.
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&'a str, &'a str)> {
+        self.text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.trim(), v.trim()))
     }
 
     /// Records the settings that act outside the code reading the config.

@@ -12,8 +12,10 @@ use alloc::vec::Vec;
 use abi::{Access, OpenFlags, OpenMode};
 use elf::{Elf, Machine};
 
+use crate::arch;
 use crate::port::chan::{self, Chan, last_elem};
 use crate::port::clock;
+use crate::port::config::Config;
 use crate::port::error::{ENOMEM, Error, Result};
 use crate::port::lock::SpinLock;
 use crate::port::mm::PAGE;
@@ -81,19 +83,63 @@ fn image_of(c: &Chan) -> Result<Image> {
     }
 }
 
-/// Loads the program `name`, resolved in `ns`, with arguments `argv`.
+/// How much of a file Plan 9's exec reads to tell a program from a
+/// script (`sizeof(Exec)`): a `#!` line must end within it.
+const HEADER: usize = 32;
+
+/// Plan 9's `shargs`: the words of a `#!` line, which must end within the
+/// header.
+fn shargs(header: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let line = &header[2..];
+    let end = line.iter().position(|&b| b == b'\n').filter(|&i| i < line.len() - 1)?;
+    let words: Vec<Vec<u8>> = line[..end]
+        .split(|&b| b == b' ' || b == b'\t')
+        .filter(|w| !w.is_empty())
+        .map(<[u8]>::to_vec)
+        .collect();
+    (!words.is_empty()).then_some(words)
+}
+
+/// Loads the program `name`, resolved in `ns`, with arguments `argv`. A
+/// file starting `#!` names its interpreter, as Plan 9's: that is run
+/// instead, with the line's words, then `name`, then `argv` after its
+/// first; its first argument, and the process's name, are the last
+/// element of the script's name.
 pub(crate) fn load(ns: &NameSpace, name: &str, argv: &[Vec<u8>]) -> Result<Loaded> {
     let exec = OpenMode {
         access: Access::Exec,
         flags: OpenFlags::empty(),
     };
-    let c = chan::open(&ns.names(), name, exec)?;
-    if c.qid.is_dir() {
-        return Err(EBADEXEC.into());
+    let mut name = String::from(name);
+    let mut argv = argv.to_vec();
+    let mut script: Option<String> = None;
+    loop {
+        let c = chan::open(&ns.names(), &name, exec)?;
+        if c.qid.is_dir() {
+            return Err(EBADEXEC.into());
+        }
+        let image = image_of(&c)?;
+        let elem = String::from(last_elem(&c.name));
+        drop(c);
+        let b = image.bytes();
+        if !b.starts_with(b"#!") {
+            return load_elf(&image, &argv, script.unwrap_or(elem));
+        }
+        if script.is_some() {
+            return Err(EBADEXEC.into());
+        }
+        let mut words = shargs(&b[..b.len().min(HEADER)]).ok_or(EBADEXEC)?;
+        let interpreter =
+            String::from_utf8(core::mem::replace(&mut words[0], elem.clone().into_bytes())).map_err(|_| EBADEXEC)?;
+        words.push(core::mem::replace(&mut name, interpreter).into_bytes());
+        words.extend(argv.drain(..).skip(1));
+        argv = words;
+        script = Some(elem);
     }
-    let image = image_of(&c)?;
-    let prog_name = String::from(last_elem(&c.name));
-    drop(c);
+}
+
+/// Lays out the ELF program in `image` to run with arguments `argv`.
+fn load_elf(image: &Image, argv: &[Vec<u8>], prog_name: String) -> Result<Loaded> {
     let elf = Elf::parse(image.bytes(), MACHINE).map_err(|_| EBADEXEC)?;
     let mem = Memory::new().ok_or(ENOMEM)?;
     let mut writable = 0;
@@ -169,10 +215,14 @@ fn push_args(mem: &Memory, argv: &[Vec<u8>]) -> Result<u64> {
 }
 
 /// Starts the program `name` as a new process, a child of the calling
-/// thread, in a fresh name space ([`Files::boot`]).
-pub(crate) fn spawn(name: &str, argv: &[&str], pri: usize) -> Result<Arc<Proc>> {
+/// thread, in a fresh name space ([`Files::boot`]) with environment
+/// `env`.
+pub(crate) fn spawn(name: &str, argv: &[&str], env: &[(String, String)], pri: usize) -> Result<Arc<Proc>> {
     let argv: Vec<Vec<u8>> = argv.iter().map(|a| a.as_bytes().to_vec()).collect();
     let files = Files::boot()?;
+    for (k, v) in env {
+        files.egrp.set(k, v.as_bytes());
+    }
     let l = load(&NameSpace::of(&files), name, &argv)?;
     let how = Spawn {
         name: &l.name,
@@ -188,16 +238,36 @@ pub(crate) fn spawn(name: &str, argv: &[&str], pri: usize) -> Result<Arc<Proc>> 
 /// a normal exit.
 pub(crate) type InitExit = Arc<SpinLock<Option<Vec<u8>>>>;
 
-/// Starts `/boot/init` with `argv`, the first user process, as the child
-/// of a kernel thread that awaits it, prints how it exited and fills in
-/// the result.
-pub(crate) fn start_init(argv: &'static [&'static str]) -> Result<InitExit> {
+/// The environment the boot process starts with, as Plan 9's `init0`
+/// sets it: `terminal`, `cputype` and `service`, then each setting of the
+/// boot configuration whose name does not start with `*`; last, `init`,
+/// the command `boot` runs in place of `/$cputype/init -t`, if given.
+pub(crate) fn boot_env(config: &Config<'_>, init: Option<&str>) -> Vec<(String, String)> {
+    let mut env = alloc::vec![
+        (String::from("terminal"), alloc::format!("planr {}", arch::NAME)),
+        (String::from("cputype"), String::from(arch::NAME)),
+        (String::from("service"), String::from("terminal")),
+    ];
+    for (k, v) in config.entries().filter(|(k, _)| !k.starts_with('*')) {
+        env.push((String::from(k), String::from(v)));
+    }
+    if let Some(cmd) = init {
+        env.push((String::from("init"), String::from(cmd)));
+    }
+    env
+}
+
+/// Starts `/boot/boot`, the first user process, with environment `env`
+/// ([`boot_env`]), as the child of a kernel thread that awaits it, prints
+/// how it exited and fills in the result. Boot builds the name space and
+/// runs init, which never exits, or the command `init` names, which may.
+pub(crate) fn start_init(env: Vec<(String, String)>) -> Result<InitExit> {
     let exit: InitExit = Arc::new(SpinLock::new(None));
     let e = exit.clone();
     let start: Arc<SpinLock<Option<Result<()>>>> = Arc::new(SpinLock::new(None));
     let started = start.clone();
     proc::spawn(Spawn::kproc("boot"), move || {
-        let r = spawn("/boot/init", argv, PRI_NORMAL).map(|_| ());
+        let r = spawn("/boot/boot", &["boot"], &env, PRI_NORMAL).map(|_| ());
         let ok = r.is_ok();
         *started.lock() = Some(r);
         if !ok {
@@ -226,20 +296,28 @@ pub(crate) fn start_init(argv: &'static [&'static str]) -> Result<InitExit> {
     }
 }
 
+/// The `init` that runs `cmd` in the name space `/lib/namespace` builds,
+/// for the test modes: unlike init, it exits when the command does.
+pub(crate) fn test_init(cmd: &str) -> String {
+    alloc::format!("/{}/bin/auth/newns {cmd}", arch::NAME)
+}
+
 const SECOND: u64 = 1_000_000_000;
 
 /// Tests run by [`crate::port::ktest`].
 pub(crate) mod ktests {
     use crate::port::clock;
+    use crate::port::config::Config;
     use crate::port::ktest::{Fail, TestResult};
     use crate::port::mm;
 
     use super::SECOND;
 
-    /// Runs `/boot/init -q`, which runs every test program; it must exit
-    /// normally within 60 s.
+    /// Boots to `/sys/test/run -q`, which runs every test program; it must
+    /// exit normally within 60 s.
     fn run_init() -> Result<(), Fail> {
-        let exit = super::start_init(&["init", "-q"]).map_err(|_| "init would not start")?;
+        let env = super::boot_env(&Config::parse(""), Some(&super::test_init("/sys/test/run -q")));
+        let exit = super::start_init(env).map_err(|_| "boot would not start")?;
         if !clock::wait_until(|| exit.lock().is_some(), 60 * SECOND) {
             return Err("init did not finish within 60 s".into());
         }
@@ -258,8 +336,8 @@ pub(crate) mod ktests {
     /// for good (a frame, now and then), so it gets three tries: a leak
     /// loses frames on every one.
     pub(crate) fn memory_freed() -> TestResult {
-        if !crate::port::devroot::has("boot/init") {
-            return Err("no boot archive with init".into());
+        if !crate::port::devroot::has("boot/boot") {
+            return Err("no boot archive with boot".into());
         }
         // Once first, so the heap has grown to what a run needs.
         run_init()?;

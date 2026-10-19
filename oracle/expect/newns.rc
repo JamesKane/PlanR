@@ -1,0 +1,23 @@
+# auth/newns: a name space from a file (comments, blanks before a
+# command, $variables, quotes, another file read with ., bind's flags,
+# cd), with user and home set; then the command, found in /bin.
+for(c in amd64 arm64)
+	if(test -d /$c)
+		cputype=$c
+mkdir a b
+echo in a >a/one
+echo in b >b/two
+cat >inner <<'EOF'
+bind -a b 'a'
+EOF
+cat >ns <<'EOF'
+# the programs
+	bind /$cputype/bin /bin
+. inner
+bind -c '#c' /dev
+bind -c '#e' /env
+bind a /n
+cd /n
+EOF
+auth/newns -n ns rc -c 'ls; echo `{cat /dev/user} $home'
+auth/newns -z || echo usage failed

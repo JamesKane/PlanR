@@ -1,0 +1,10 @@
+served
+v/a
+v/b
+quiet
+usage failed
+usage failed
+mount -c '#s/oracle.mount' /tmp/oracle/expect/mount/u 
+bind  /tmp/oracle/expect/mount/v /tmp/oracle/expect/mount/v 
+mount -a '#s/oracle.mount' /tmp/oracle/expect/mount/v 
+cd /tmp/oracle/expect/mount

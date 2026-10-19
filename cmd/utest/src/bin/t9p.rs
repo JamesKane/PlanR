@@ -161,8 +161,11 @@ fn session(c: r::Fd) -> Check {
 }
 
 fn mount(c: r::Fd) -> Check {
-    // Creating in it needs `CREATE`, as in Plan 9.
-    r::mount(c, None, c"/n", BindFlags::CREATE, c"").map_err(|_| "mount failed")?;
+    // A mount closes the descriptor it is given, as Plan 9's does, so it
+    // gets a copy; creating in it needs `CREATE`, as in Plan 9.
+    let m = r::dup(c, None).map_err(|_| "dup failed")?;
+    r::mount(m, None, c"/n", BindFlags::CREATE, c"").map_err(|_| "mount failed")?;
+    fails(r::close(m), b"fd out of range or not open", "mount left its fd open")?;
     fails(r::open(c"#M", READ), b"mount/attach disallowed", "#M attached by name")?;
     let mut buf = [0u8; 64];
     let n = read_file(c"/n/hello", &mut buf).map_err(|_| "read /n/hello failed")?;
@@ -334,10 +337,8 @@ fn shared(c: r::Fd) -> Check {
     }
     r::unmount(None, c"/mnt").map_err(|_| "unmount /mnt failed")?;
     r::remove(c"#s/t9p").map_err(|_| "remove #s/t9p failed")?;
-    for f in [fd, srv] {
-        r::close(f).map_err(|_| "close failed")?;
-    }
-    Ok(())
+    fails(r::close(fd), b"fd out of range or not open", "mount left its fd open")?;
+    r::close(srv).map_err(|_| "close failed")
 }
 
 /// Once unmounted and closed, nothing holds a fid but what is open; when
@@ -377,7 +378,7 @@ fn hangup() -> Check {
         "a request to a dead server",
     )?;
     r::unmount(None, c"/mnt").map_err(|_| "unmount failed")?;
-    r::close(c).map_err(|_| "close failed")
+    fails(r::close(c), b"fd out of range or not open", "mount left its fd open")
 }
 
 /// Reads `/n/stats`.

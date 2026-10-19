@@ -11,6 +11,13 @@ name = "acpi"
 version = "0.1.0"
 
 [[package]]
+name = "boot"
+version = "0.1.0"
+dependencies = [
+ "r",
+]
+
+[[package]]
 name = "bootarc"
 version = "0.1.0"
 
@@ -46,7 +53,6 @@ version = "0.1.0"
 name = "init"
 version = "0.1.0"
 dependencies = [
- "abi",
  "r",
 ]
 

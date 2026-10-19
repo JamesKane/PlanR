@@ -1,0 +1,2 @@
+usage: mount [-a|-b] [-cnq] [-k keypattern] /srv/service dir [spec]
+usage: mount [-a|-b] [-cnq] [-k keypattern] /srv/service dir [spec]

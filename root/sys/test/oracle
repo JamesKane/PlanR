@@ -1,0 +1,6 @@
+#!/bin/rc
+# The oracle's scripts, for test=oracle (see oracle/README.md): the
+# kernel's boot runs this through auth/newns. toracle runs each script
+# in /tmp, a ramfs, and reports on the console for xtask oracle.
+ramfs
+exec toracle

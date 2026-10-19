@@ -1,7 +1,7 @@
 //! libr's base, in a real process: the heap (collections, a large
 //! block, memory reused, two processes sharing the heap with `RFMEM`),
 //! `print!` and `bio` through a pipe, and options from real arguments.
-//! `init` runs it as `tlibr -v -o out file1 file2`.
+//! `/sys/test/run` runs it as `tlibr -v -o out file1 file2`.
 
 #![no_std]
 #![no_main]

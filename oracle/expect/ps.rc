@@ -1,0 +1,11 @@
+# ps: its own line (the last, by pid): user, state and name; -a's
+# arguments, quoted as /proc/n/args quotes them; -p's priorities.
+ps >f
+x=`{tail -1 f}
+echo $x(1) $x(6) $x(7)
+ps -a 'two words' >f
+x=`{tail -1 f}
+echo $x(1) $x(6) $x(7-)
+ps -p >f
+x=`{tail -1 f}
+echo $x(1) $x(5) $x(6) $x(8) $x(9)

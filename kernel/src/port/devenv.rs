@@ -46,6 +46,28 @@ impl Egrp {
         })
     }
 
+    /// Sets `name` to `value`, making it if need be, as Plan 9's
+    /// `ksetenv`: for the kernel, which sets the boot process's.
+    pub(crate) fn set(&self, name: &str, value: &[u8]) {
+        let mut vars = self.vars.lock();
+        if let Some(v) = vars.iter_mut().find(|v| v.name == name) {
+            v.value = value.to_vec();
+            v.qid.vers += 1;
+            return;
+        }
+        let qid = Qid {
+            path: self.next.fetch_add(1, Ordering::Relaxed),
+            vers: 0,
+            ty: QTFILE,
+        };
+        vars.push(Var {
+            name: String::from(name),
+            value: value.to_vec(),
+            qid,
+            perm: 0o600,
+        });
+    }
+
     /// A copy, for `rfork(RFENVG)`.
     pub(crate) fn copy(&self) -> Arc<Egrp> {
         Arc::new(Egrp {

@@ -1,9 +1,10 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19: P3 slices 1 to 8 (console input, libr base, libr system
+2026-10-19: P3 slices 1 to 9 (console input, libr base, libr system
 layer, the 9P server framework and `ramfs`, `rc` parts 1 and 2, the
-oracle harness, the file commands) are done.
+oracle harness, the file commands, the name-space commands and the real
+boot and init) are done.
 
 ## State
 
@@ -785,6 +786,95 @@ oracle harness, the file commands) are done.
        permission checked in a walk is the parent's, options `-Dipsu -m
        -S` (`-m` after `-S` mounts instead of posting; the `#s` file is
        `ORCLOSE`). `tramfs` and the oracle's scripts follow it.
+  9. The name-space commands, `newns`, and the real boot and init (each
+     a port of `../plan9`'s source):
+     - **Boot** (`cmd/boot`, `/boot/boot`, from `9/boot/boot.c`): the
+       kernel now starts it, not init, with the environment Plan 9's
+       `init0` sets (`terminal`, `cputype`, `service=terminal`, and each
+       boot configuration setting not starting `*`; `exec::boot_env`,
+       `Egrp::set`). It opens `#c/cons` as 0, 1 and 2, binds `#ec`
+       (absent, ignored), `#e` and `#s`, and execs `$init`, split by
+       `tokenize`, else `/$cputype/init -t`. Plan 9's root-server,
+       factotum, time and swap steps are not needed: the root is `#/`,
+       the archive.
+     - **Init** (`cmd/init`, `/$cputype/init`, from `cmd/init.c`):
+       `pri 10` through `#p/n/ctl`, `objtype`, `service`, `timezone`
+       (from `/adm/timezone/local`), `newns`, then forever: `rc -c '.
+       /rc/bin/termrc; home=/usr/$user; cd; . lib/profile'` for a
+       terminal (`cpurc` first for a CPU server), then `init: starting
+       /bin/rc` and plain `rc` each time it exits, with Plan 9's messages
+       and its note handler. The old test harness that was init is gone.
+     - **libr `ns`** (from `libauth/newns.c`): `newns`/`addns` read
+       `/lib/namespace` (or a file): `bind mount unmount import cd clear
+       .`, bind's flags, `#` comments, `$var` expansion from `#e` (first
+       word, 27 bytes, names ended by `/.!'$`), newns's own unquoting, at
+       most 14 words, a last line with no newline ignored (`Brdline`),
+       errors ignored (`set_debug` shows them). There is no factotum, so
+       `fauth`'s file goes to `mount` unanswered, and no network, so
+       `import` does nothing. `Error::last` now leaves the error text in
+       place, as Plan 9 does, so `%r` (`Rerr`) after a failed call shows
+       it (it was cleared, printing nothing).
+     - **Commands** (`cmd/cmds`): `bind`, `mount` (its `auth_proxy` stops
+       where factotum's `rpc` cannot be opened, with Plan 9's message),
+       `unmount`, `ns` (one entry a read; names with blanks, quotes, `\`,
+       `#` or `$` quoted its own way; `xlatemnt`), `ps` (`-apr`, the
+       layout of `ps.c`), and `auth/newns` (`$cputype/bin/auth/newns`).
+       `kill` is Plan 9's rc script, in `/rc/bin`; it needs `sed` (slice
+       10), so it is not tested yet.
+     - **`root/`** is the archive's tree beside the programs (a file
+       starting `#!` gets mode 755): `/lib/namespace` (Plan 9's, for the
+       devices Plan R has: `#c #d #e #p #s #P`, `/$cputype/bin` and
+       `/rc/bin` on `/bin`, `cd /usr/$user`), `/rc/bin/termrc` (binds
+       `#r`, sets `sysname`), `/rc/bin/kill`, `/rc/lib/rcmain` (moved from
+       `cmd/rc`), `/usr/eve/lib/profile` (a ramfs on `/tmp` if it is not
+       writable, the `term%` prompt, then `exec rc -i`), `/adm/timezone/`
+       (`GMT`, `local`), `/sys/test/run` and `/sys/test/oracle`. Programs
+       are in `/$cputype/bin`, `boot` in `/boot`, `init` in `/$cputype`
+       (`xtask`'s `archive_path`).
+     - **Kernel:**
+       - The mount table is Plan 9's (`cmount`): each `Mount` has an id
+         (one more for each mount anywhere), its flags and its spec; a
+         union bound whole is copied (its first member with the bind's
+         flags, the rest `-a`, or `-b`), for `MREPL` too; `-c` on a union
+         bound whole is "inconsistent mount"; `-a` with `-b` is "bad arg
+         in system call". `bind` and `mount` return the id, and `mount`
+         closes its descriptor, as Plan 9's do (`t9p` and `tramfs` check
+         it). `unmount`'s first name is opened, so `/srv/x` matches the
+         mount made from it (its transport, Plan 9's `mchan`).
+       - `#p/n/ns` gives one entry a read, in id order, as Plan 9's
+         (`bind FLAGS to from` or `mount FLAGS srv from spec`, `#s/name`
+         for a posted transport, `devsrv::name_of`), then `cd dir`; the
+         mount point itself in a union is `bind  dir dir`. `#p/n/args`
+         quotes each argument as `%q` does. `#p/n/ctl` takes `pri n`
+         (`Proc::set_pri`).
+       - `#c/reboot`: `halt` prints `kernel: halt` and powers off (exits
+         QEMU), `reboot` resets, `panic` panics.
+       - `exec` runs `#!` scripts as Plan 9's `sysexec` (`shargs`, the
+         line within 32 bytes, the script's last element as `argv[0]`
+         and the process name).
+     - **Tests:** `test=1` and `test=oracle` set `init` to `auth/newns
+       /sys/test/run` or `/sys/test/oracle` (`exec::test_init`), which
+       exit, so the kernel still waits for them; `memory_freed` boots to
+       `/sys/test/run -q`. `/sys/test/run` checks the name space, mounts a
+       ramfs, and starts every program at once (`rfork nE`, only
+       `$cputype` in the environment, a note group of its own), each
+       checked by its own subshell, since rc keeps no status for a process
+       another wait has had (as Plan 9's `Waitfor`). `test=cons` is now a
+       real boot: the harness types `tcons` at the `term%` prompt, the
+       session, then `echo halt >/dev/reboot` once init starts rc again
+       (`Expect::Halt`). `toracle` gives each script an empty environment
+       (`RFCENVG`). `tfile` checks unmounting one member of a mount point
+       that is not the first (a shadowed index got that wrong while this
+       slice was written), and `tnote` checks `ns` and `fd` against the
+       current directory.
+     - Oracle: `oracle/expect` gains `bind mount unmount ns ps newns`
+       (77 scripts in all, each output line worked out from Plan 9's
+       source).
+     - Known, from Plan 9's source, not yet done: Plan 9's kernel names
+       the file in a walk error (`'nonesuch' file does not exist`,
+       `namelenerror`'s `"%#q %s"`); Plan R's says only `file does not
+       exist`, so `oracle/expect/errors.err` holds Plan R's text, not
+       Plan 9's. The kernel's errors are for the kernel audit.
 
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
@@ -795,13 +885,13 @@ oracle harness, the file commands) are done.
 
 ## Next steps
 
-P3 slice 9: the name-space commands (`bind mount unmount ns ps kill`),
-`newns` with `/lib/namespace`, `root/` in the archive; the real `init`
-(name space, `termrc`, `rc -i`); the P2 test programs under
-`/sys/test`, run by rc scripts with `test=1`. plan9port has none of
-these as Plan 9 has them, so their scripts go in `oracle/expect`. The
-P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`; `srv` and `9fs`
-moved to P5).
+P3 slice 10: regexp (`libregexp` semantics), `grep sed tr sort uniq`,
+ported from `../plan9/sys/src`; with `sed`, `/rc/bin/kill` can be
+tested (its script is Plan 9's). Before or with it, the kernel's audit
+against `../plan9/sys/src/9/port`: walk errors that name the file
+(`namelenerror`), then the rest of the P2 calls and devices, as the
+slice-8 audit did for rc, libr and ramfs. The P3 slices were agreed on
+2026-10-19 (`docs/ROADMAP.md`; `srv` and `9fs` moved to P5).
 
 plan9port is built on this host (2026-10-19, by
 `scripts/install-plan9port.sh`, in `~/plan9port`; `$PLAN9` is not set,

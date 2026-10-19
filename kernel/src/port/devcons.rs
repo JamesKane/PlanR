@@ -39,6 +39,7 @@ const FILES: &[(&str, u64, u32)] = &[
     ("osversion", 4, 0o444),
     ("pid", 5, 0o444),
     ("ppid", 6, 0o444),
+    ("reboot", 12, 0o660),
     ("sysname", 7, 0o664),
     ("time", 8, 0o444),
     ("user", 9, 0o444),
@@ -55,6 +56,7 @@ const QTIME: u64 = 8;
 const QUSER: u64 = 9;
 const QZERO: u64 = 10;
 const QCONSCTL: u64 = 11;
+const QREBOOT: u64 = 12;
 
 /// The longest `sysname`.
 const SYSNAME_MAX: usize = 64;
@@ -199,6 +201,7 @@ impl Dev for Cons {
                 Ok(buf.len())
             }
             QNULL => Ok(buf.len()),
+            QREBOOT => reboot(buf),
             QSYSNAME => {
                 let s = core::str::from_utf8(buf).map_err(|_| EPERM)?;
                 let s = s.trim_end_matches('\n');
@@ -208,6 +211,23 @@ impl Dev for Cons {
             }
             _ => Err(EPERM.into()),
         }
+    }
+}
+
+/// `reboot`, as Plan 9's: `halt` stops the machine (in QEMU, it exits),
+/// `reboot` with no file resets it, `panic` panics.
+fn reboot(buf: &[u8]) -> Result<usize> {
+    let text = core::str::from_utf8(buf).map_err(|_| EBADCTL)?;
+    let words: alloc::vec::Vec<&str> = text.split_ascii_whitespace().collect();
+    match words.as_slice() {
+        ["halt"] => {
+            crate::println!("kernel: halt");
+            crate::arch::exit(crate::arch::ExitCode::Success)
+        }
+        ["reboot"] => crate::arch::reset(None),
+        ["reboot", ..] => Err("reboot into another kernel is not yet supported".into()),
+        ["panic", ..] => panic!("/dev/reboot"),
+        _ => Err(EBADCTL.into()),
     }
 }
 

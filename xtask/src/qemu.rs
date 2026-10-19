@@ -10,6 +10,8 @@ use crate::arch::{Arch, Profile};
 
 /// Must match the markers in `boot/9boot/src/main.rs` and `kernel/src/main.rs`.
 const OK_MARKER: &str = "kernel: ok";
+/// What the kernel prints when `halt` is written to `/dev/reboot`.
+const HALT_MARKER: &str = "kernel: halt";
 const KERNEL_PANIC: &str = "kernel: PANIC";
 const LOADER_FAIL_MARKERS: &[&str] = &["9boot: PANIC", "9boot: error"];
 
@@ -22,6 +24,10 @@ pub(crate) enum Expect {
     /// A kernel panic whose report contains every one of these strings,
     /// then the failure power-off.
     Panic(&'static [&'static str]),
+    /// As `Ok`, but the machine is halted through `/dev/reboot`
+    /// ([`HALT_MARKER`]) in place of the OK marker: a real boot, whose init
+    /// never exits.
+    Halt(&'static [&'static str]),
 }
 const BANNER: &str = "Plan R 9boot";
 
@@ -183,7 +189,7 @@ pub(crate) fn run_test(
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let (mut ok, mut failed, mut panicked, mut echo) = (false, None, false, false);
     let needles: &[&str] = match expect {
-        Expect::Ok(n) | Expect::Panic(n) => n,
+        Expect::Ok(n) | Expect::Panic(n) | Expect::Halt(n) => n,
     };
     let mut seen = vec![false; needles.len()];
     let outcome = loop {
@@ -196,7 +202,11 @@ pub(crate) fn run_test(
                 if echo && !line.trim().is_empty() && !QUIET.iter().any(|q| line.contains(q)) {
                     println!("[{arch}] {line}");
                 }
-                ok |= line.contains(OK_MARKER);
+                ok |= line.contains(if matches!(expect, Expect::Halt(_)) {
+                    HALT_MARKER
+                } else {
+                    OK_MARKER
+                });
                 panicked |= line.contains(KERNEL_PANIC);
                 for (s, n) in seen.iter_mut().zip(needles) {
                     *s |= line.contains(n);
@@ -210,7 +220,7 @@ pub(crate) fn run_test(
                     }
                 }
                 let fail_marker = LOADER_FAIL_MARKERS.iter().any(|m| line.contains(m))
-                    || (matches!(expect, Expect::Ok(_)) && line.contains(KERNEL_PANIC));
+                    || (!matches!(expect, Expect::Panic(_)) && line.contains(KERNEL_PANIC));
                 if failed.is_none() && fail_marker {
                     failed = Some(line.trim().to_string());
                 }
@@ -232,7 +242,8 @@ pub(crate) fn run_test(
     }
     let want_status = match expect {
         Expect::Ok(_) if !ok => return fail(format!("QEMU exited ({status}) without {OK_MARKER:?}")),
-        Expect::Ok(_) => {
+        Expect::Halt(_) if !ok => return fail(format!("QEMU exited ({status}) without {HALT_MARKER:?}")),
+        Expect::Ok(_) | Expect::Halt(_) => {
             if let Some((n, _)) = needles.iter().zip(&seen).find(|(_, s)| !**s) {
                 return fail(format!("console lacks {n:?}"));
             }

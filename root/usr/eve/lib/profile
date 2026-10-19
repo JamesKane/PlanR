@@ -1,0 +1,11 @@
+if(! touch /tmp/xxx >[2]/dev/null)
+	ramfs	# the root is the boot archive, which is read-only
+switch($service){
+case terminal
+	prompt=('term% ' '	')
+	fn term%{ $* }
+	exec rc -i
+case cpu
+	prompt=('cpu% ' '	')
+	fn cpu%{ $* }
+}

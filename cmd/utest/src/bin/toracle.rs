@@ -1,8 +1,8 @@
 //! The Plan R half of `cargo xtask oracle`: runs each script of each
 //! corpus in `/sys/lib/oracle` (the tree's `oracle/rc`, `oracle/cmd`, in
 //! the boot archive) as `rc NAME.rc`, in a directory of its own in `/tmp`
-//! with nothing else in it, standard input from `/dev/null`, and a copy
-//! of this environment. Then it prints on the console what the script
+//! with nothing else in it, standard input from `/dev/null`, and an
+//! empty environment. Then it prints on the console what the script
 //! wrote to standard output and error, and how it exited, for `xtask` to
 //! compare with plan9port's; a script is named `CORPUS/NAME`:
 //!
@@ -105,7 +105,8 @@ fn script(stem: &str) -> Result<Ran, &'static str> {
     let text = r::read_all(&cstr(&format!("{SCRIPTS}/{stem}.rc"))).map_err(|_| "cannot read a script")?;
     put(&format!("{dir}/{name}"), &text)?;
     let (out, err) = (format!("{WORK}/{stem}.out"), format!("{WORK}/{stem}.err"));
-    let pid = match r::rfork(F::PROC | F::FDG | F::ENVG | F::NOTEG) {
+    // An empty environment, as the host side gives (but for `path`).
+    let pid = match r::rfork(F::PROC | F::FDG | F::CENVG | F::NOTEG) {
         Err(_) => return Err("rfork failed"),
         Ok(0) => {
             let ok = r::chdir(&cstr(&dir)).is_ok()
@@ -116,7 +117,7 @@ fn script(stem: &str) -> Result<Ran, &'static str> {
                 r::exits(Some(b"toracle: cannot set up the script"));
             }
             let arg = cstr(&name);
-            let e = r::exec(c"/boot/rc", &[c"rc", &arg]);
+            let e = r::exec(c"/bin/rc", &[c"rc", &arg]);
             r::exits(Some(e.as_bytes()))
         }
         Ok(pid) => pid,

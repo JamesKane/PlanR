@@ -185,8 +185,9 @@ struct Built {
 }
 
 /// User programs for the boot archive: each package, and the binaries of
-/// it that go into `/boot`.
+/// it. Each goes in `/$cputype/bin` ([`archive_path`]).
 const USER_PROGRAMS: &[(&str, &[&str])] = &[
+    ("boot", &["boot"]),
     ("init", &["init"]),
     ("ramfs", &["ramfs"]),
     ("rc", &["rc"]),
@@ -194,6 +195,7 @@ const USER_PROGRAMS: &[(&str, &[&str])] = &[
         "cmds",
         &[
             "basename",
+            "bind",
             "cat",
             "chmod",
             "cleanname",
@@ -204,7 +206,11 @@ const USER_PROGRAMS: &[(&str, &[&str])] = &[
             "echo",
             "ls",
             "mkdir",
+            "mount",
             "mv",
+            "newns",
+            "ns",
+            "ps",
             "pwd",
             "rm",
             "seq",
@@ -214,6 +220,7 @@ const USER_PROGRAMS: &[(&str, &[&str])] = &[
             "tee",
             "test",
             "touch",
+            "unmount",
             "wc",
             "xd",
         ],
@@ -227,13 +234,53 @@ const USER_PROGRAMS: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// Other files for the boot archive: where each is in the tree, and
-/// where it goes in the archive.
-const ARCHIVE_FILES: &[(&str, &str)] = &[("cmd/rc/rcmain", "rc/lib/rcmain")];
+/// Where a program goes in the archive, as in Plan 9's tree: `boot` in
+/// `/boot`, which the kernel runs; init in `/$cputype`; the rest in
+/// `/$cputype/bin`, `newns` as `auth/newns`.
+fn archive_path(arch: Arch, bin: &str) -> String {
+    match bin {
+        "boot" => String::from("boot/boot"),
+        "init" => format!("{arch}/init"),
+        "newns" => format!("{arch}/bin/auth/newns"),
+        _ => format!("{arch}/bin/{bin}"),
+    }
+}
+
+/// The files of the installed tree that are not programs: `root/` as it
+/// is (`/lib/namespace`, `/rc/bin`, `/rc/lib/rcmain`, `/sys/test`, …).
+/// A file starting `#!` is executable.
+fn root_files() -> Result<Vec<(String, Vec<u8>, u32)>, String> {
+    fn walk(dir: &Path, prefix: &str, out: &mut Vec<(String, Vec<u8>, u32)>) -> Result<(), String> {
+        let mut entries: Vec<_> = fs::read_dir(dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for e in entries {
+            let name = e
+                .file_name()
+                .into_string()
+                .map_err(|n| format!("{}: not UTF-8", n.display()))?;
+            let path = e.path();
+            let at = format!("{prefix}{name}");
+            if path.is_dir() {
+                walk(&path, &format!("{at}/"), out)?;
+            } else {
+                let data = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                let mode = if data.starts_with(b"#!") { 0o755 } else { 0o644 };
+                out.push((at, data, mode));
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(&root().join("root"), "", &mut out)?;
+    Ok(out)
+}
 
 /// Builds the user programs for `arch` and packs them into the boot
-/// archive, as `boot/<name>`, with [`ARCHIVE_FILES`] and the oracle
-/// scripts.
+/// archive ([`archive_path`]), with `root/` ([`root_files`]) and the
+/// oracle scripts.
 fn build_archive(arch: Arch, release: bool) -> Result<PathBuf, String> {
     let profile = if release { "release" } else { "debug" };
     let mut files = Vec::new();
@@ -247,14 +294,10 @@ fn build_archive(arch: Arch, release: bool) -> Result<PathBuf, String> {
         for bin in bins {
             let path = root().join("target").join(arch.kernel_target()).join(profile).join(bin);
             let data = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            files.push((format!("boot/{bin}"), data, 0o755));
+            files.push((archive_path(arch, bin), data, 0o755));
         }
     }
-    for &(from, to) in ARCHIVE_FILES {
-        let path = root().join(from);
-        let data = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        files.push((to.to_string(), data, 0o644));
-    }
+    files.extend(root_files()?);
     for (name, data) in oracle::archive_files()? {
         files.push((name, data, 0o644));
     }
@@ -331,11 +374,18 @@ const FOUR_CPUS: qemu::Machine = qemu::Machine {
 /// exits normally.
 const INIT_OK: &str = "kernel: init exited normally";
 
-/// What `tcons`, then an interactive `rc`, both run by `init -i`, wait
-/// to be typed, step by step. Each `rc` step waits for what the one
-/// before printed, which is worked out (as `$#x^words`) so that the echo
-/// of what was typed cannot match it.
+/// What a real boot's interactive `rc` (init, termrc and the profile,
+/// which execs `rc -i`) waits to be typed, step by step: `tcons`, run from
+/// it, then a session of its own; then, once init has started rc again,
+/// the halt. Each `rc` step waits for what the one before printed, which
+/// is worked out (as `$#x^words`) so that the echo of what was typed
+/// cannot match it.
 const CONS_INPUT: &[qemu::Typed] = &[
+    // Typed ahead: the console keeps it for the first reader, rc.
+    qemu::Typed {
+        after: "cons: input on",
+        send: b"tcons\r",
+    },
     qemu::Typed {
         after: "tcons: type a line",
         send: b"hello, console\r",
@@ -352,14 +402,11 @@ const CONS_INPUT: &[qemu::Typed] = &[
         after: "tcons: interrupt",
         send: b"\x7f",
     },
+    // tcons reads the first line and exits; rc reads the second: tcons's
+    // status, a prompt of its own, a variable, and a command.
     qemu::Typed {
         after: "tcons: after",
-        send: b"still here\r",
-    },
-    // rc: a prompt of its own, a variable, and a command.
-    qemu::Typed {
-        after: "init: tcons: ok",
-        send: b"p=rc; prompt=($p^'% ' $p^'+ '); x=(a b c); echo $#x^words\r",
+        send: b"still here\r~ $status '' && echo tcons^' 'passed; p=rc; prompt=($p^'% ' $p^'+ '); x=(a b c); echo $#x^words\r",
     },
     // A syntax error and an error in a command, neither ending it.
     qemu::Typed {
@@ -398,10 +445,15 @@ const CONS_INPUT: &[qemu::Typed] = &[
         after: "3armed",
         send: b"\x7f",
     },
-    // ^D ends it, running `sigexit`.
+    // ^D ends it, running `sigexit`; init starts rc again, which halts
+    // the machine.
     qemu::Typed {
         after: "3done",
         send: b"fn sigexit {echo $#x^bye}\r\x04",
+    },
+    qemu::Typed {
+        after: "init: starting /bin/rc",
+        send: b"echo halt >/dev/reboot\r",
     },
 ];
 
@@ -417,22 +469,22 @@ const BOOT_TESTS: &[BootTest] = &[
         machine: FOUR_CPUS,
         input: &[],
     },
-    // Console input: init runs tcons, then an interactive rc, and the
-    // harness types to them. The typed line must be echoed.
+    // Console input, and a real boot: boot, init, termrc and the
+    // profile's interactive rc, which the harness types to: tcons, then a
+    // session, then (in the rc init starts next) the halt. The typed line
+    // must be echoed.
     BootTest {
         name: "cons",
         config: "# Plan R console input test image\ntest=cons\n",
-        expect: Expect::Ok(&[
+        expect: Expect::Halt(&[
             "cons: input on",
             "hello, console",
-            "init: tcons: ok",
+            "tcons passed",
             // What rc prints beyond what its steps wait for.
             "rc+ ",
             "1-loop",
             "3caught",
             "3bye",
-            "init: rc -i: ok",
-            INIT_OK,
         ]),
         every_profile: false,
         only: None,

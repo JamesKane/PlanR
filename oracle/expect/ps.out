@@ -1,0 +1,3 @@
+eve Running ps
+eve Running ps -a 'two words'
+eve 10 10 Running ps

@@ -1,0 +1,23 @@
+# unmount: one member of a union, by the name bound or by the server
+# mounted, or everything on a mount point; its error and its usage.
+rfork n
+mkdir a b u
+echo in a >a/one
+echo in b >b/two
+bind a u
+bind -a b u
+ls u
+unmount a u
+ls u
+unmount u
+ls u
+unmount u || echo not mounted
+ramfs -S oracle.unmount
+mount -c /srv/oracle.unmount u
+echo served >u/three
+cat u/three
+unmount /srv/oracle.unmount u
+ls u
+rm /srv/oracle.unmount
+unmount || echo usage failed
+unmount a b c || echo usage failed

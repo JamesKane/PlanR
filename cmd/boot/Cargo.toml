@@ -1,0 +1,20 @@
+[package]
+name = "boot"
+description = "The first user process, as Plan 9's /boot/boot: the console, then init"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autobins = false
+
+[[bin]]
+name = "boot"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+r = { path = "../../lib/r" }
+
+[lints]
+workspace = true

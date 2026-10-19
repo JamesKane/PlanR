@@ -1,6 +1,6 @@
 [package]
 name = "init"
-description = "The first user process: builds the name space and runs the test programs"
+description = "Plan 9's init: the name space, then rc on the console for good"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,7 +14,6 @@ test = false
 bench = false
 
 [dependencies]
-abi = { path = "../../lib/abi" }
 r = { path = "../../lib/r" }
 
 [lints]

@@ -433,7 +433,7 @@ pub(crate) fn create(ns: &Names<'_>, name: &str, mode: OpenMode, perm: u32) -> R
     let w = walk(ns, parent, true)?;
     let dir = match &w.union {
         Some(members) => {
-            let m = members.iter().find(|m| m.create).ok_or(ENOCREATE)?;
+            let m = members.iter().find(|m| m.create()).ok_or(ENOCREATE)?;
             m.to.renamed(&w.chan.name)
         }
         None => w.chan,

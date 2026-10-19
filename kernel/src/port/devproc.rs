@@ -4,13 +4,13 @@
 //! | file | |
 //! |---|---|
 //! | `args` | its arguments |
-//! | `ctl` | `kill` ends it |
+//! | `ctl` | `kill` ends it; `pri n` sets its priority |
 //! | `fd` | its current directory, then a line per open descriptor |
 //! | `mem` | its memory, read at the address as offset |
 //! | `note` | a note written here is posted to it |
 //! | `noteid` | its note group; writing another process's joins that |
 //! | `notepg` | a note written here goes to its note group |
-//! | `ns` | its name space, as `bind` commands |
+//! | `ns` | its name space, as `bind` and `mount` commands, one a read |
 //! | `segment` | its segments |
 //! | `status` | its name, user, state, times and memory, as Plan 9 lays them out |
 //! | `wait` | a read waits for a child of it to exit, as `await` does |
@@ -22,13 +22,16 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Write as _;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use abi::{Access, DMDIR, OpenMode, QTDIR, QTFILE, Qid};
+use abi::{Access, BindFlags, DMDIR, OpenMode, QTDIR, QTFILE, Qid};
 
 use crate::port::chan::Chan;
 use crate::port::clock;
 use crate::port::dev::{self, Dev, EVE, Entry};
-use crate::port::error::{EBADARG, EBADCTL, EBADSPEC, EINTR, ENONEXIST, EPERM, EPROCDIED, Error, Result};
+use crate::port::devmnt;
+use crate::port::devsrv;
+use crate::port::error::{EBADARG, EBADCTL, EBADSPEC, EINTR, ENOMEM, ENONEXIST, EPERM, EPROCDIED, Error, Result};
 use crate::port::note;
 use crate::port::proc::{self, Proc, State};
 
@@ -182,6 +185,13 @@ impl Dev for ProcDev {
         if c.qid.path != ROOT.path {
             proc_of(&c)?;
         }
+        if File::from_path(c.qid.path) == Some(File::Ns) {
+            if mode.access != Access::Read {
+                return Err(EPERM.into());
+            }
+            let c = c.with_aux(Arc::new(NsWalk::default()));
+            return dev::open_checked(c, mode, perm);
+        }
         dev::open_checked(c, mode, perm)
     }
 
@@ -200,7 +210,12 @@ impl Dev for ProcDev {
             File::Fd => fds(&p)?,
             File::Mem => return mem(&p, buf, offset),
             File::Noteid => alloc::format!("{}", p.noteid()).into_bytes(),
-            File::Ns => ns(&p)?,
+            File::Ns => {
+                let mut text = ns(&p, c)?;
+                text.truncate(buf.len());
+                buf[..text.len()].copy_from_slice(&text);
+                return Ok(text.len());
+            }
             File::Segment => segments(&p),
             File::Status => status(&p).into_bytes(),
             File::Wait => return wait(&p, buf),
@@ -216,14 +231,22 @@ impl Dev for ProcDev {
         let p = proc_of(c)?;
         let text = buf.strip_suffix(b"\n").unwrap_or(buf);
         match File::from_path(c.qid.path).ok_or(ENONEXIST)? {
-            File::Ctl => match text {
-                b"kill" => {
-                    if !note::kill(&p) {
-                        return Err(EPERM.into());
+            File::Ctl => {
+                let words: Vec<&[u8]> = text
+                    .split(|&b| b == b' ' || b == b'\t')
+                    .filter(|w| !w.is_empty())
+                    .collect();
+                match words.as_slice() {
+                    [b"kill"] => {
+                        if !note::kill(&p) {
+                            return Err(EPERM.into());
+                        }
                     }
+                    // Every process is eve's, who may set any priority.
+                    [b"pri", n] => p.set_pri(usize::try_from(atoi(n).max(0)).unwrap_or(0)),
+                    _ => return Err(EBADCTL.into()),
                 }
-                _ => return Err(EBADCTL.into()),
-            },
+            }
             File::Note => {
                 if !note::post(&p, buf, note::From::User) {
                     return Err("note not posted".into());
@@ -244,6 +267,20 @@ impl Dev for ProcDev {
         }
         Ok(buf.len())
     }
+}
+
+/// Plan 9's `atoi`: an optional sign and the digits that follow, else 0.
+fn atoi(t: &[u8]) -> i64 {
+    let (neg, digits) = match t.split_first() {
+        Some((b'-', rest)) => (true, rest),
+        Some((b'+', rest)) => (false, rest),
+        _ => (false, t),
+    };
+    let n = digits
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .fold(0i64, |n, &b| n.saturating_mul(10).saturating_add(i64::from(b - b'0')));
+    if neg { -n } else { n }
 }
 
 /// `status`: Plan 9's layout, fixed-width fields.
@@ -302,51 +339,63 @@ fn fds(p: &Proc) -> Result<Vec<u8>> {
     Ok(s.into_bytes())
 }
 
-/// Quotes `s` as `rc` would need it.
-fn quote(s: &str) -> String {
-    if !s.is_empty() && !s.chars().any(|c| " \t'#=;&|^$`{}()<>[]*?\"\\".contains(c)) {
-        return String::from(s);
-    }
-    alloc::format!("'{}'", s.replace('\'', "''"))
+/// Where a reader of `ns` has got to (Plan 9's `Mntwalk`): the id of
+/// the last mount it was given, and whether it has had the `cd` line.
+#[derive(Debug, Default)]
+struct NsWalk {
+    last: AtomicU64,
+    cd_done: AtomicBool,
 }
 
-/// `ns`: the mount table as `bind` commands, then `cd`.
-fn ns(p: &Proc) -> Result<Vec<u8>> {
+/// Plan 9's `int2flag`: a mount's flags as `bind` takes them.
+fn flag_text(f: BindFlags) -> String {
+    if f.bits() == 0 {
+        return String::new();
+    }
+    let mut s = String::from("-");
+    for (bit, c) in [
+        (BindFlags::AFTER, 'a'),
+        (BindFlags::BEFORE, 'b'),
+        (BindFlags::CREATE, 'c'),
+        (BindFlags::CACHE, 'C'),
+    ] {
+        if f.contains(bit) {
+            s.push(c);
+        }
+    }
+    s
+}
+
+/// `ns`: each read gives the next mount in the order they were made, as
+/// a `bind` or `mount` command, then `cd` and the current directory,
+/// then nothing; as Plan 9's.
+fn ns(p: &Proc, c: &Chan) -> Result<Vec<u8>> {
+    let walk = c.aux::<NsWalk>().ok_or(ENOMEM)?;
+    if walk.cd_done.load(Ordering::Relaxed) {
+        return Ok(Vec::new());
+    }
     let (pgrp, dot) = {
         let f = p.files().lock();
         let f = f.as_ref().ok_or(EPROCDIED)?;
         (f.pgrp.clone(), f.dot.name.clone())
     };
-    let mut s = String::new();
-    for (from, members) in pgrp.describe() {
-        // Members before the mount point itself were bound before it, and
-        // those after it after; with no mount point among them, the first
-        // replaced what was there.
-        let itself = members.iter().position(|m| m.itself);
-        for (i, m) in members.iter().enumerate() {
-            if m.itself {
-                continue;
-            }
-            let mut flags = String::from(match itself {
-                Some(at) if i < at => "-b",
-                None if i == 0 => "",
-                _ => "-a",
-            });
-            if m.create {
-                flags.push_str(if flags.is_empty() { "-c" } else { "c" });
-            }
-            let _ = writeln!(
-                s,
-                "bind {}{}{} {}",
-                flags,
-                if flags.is_empty() { "" } else { " " },
-                quote(&m.name),
-                quote(&from)
-            );
-        }
-    }
-    let _ = writeln!(s, "cd {}", quote(&dot));
-    Ok(s.into_bytes())
+    let Some(entry) = pgrp.next_entry(walk.last.load(Ordering::Relaxed)) else {
+        walk.cd_done.store(true, Ordering::Relaxed);
+        return Ok(alloc::format!("cd {dot}\n").into_bytes());
+    };
+    let mount = &entry.mount;
+    walk.last.store(mount.id, Ordering::Relaxed);
+    let flag = flag_text(mount.flags);
+    let line = match devmnt::transport(&mount.to).filter(|_| mount.to.name == "#M") {
+        Some(t) => alloc::format!(
+            "mount {flag} {} {} {}\n",
+            devsrv::name_of(t).unwrap_or_else(|| t.name.clone()),
+            entry.from,
+            mount.spec.as_deref().unwrap_or("")
+        ),
+        None => alloc::format!("bind {flag} {} {}\n", mount.to.name, entry.from),
+    };
+    Ok(line.into_bytes())
 }
 
 /// `segment`: a line per segment.

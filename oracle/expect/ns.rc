@@ -1,0 +1,16 @@
+# ns: a line for each mount, in the order made, with its flags and ns's
+# quoting; the mount point itself in a new union; a union bound whole;
+# then cd. And its usage.
+rfork n
+d=`{pwd}
+mkdir a b e
+bind -a a b
+bind -bc '#c' e
+bind e a
+cd /
+ns >$d/out
+cd $d
+tail -7 out
+ns -x || echo usage failed
+ns 1 2 || echo usage failed
+ns none || echo usage failed

@@ -1,0 +1,10 @@
+bind  /tmp/oracle/expect/ns/b /tmp/oracle/expect/ns/b 
+bind -a /tmp/oracle/expect/ns/a /tmp/oracle/expect/ns/b 
+bind  /tmp/oracle/expect/ns/e /tmp/oracle/expect/ns/e 
+bind -bc '#c' /tmp/oracle/expect/ns/e 
+bind  /tmp/oracle/expect/ns/e /tmp/oracle/expect/ns/a 
+bind -a /tmp/oracle/expect/ns/e /tmp/oracle/expect/ns/a 
+cd /
+usage failed
+usage failed
+usage failed

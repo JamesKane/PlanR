@@ -56,6 +56,15 @@ fn dirgen(_: &Chan, i: usize) -> Option<Entry> {
     SRVS.lock().get(i).map(entry)
 }
 
+/// The name `#s/name` that `c` is posted under, if it is: Plan 9's
+/// `srvname`.
+pub(crate) fn name_of(c: &Arc<Chan>) -> Option<String> {
+    SRVS.lock()
+        .iter()
+        .find(|s| s.chan.as_ref().is_some_and(|p| Arc::ptr_eq(p, c)))
+        .map(|s| alloc::format!("#s/{}", s.name))
+}
+
 impl Dev for SrvDev {
     fn dc(&self) -> char {
         's'

@@ -237,7 +237,15 @@ fn unions() -> Check {
     ensure(number(&buf[..n]).is_some(), "/dev/rtc")?;
     r::unmount(Some(c"#r"), c"/dev").map_err(|_| "unmount #r /dev failed")?;
     ensure(!lists(c"/dev", "rtc")?, "rtc still in /dev")?;
-    ensure(lists(c"/dev", "cons")?, "cons gone from /dev")
+    ensure(lists(c"/dev", "cons")?, "cons gone from /dev")?;
+    // One member from a mount point that is not the first made: the
+    // others, and the other mount points, stay.
+    r::bind(c"#r", c"/env", BindFlags::BEFORE).map_err(|_| "bind -b #r /env failed")?;
+    ensure(lists(c"/env", "rtc")?, "/env lacks rtc")?;
+    r::unmount(Some(c"#r"), c"/env").map_err(|_| "unmount #r /env failed")?;
+    ensure(!lists(c"/env", "rtc")?, "rtc still in /env")?;
+    ensure(lists(c"/env", "greeting")?, "/env lost its own")?;
+    ensure(lists(c"/dev", "cons")?, "unmounting from /env changed /dev")
 }
 
 /// `dup` shares the offset; `#d` opens to the same file and describes it.
@@ -282,23 +290,27 @@ fn descriptors() -> Check {
     Ok(())
 }
 
-/// `chdir`, relative names, `.` and `..`.
+/// `chdir`, relative names, `.` and `..`, in the programs' directory,
+/// `/$cputype/bin` bound on `/bin`.
 fn directories() -> Check {
-    r::chdir(c"/boot").map_err(|_| "chdir /boot failed")?;
-    let fd = r::open(c"targs", EXEC).map_err(|_| "cannot open targs relative to /boot")?;
+    let cpu = r::getenv(b"cputype").ok_or("no $cputype")?;
+    let bin = r::cstr(&[&b"/"[..], &cpu, b"/bin"].concat()).map_err(|_| "bad $cputype")?;
+    r::bind(&bin, c"/bin", BindFlags::empty()).map_err(|_| "bind /$cputype/bin /bin failed")?;
+    r::chdir(c"/bin").map_err(|_| "chdir /bin failed")?;
+    let fd = r::open(c"targs", EXEC).map_err(|_| "cannot open targs relative to /bin")?;
     let mut path = [0u8; 64];
     let n = r::fd2path(fd, &mut path).map_err(|_| "fd2path failed")?;
-    ensure(&path[..n] == b"/boot/targs", "relative name not made whole")?;
+    ensure(&path[..n] == b"/bin/targs", "relative name not made whole")?;
     r::close(fd).map_err(|_| "close failed")?;
     let mut sb = [0u8; 128];
     let d = stat_dir(c".", &mut sb)?;
-    ensure(d.name == "boot" && d.qid.is_dir(), "stat .")?;
+    ensure(d.name == "bin" && d.qid.is_dir(), "stat .")?;
     r::chdir(c"..").map_err(|_| "chdir .. failed")?;
-    let d = stat_dir(c"boot/./targs/../tmem", &mut sb)?;
+    let d = stat_dir(c"bin/./targs/../tmem", &mut sb)?;
     ensure(d.name == "tmem" && d.mode & 0o111 != 0, "stat through . and ..")?;
     let d = stat_dir(c"/", &mut sb)?;
     ensure(d.name == "/" && d.qid.is_dir(), "stat /")?;
-    fails(r::chdir(c"/boot/targs"), b"not a directory", "chdir to a file")?;
+    fails(r::chdir(c"/bin/targs"), b"not a directory", "chdir to a file")?;
     let fd = r::open(c"/", READ).map_err(|_| "cannot open /")?;
     fails(
         r::seek(fd, 5, Whence::Start),
@@ -321,7 +333,7 @@ fn errors() -> Check {
         "an unknown device",
     )?;
     fails(
-        r::open(c"/boot/targs", WRITE),
+        r::open(c"/bin/targs", WRITE),
         b"permission denied",
         "write to the archive",
     )?;
@@ -358,14 +370,14 @@ fn errors() -> Check {
     r::close(fd).map_err(|_| "close failed")
 }
 
-/// Copies `/boot/targs` into `#e` and runs the copy.
+/// Copies `/bin/targs` into `#e` and runs the copy.
 fn exec_from_memory() -> Check {
     let mut buf = [0u8; 8192];
-    let from = r::open(c"/boot/targs", READ).map_err(|_| "cannot open /boot/targs")?;
+    let from = r::open(c"/bin/targs", READ).map_err(|_| "cannot open /bin/targs")?;
     let to = r::create(c"/env/targs", WRITE, 0o755).map_err(|_| "cannot create /env/targs")?;
     let mut total = 0;
     loop {
-        let n = r::read(from, &mut buf).map_err(|_| "read of /boot/targs failed")?;
+        let n = r::read(from, &mut buf).map_err(|_| "read of /bin/targs failed")?;
         if n == 0 {
             break;
         }

@@ -1,0 +1,21 @@
+#!/bin/rc
+# terminal startup, as Plan 9's, for the devices and services Plan R has
+
+# bind all likely devices (#c, #d, #e, #p, #s and #P are bound by newns)
+for(i in r)
+	/bin/bind -a '#'^$i /dev >/dev/null >[2=1]
+
+# we do this before we have a name.  we may need to do network
+# setup so that we can get a name.
+if(test -e /rc/bin/termrc.local)
+	. /rc/bin/termrc.local
+
+sysname=`{cat /dev/sysname}
+if (~ $#sysname 0 || ~ $sysname '') {
+	sysname = gnot			# default
+	echo -n $sysname >/dev/sysname
+}
+
+# machine specific startup (e.g., for devices not probed)
+if(test -e /cfg/$sysname/termrc)
+	. /cfg/$sysname/termrc

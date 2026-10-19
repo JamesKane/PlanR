@@ -135,10 +135,10 @@ extern "C" fn boot_main(info: usize) -> ! {
         Some(TestMode::Run) => {
             let failed = ktest::run();
             assert!(failed == 0, "{failed} kernel tests failed");
-            run_init(&["init"], INIT_SECS)
+            run_init(&config, Some("/sys/test/run"), INIT_SECS)
         }
-        Some(TestMode::Cons) => run_init(&["init", "-i"], INIT_SECS),
-        Some(TestMode::Oracle) => run_init(&["init", "-o"], ORACLE_SECS),
+        Some(TestMode::Cons) => run_cons(&config),
+        Some(TestMode::Oracle) => run_init(&config, Some("/sys/test/oracle"), ORACLE_SECS),
         Some(TestMode::Trap) => trap_test(),
         Some(TestMode::Overflow) => overflow_test(),
         Some(TestMode::AcpiDump) => {
@@ -153,10 +153,10 @@ extern "C" fn boot_main(info: usize) -> ! {
         None => {}
     }
     report_interrupts();
-    // There is no shell yet: init runs the test programs and exits, and
-    // the kernel idles on.
-    if let Err(e) = exec::start_init(&["init"]) {
-        println!("kernel: cannot start /boot/init: {e}");
+    // Boot builds the name space and runs init, which runs termrc and then
+    // rc on the console, again whenever it exits.
+    if let Err(e) = exec::start_init(exec::boot_env(&config, None)) {
+        println!("kernel: cannot start /boot/boot: {e}");
     }
     println!("kernel: boot complete; idling");
     cpu::idle_loop(cpu::current())
@@ -171,32 +171,42 @@ fn trap_test() -> ! {
     panic!("read of unmapped {:#x} returned {v:#x}", trap::UNMAPPED);
 }
 
-/// How long init may take to run the test programs.
+/// How long the test programs may take.
 const INIT_SECS: u64 = 60;
-/// How long it may take to run the oracle's scripts, on arm64 under
-/// emulation too.
+/// How long the oracle's scripts may take, on arm64 under emulation too.
 const ORACLE_SECS: u64 = 600;
 
-/// After the in-kernel tests: what a real boot does, but waited for. Init
-/// runs the test programs (with `-i`, the one that reads the console) and
-/// must exit normally within `secs` seconds.
-fn run_init(argv: &'static [&'static str], secs: u64) -> ! {
-    let exit = match exec::start_init(argv) {
+/// After the in-kernel tests: what a real boot does, but with `init` set
+/// to the test command `cmd` ([`exec::test_init`]), which must exit
+/// normally within `secs` seconds.
+fn run_init(config: &Config<'_>, cmd: Option<&str>, secs: u64) -> ! {
+    let init = cmd.map(exec::test_init);
+    let exit = match exec::start_init(exec::boot_env(config, init.as_deref())) {
         Ok(exit) => exit,
-        Err(e) => panic!("cannot start /boot/init: {e}"),
+        Err(e) => panic!("cannot start /boot/boot: {e}"),
     };
     assert!(
         clock::wait_until(|| exit.lock().is_some(), secs * 1_000_000_000),
-        "init did not finish within {secs} s"
+        "the tests did not finish within {secs} s"
     );
     let msg = exit.lock().take().unwrap_or_default();
     assert!(
         msg.is_empty(),
-        "init exited: {}",
+        "the tests exited: {}",
         alloc::string::String::from_utf8_lossy(&msg)
     );
     println!("{OK_MARKER}");
     arch::exit(arch::ExitCode::Success);
+}
+
+/// `test=cons`: a real boot, to init and rc on the console, for the
+/// harness to type a session to; the session ends by halting the machine
+/// through `/dev/reboot`, so this only waits.
+fn run_cons(config: &Config<'_>) -> ! {
+    if let Err(e) = exec::start_init(exec::boot_env(config, None)) {
+        panic!("cannot start /boot/boot: {e}");
+    }
+    cpu::idle_loop(cpu::current())
 }
 
 /// `test=reset`: the first boot of a fresh log ring resets warm; the next

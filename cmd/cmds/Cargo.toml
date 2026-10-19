@@ -151,3 +151,39 @@ r = { path = "../../lib/r" }
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "bind"
+path = "src/bin/bind.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "mount"
+path = "src/bin/mount.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "newns"
+path = "src/bin/newns.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "ns"
+path = "src/bin/ns.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "ps"
+path = "src/bin/ps.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "unmount"
+path = "src/bin/unmount.rs"
+test = false
+bench = false

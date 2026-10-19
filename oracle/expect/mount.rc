@@ -1,0 +1,17 @@
+# mount: a server posted in /srv, in place with -c and after a
+# directory in a union, -q, its usage, and how ns shows the mounts.
+rfork n
+ramfs -S oracle.mount
+mkdir u v
+echo here >v/b
+mount -c /srv/oracle.mount u
+echo served >u/a
+cat u/a
+mount -a /srv/oracle.mount v
+ls v
+mount -q /srv/nonesuch v && echo quiet
+mount -ab /srv/oracle.mount v || echo usage failed
+mount /srv/oracle.mount || echo usage failed
+ns >out
+tail -4 out
+rm /srv/oracle.mount

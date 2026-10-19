@@ -315,35 +315,53 @@ pub(crate) fn chdir(name: u64) -> Result<u64> {
     Ok(0)
 }
 
-/// `bind(name, old, flags)`
+/// The flags `bind` and `mount` take, as Plan 9 checks them.
+fn bind_flags(flags: u64) -> Result<BindFlags> {
+    let f = BindFlags::from_bits(flags).ok_or(EBADARG)?;
+    if f.contains(BindFlags::BEFORE | BindFlags::AFTER) {
+        return Err(EBADARG.into());
+    }
+    Ok(f)
+}
+
+/// `bind(name, old, flags) -> id`: the id is the mount's sequence number.
 pub(crate) fn bind(name: u64, old: u64, flags: u64) -> Result<u64> {
+    let flags = bind_flags(flags)?;
     let (name, old) = (name_arg(name)?, name_arg(old)?);
-    let flags = BindFlags::from_bits(flags).ok_or(EBADARG)?;
     let ns = NameSpace::current()?;
     let new = chan::walk(&ns.names(), &name, true)?;
     let old = chan::walk(&ns.names(), &old, false)?.chan;
-    ns.pgrp().mount(new, &old, flags)?;
-    Ok(0)
+    ns.pgrp().mount(&new, &old, flags, None)
 }
 
 /// `unmount(name, old)`: a null `name` unmounts everything on `old`.
+/// `name` is opened, as Plan 9 does, so that a file such as `/srv/x`
+/// gives the chan behind it, which a mount is matched by too.
 pub(crate) fn unmount(name: u64, old: u64) -> Result<u64> {
     let name = if name == 0 { None } else { Some(name_arg(name)?) };
     let old = name_arg(old)?;
     let ns = NameSpace::current()?;
-    let new = name.map(|n| chan::walk(&ns.names(), &n, true)).transpose()?;
     let old = chan::walk(&ns.names(), &old, false)?.chan;
-    ns.pgrp().unmount(new.as_ref().map(|w| &w.chan), &old)?;
+    let new = name.map(|n| chan::open(&ns.names(), &n, mode_read())).transpose()?;
+    ns.pgrp().unmount(new.as_deref(), &old)?;
+    drop(new);
     Ok(0)
 }
 
-/// `mount(fd, afd, old, flags, aname)`: attaches to the 9P server on `fd`
+fn mode_read() -> OpenMode {
+    OpenMode {
+        access: Access::Read,
+        flags: OpenFlags::empty(),
+    }
+}
+
+/// `mount(fd, afd, old, flags, aname) -> id`: attaches to the 9P server on `fd`
 /// and mounts its tree `aname` (null for the default) on `old`, as `bind`
 /// would; `afd` is a file from `fauth`, or -1.
 pub(crate) fn mount(fd: u64, afd: u64, old: u64, flags: u64, aname: u64) -> Result<u64> {
     let old = name_arg(old)?;
     let aname = if aname == 0 { String::new() } else { name_arg(aname)? };
-    let flags = BindFlags::from_bits(flags).ok_or(EBADARG)?;
+    let flags = bind_flags(flags)?;
     let ns = NameSpace::current()?;
     if ns.pgrp().noattach() {
         return Err(ENOATTACH.into());
@@ -352,15 +370,21 @@ pub(crate) fn mount(fd: u64, afd: u64, old: u64, flags: u64, aname: u64) -> Resu
     let afile = if afd == u64::MAX { None } else { Some(chan_of(afd)?) };
     let old = chan::walk(&ns.names(), &old, false)?.chan;
     let root = devmnt::attach(&c, afile.as_deref(), &aname)?;
-    ns.pgrp().mount(
-        Walked {
+    let id = ns.pgrp().mount(
+        &Walked {
             chan: root,
             union: None,
         },
         &old,
         flags,
+        Some(&aname),
     )?;
-    Ok(0)
+    // A mount closes the descriptor it was given, as Plan 9's does.
+    drop(c);
+    if let Ok(c) = pgrp::fgrp()?.close(fd) {
+        drop(c);
+    }
+    Ok(id)
 }
 
 /// `fversion(fd, msize, buf, n) -> n`: sets up the 9P session on `fd`,

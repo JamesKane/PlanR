@@ -327,10 +327,11 @@ on Plan R and on host plan9port (see [TESTING.md](TESTING.md)).
    tests) `ls cp mv rm mkdir pwd touch chmod basename
    cleanname seq date sleep wc tee test cmp xd strings tail du`, with
    the `oracle/cmd` and `oracle/expect` corpora.
-9. Name-space commands (`bind mount unmount ns ps kill`), `newns` with
-   `/lib/namespace`, `root/` in the archive; the real `init` (name
-   space, `termrc`, `rc -i`); the P2 test programs under `/sys/test`,
-   run by rc scripts with `test=1`.
+9. ✅ Name-space commands (`bind mount unmount ns ps`; `kill`, Plan 9's
+   rc script, is in `/rc/bin` and needs `sed`, slice 10), `newns` with
+   `/lib/namespace` (and `auth/newns`), `root/` in the archive; the real
+   boot (`/boot/boot`) and `init` (name space, `termrc`, the profile's
+   `rc -i`); the P2 test programs run by `/sys/test/run` with `test=1`.
 10. Regexp (`libregexp` semantics), `grep sed tr sort uniq`.
 11. `awk` and `diff`.
 12. `mk`.

@@ -103,7 +103,7 @@ pub(crate) struct Proc {
     pid: u64,
     /// Its program's name, once it has one.
     name: SpinLock<String>,
-    pri: usize,
+    pri: AtomicUsize,
     /// The CPU it must run on, or [`UNWIRED`].
     wired: usize,
     state: AtomicU8,
@@ -216,7 +216,7 @@ impl core::fmt::Debug for Proc {
         f.debug_struct("Proc")
             .field("pid", &self.pid)
             .field("name", &*self.name.lock())
-            .field("pri", &self.pri)
+            .field("pri", &self.pri())
             .field("state", &self.state())
             .finish_non_exhaustive()
     }
@@ -281,7 +281,13 @@ impl Proc {
     }
 
     pub(crate) fn pri(&self) -> usize {
-        self.pri
+        self.pri.load(Ordering::Relaxed)
+    }
+
+    /// Sets its priority, clamped to the range, as Plan 9's
+    /// `procpriority`; it takes effect the next time it is queued.
+    pub(crate) fn set_pri(&self, pri: usize) {
+        self.pri.store(pri.min(NPRI - 1), Ordering::Relaxed);
     }
 
     /// When it was made, in counter nanoseconds.
@@ -298,8 +304,30 @@ impl Proc {
         self.args.lock().clone()
     }
 
+    /// Keeps `argv` for `#p/n/args`, as Plan 9's `procargs` gives them:
+    /// each quoted as `%q` quotes, with blanks between.
     pub(crate) fn set_args(&self, argv: &[Vec<u8>]) {
-        *self.args.lock() = argv.join(&b' ');
+        let mut text = Vec::new();
+        for (i, a) in argv.iter().enumerate() {
+            if i > 0 {
+                text.push(b' ');
+            }
+            // `%q`: quoted if empty, or holding a quote or anything up to a
+            // blank; a quote inside is doubled.
+            if a.is_empty() || a.iter().any(|&c| c <= b' ' || c == b'\'') {
+                text.push(b'\'');
+                for &c in a {
+                    if c == b'\'' {
+                        text.push(c);
+                    }
+                    text.push(c);
+                }
+                text.push(b'\'');
+            } else {
+                text.extend_from_slice(a);
+            }
+        }
+        *self.args.lock() = text;
     }
 
     /// Marks a note posted: an interruptible sleep ends, and the way out to
@@ -543,7 +571,7 @@ pub(crate) fn fork(mem: Arc<Memory>, files: Files, wait: bool, noteg: bool) -> O
     let inherited = me.notes.lock().inherit();
     let how = Spawn {
         name: &name,
-        pri: me.pri,
+        pri: me.pri(),
         wired: None,
     };
     let b = Birth {
@@ -587,7 +615,7 @@ fn make(how: Spawn<'_>, stack: Stack, b: Birth) -> Arc<Proc> {
     let p = Arc::new(Proc {
         pid,
         name: SpinLock::new(String::from(how.name)),
-        pri: how.pri,
+        pri: AtomicUsize::new(how.pri),
         wired,
         state: AtomicU8::new(State::Sleeping as u8),
         on_cpu: AtomicBool::new(false),
@@ -680,7 +708,7 @@ pub(crate) fn ready(p: Arc<Proc>) {
         return;
     }
     let target = choose_cpu(&p);
-    let pri = p.pri;
+    let pri = p.pri();
     let pl = arch::splhi();
     enqueue(target, p);
     let me = cpu::current().index();
@@ -710,7 +738,7 @@ fn choose_cpu(p: &Proc) -> usize {
 }
 
 fn enqueue(cpu: usize, p: Arc<Proc>) {
-    let pri = p.pri;
+    let pri = p.pri();
     QUEUES[cpu].lock().q[pri].push_back(p);
     QUEUED[cpu].fetch_add(1, Ordering::Relaxed);
 }
@@ -779,7 +807,7 @@ pub(crate) fn tick() {
             if l.quantum > 0 {
                 return;
             }
-            p.pri
+            p.pri()
         }
         None => 0,
     };
@@ -910,7 +938,7 @@ fn reschedule(how: Leave) -> Reaped {
     // SAFETY: interrupts are off; `l` is not used after the switch.
     let l = unsafe { local() };
     let min = match (&l.current, how) {
-        (Some(p), Leave::Requeue) => p.pri,
+        (Some(p), Leave::Requeue) => p.pri(),
         (None, Leave::Requeue) | (Some(_), _) => 0,
         (None, _) => panic!("a CPU's own context cannot sleep or exit"),
     };
@@ -940,7 +968,7 @@ fn reschedule(how: Leave) -> Reaped {
             next.on_cpu.store(true, Ordering::Relaxed);
             next.set_state(State::Running);
             next.last_cpu.store(me, Ordering::Relaxed);
-            RUNNING_PRI[me].store(next.pri + 1, Ordering::Release);
+            RUNNING_PRI[me].store(next.pri() + 1, Ordering::Release);
             let to = next.context.get().cast_const();
             l.quantum = QUANTUM;
             (l.current.replace(next), to)

@@ -1,0 +1,26 @@
+# bind: in place of a directory, before and after it in a union (whose
+# entries are each member's, duplicates and all), creating with -c, -q,
+# and its usage.
+rfork n
+mkdir a b u
+echo in a >a/one
+echo in b >b/two
+bind a u
+ls u
+bind -a b u
+ls u
+cat u/two
+bind -b b u
+ls u
+unmount u
+ls u
+bind -c a u
+echo made >u/three
+cat a/three
+bind b u
+touch u/four >[2]/dev/null || echo create failed
+bind -q nonesuch u && echo quiet
+bind nonesuch u >[2]/dev/null || echo bind failed
+bind -ab a u || echo usage failed
+bind a || echo usage failed
+bind -z a u || echo usage failed

@@ -1,25 +1,28 @@
-//! The first user process. It builds the name space, as Plan 9's
-//! `/lib/namespace` would, opens the console as descriptors 0, 1 and 2,
-//! mounts a `ramfs` on `/tmp`, then runs the test programs from the boot archive at once, each with a
-//! copy of its name space, environment and descriptors, and checks how
-//! each one exits. It prints a line for each program (only failures with
-//! `-q`) and a summary; it exits normally only if every program passed.
-//! With `-i` it runs instead the programs that need someone (the test
-//! harness) typing at the console, one after another: `tcons`, then an
-//! interactive `rc`. With `-o` it runs only `toracle`, which runs the
-//! oracle scripts for `xtask oracle`.
+//! `/$cputype/init [-ctm] [cmd]`, as Plan 9's `init` (`cmd/init.c`): run
+//! by boot, it sets its priority, puts `objtype`, `service` and
+//! `timezone` in the environment, builds the name space from
+//! `/lib/namespace` (`newns`), and runs rc on the console for good. A
+//! terminal (`-t`) first runs `termrc` and the user's `lib/profile`
+//! through `rc -c`; a CPU server (`-c`, the default) runs `cpurc` unless
+//! `-m` (manual) says not to. With `cmd`, the first rc runs that instead.
+//! Each time rc exits, init starts another a second later.
 
 #![no_std]
 #![no_main]
+// libr's errors are their text, kept by value.
+#![allow(clippy::result_large_err)]
 
+extern crate alloc;
+
+use alloc::ffi::CString;
+use alloc::format;
+use alloc::vec::Vec;
 use core::ffi::CStr;
-use core::fmt::Write as _;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use r::{Access, BindFlags, OpenFlags, OpenMode, RforkFlags as F};
+use r::{Access, NoteHow, OpenFlags, OpenMode, Rerr, RforkFlags as F, Text};
 
 r::main!(run);
-
-const _: () = assert!(INTERACTIVE.len() <= PROGRAMS.len() && ORACLE.len() <= PROGRAMS.len());
 
 const fn mode(access: Access) -> OpenMode {
     OpenMode {
@@ -28,248 +31,200 @@ const fn mode(access: Access) -> OpenMode {
     }
 }
 
-const READ: OpenMode = mode(Access::Read);
-const WRITE: OpenMode = mode(Access::Write);
-
-type Check = Result<(), &'static str>;
-
-fn ensure(ok: bool, why: &'static str) -> Check {
-    if ok { Ok(()) } else { Err(why) }
-}
-
-/// What a program should exit with: the status after its name and pid,
-/// exactly or as a prefix.
-#[derive(Clone, Copy)]
-enum Want {
-    Normal,
-    Status(&'static [u8]),
-    Trap,
-}
-
-const PROGRAMS: &[(&CStr, &[&CStr], Want)] = &[
-    (c"/boot/tmem", &[c"tmem"], Want::Normal),
-    (
-        c"/boot/targs",
-        &[c"targs", c"one", c"two"],
-        Want::Status(b"targs one two"),
-    ),
-    (c"/boot/texec", &[c"texec"], Want::Status(b"targs from exec")),
-    (c"/boot/tfault", &[c"tfault", c"null"], Want::Trap),
-    (c"/boot/tfault", &[c"tfault", c"text"], Want::Trap),
-    (c"/boot/tfault", &[c"tfault", c"brk"], Want::Trap),
-    (c"/boot/tfault", &[c"tfault", c"stack"], Want::Trap),
-    (c"/boot/tfile", &[c"tfile"], Want::Status(b"targs from env")),
-    (c"/boot/tproc", &[c"tproc"], Want::Normal),
-    (c"/boot/tnote", &[c"tnote"], Want::Normal),
-    (c"/boot/t9p", &[c"t9p"], Want::Normal),
-    (
-        c"/boot/tlibr",
-        &[c"tlibr", c"-v", c"-o", c"out", c"file1", c"file2"],
-        Want::Normal,
-    ),
-    (c"/boot/tsys", &[c"tsys"], Want::Normal),
-    (c"/boot/tramfs", &[c"tramfs"], Want::Normal),
-    (c"/boot/trc", &[c"trc"], Want::Normal),
-];
-
-/// The programs `-i` runs, in turn.
-const INTERACTIVE: &[(&CStr, &[&CStr], Want)] = &[
-    (c"/boot/tcons", &[c"tcons"], Want::Normal),
-    (c"/boot/rc", &[c"rc", c"-i"], Want::Normal),
-];
-
-/// The program `-o` runs.
-const ORACLE: &[(&CStr, &[&CStr], Want)] = &[(c"/boot/toracle", &[c"toracle"], Want::Normal)];
-
-/// The binds, in order: what, where, how.
-const NAMESPACE: &[(&CStr, &CStr, BindFlags)] = &[
-    (c"/boot", c"/bin", BindFlags::empty()),
-    (c"#c", c"/dev", BindFlags::empty()),
-    (c"#r", c"/dev", BindFlags::AFTER),
-    (c"#P", c"/dev", BindFlags::AFTER),
-    (c"#e", c"/env", BindFlags::CREATE),
-    (c"#p", c"/proc", BindFlags::empty()),
-    (c"#s", c"/srv", BindFlags::CREATE),
-    (c"#d", c"/fd", BindFlags::empty()),
-];
-
-/// Writes `text` to standard output, which is the console.
-fn say(text: &[u8]) {
-    let _ = r::write(1, text);
+/// What the rc to run should do.
+struct Init {
+    service: &'static [u8],
+    cmd: Option<Vec<u8>>,
+    manual: bool,
+    iscpu: bool,
 }
 
 fn run(args: r::Args) -> Result<(), &'static str> {
-    let quiet = args.get(1) == Some(b"-q");
-    let (in_turn, programs) = match args.get(1) {
-        Some(b"-i") => (true, INTERACTIVE),
-        Some(b"-o") => (true, ORACLE),
-        _ => (false, PROGRAMS),
+    closefds();
+    r::alarm(0);
+    let mut o = r::Opts::new(args.iter());
+    let mut init = Init {
+        service: b"cpu",
+        cmd: None,
+        manual: false,
+        iscpu: false,
     };
-    namespace()?;
-    let mut pids = [0u64; PROGRAMS.len()];
-    if !in_turn {
-        for (i, &(path, argv, _)) in programs.iter().enumerate() {
-            pids[i] = start(path, argv)?;
+    while let Some(c) = o.next() {
+        match c {
+            'c' => init.service = b"cpu",
+            'm' => init.manual = true,
+            't' => init.service = b"terminal",
+            _ => {}
         }
     }
-    let mut passed = [false; PROGRAMS.len()];
-    let mut text = [0u8; 256];
-    let mut msg = [0u8; 256];
-    for k in 0..programs.len() {
-        if in_turn {
-            pids[k] = start(programs[k].0, programs[k].1)?;
-        }
-        let n = r::await_child(&mut text).map_err(|_| "await found no child")?;
-        let (pid, _, m) = abi::parse_waitmsg(&text[..n], &mut msg).ok_or("bad wait message")?;
-        let i = pids[..programs.len()]
-            .iter()
-            .position(|&p| p == pid)
-            .ok_or("await gave a stranger")?;
-        let msg = &msg[..m];
-        passed[i] = exited_as(msg, pid, programs[i].2);
-        if !passed[i] || !quiet {
-            let mut line = r::Buf::new();
-            let _ = write!(line, "init: {}: ", Joined(programs[i].1));
-            line.put(if passed[i] { b"ok" } else { b"FAILED: " });
-            if !passed[i] {
-                line.put(msg);
+    init.cmd = o.rest().first().map(|c| c.to_vec());
+
+    let pid = r::getpid().unwrap_or(0);
+    let ctl = format!("#p/{pid}/ctl");
+    match r::cstr(ctl.as_bytes()).and_then(|c| r::open(&c, mode(Access::Write))) {
+        Err(_) => r::println!("init: warning: can't open {ctl}: {Rerr}"),
+        Ok(fd) => {
+            if r::write(fd, b"pri 10") != Ok(6) {
+                r::println!("init: warning: can't set priority: {Rerr}");
             }
-            line.put(b"\n");
-            say(line.as_bytes());
+            let _ = r::close(fd);
         }
     }
-    ensure(r::await_child(&mut text).is_err(), "await found a child too many")?;
-    let failed = passed[..programs.len()].iter().filter(|&&p| !p).count();
-    let mut line = r::Buf::new();
-    let _ = writeln!(line, "init: {} passed, {failed} failed", programs.len() - failed);
-    say(line.as_bytes());
-    ensure(failed == 0, "test programs failed")
+
+    let cpu = readenv(c"#e/cputype");
+    setenv(c"#e/objtype", &cpu);
+    setenv(c"#e/service", init.service);
+    cpenv(c"/adm/timezone/local", c"#e/timezone");
+    let user = readenv(c"#c/user");
+    let _systemname = readenv(c"#c/sysname");
+
+    let _ = r::newns(&user, None);
+    init.iscpu = init.service == b"cpu";
+
+    if init.iscpu && !init.manual {
+        fexec(|| rc(&[c"rc", c"-c", c"/rc/bin/cpurc"]));
+    }
+    loop {
+        r::println!("\ninit: starting /bin/rc");
+        fexec(|| rcexec(&init));
+        init.manual = true;
+        init.cmd = None;
+        let _ = r::sleep(1000);
+    }
 }
 
-/// A program's arguments, shown as one line.
-struct Joined<'a>(&'a [&'a CStr]);
+/// Execs rc with `argv`; returns only if that fails.
+fn rc(argv: &[&CStr]) {
+    let _ = r::exec(c"/bin/rc", argv);
+}
 
-impl core::fmt::Display for Joined<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        for (i, a) in self.0.iter().enumerate() {
-            if i > 0 {
-                f.write_str(" ")?;
-            }
-            f.write_str(a.to_str().unwrap_or("?"))?;
+fn rcexec(init: &Init) {
+    if let Some(cmd) = &init.cmd {
+        if let Ok(cmd) = CString::new(cmd.as_slice()) {
+            rc(&[c"rc", c"-c", &cmd]);
         }
-        Ok(())
+    } else if init.manual || init.iscpu {
+        rc(&[c"rc"]);
+    } else if init.service == b"terminal" {
+        rc(&[c"rc", c"-c", c". /rc/bin/termrc; home=/usr/$user; cd; . lib/profile"]);
+    } else {
+        rc(&[c"rc"]);
     }
 }
 
-/// Builds the name space, opens the console as 0, 1 and 2, and checks the
-/// binds took: the console and clock in `/dev`, this process in `/proc`,
-/// and `/env` taking a new file. Then mounts a `ramfs` on `/tmp`.
-fn namespace() -> Check {
-    for &(new, old, flags) in NAMESPACE {
-        r::bind(new, old, flags).map_err(|_| "a bind failed")?;
-    }
-    ensure(r::open(c"/dev/cons", READ) == Ok(0), "cannot open /dev/cons as 0")?;
-    ensure(r::open(c"/dev/cons", WRITE) == Ok(1), "cannot open /dev/cons as 1")?;
-    ensure(r::dup(1, None) == Ok(2), "cannot dup 1 to 2")?;
-    let mut buf = [0u8; 64];
-    let n = read_file(c"/dev/pid", &mut buf)?;
-    let pid = core::str::from_utf8(&buf[..n])
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .ok_or("/dev/pid is not a number")?;
-    let mut name = r::Buf::new();
-    let _ = write!(name, "/proc/{pid}/status\0");
-    let status = CStr::from_bytes_with_nul(name.as_bytes()).map_err(|_| "bad /proc name")?;
-    ensure(read_file(status, &mut buf)? > 0, "this process's status is empty")?;
-    ensure(read_file(c"/dev/rtc", &mut buf)? > 0, "/dev/rtc is empty")?;
-    let fd = r::create(c"/env/init", WRITE, 0o664).map_err(|_| "cannot create in /env")?;
-    ensure(r::write(fd, b"started") == Ok(7), "cannot write to /env")?;
-    r::close(fd).map_err(|_| "close failed")?;
-    r::remove(c"/env/init").map_err(|_| "cannot remove from /env")?;
-    ensure(r::open(c"/fd/0ctl", READ).is_ok(), "/fd lacks 0ctl")?;
-    tmp()
+static GOTNOTE: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn pinhead(_: *mut r::Ureg, note: *const u8) {
+    GOTNOTE.store(true, Ordering::Relaxed);
+    // SAFETY: the kernel passes the note's NUL-terminated text.
+    let m = unsafe { CStr::from_ptr(note.cast()) }.to_bytes();
+    r::eprintln!("init got note '{}'", Text(m));
+    let _ = r::noted(NoteHow::Cont);
 }
 
-/// Runs `ramfs`, in this name space, which it mounts on `/tmp`, and checks
-/// that a file there keeps what is written to it.
-fn tmp() -> Check {
-    let pid = match r::rfork(F::PROC | F::FDG) {
-        Err(_) => return Err("rfork failed"),
+/// Runs `execfn` in a child (Plan 9's `fork`: the name space and the
+/// environment shared, the descriptors copied) with a note group of its
+/// own, and waits for it, carrying on through notes.
+fn fexec(execfn: impl FnOnce()) {
+    let pid = match r::rfork(F::FDG | F::REND | F::PROC) {
         Ok(0) => {
-            let e = r::exec(c"/boot/ramfs", &[c"ramfs"]);
-            let mut why = r::Buf::new();
-            why.put(b"init: exec failed: ");
-            why.put(e.as_bytes());
-            r::exits(Some(why.as_bytes()))
+            let _ = r::rfork(F::NOTEG);
+            execfn();
+            r::println!("init: exec error: {Rerr}");
+            r::exits(Some(b"exec"))
+        }
+        Err(_) => {
+            r::println!("init: fork error: {Rerr}");
+            r::exits(Some(b"fork"))
         }
         Ok(pid) => pid,
     };
-    let mut text = [0u8; 256];
-    let mut msg = [0u8; 256];
-    let n = r::await_child(&mut text).map_err(|_| "await found no ramfs")?;
-    let (who, _, m) = abi::parse_waitmsg(&text[..n], &mut msg).ok_or("bad wait message")?;
-    if who != pid || m != 0 {
-        say(b"init: ramfs: ");
-        say(&msg[..m]);
-        say(b"\n");
-        return Err("ramfs failed");
-    }
-    let fd = r::create(c"/tmp/init", WRITE, 0o664).map_err(|_| "cannot create in /tmp")?;
-    ensure(r::write(fd, b"started") == Ok(7), "cannot write to /tmp")?;
-    r::close(fd).map_err(|_| "close failed")?;
-    let mut buf = [0u8; 16];
-    ensure(
-        read_file(c"/tmp/init", &mut buf)? == 7 && &buf[..7] == b"started",
-        "/tmp lost what was written",
-    )?;
-    r::remove(c"/tmp/init").map_err(|_| "cannot remove from /tmp")
-}
-
-fn read_file(name: &CStr, buf: &mut [u8]) -> Result<usize, &'static str> {
-    let fd = r::open(name, READ).map_err(|_| "cannot open a file to read it")?;
-    let mut n = 0;
-    while n < buf.len() {
-        match r::read(fd, &mut buf[n..]) {
-            Ok(0) => break,
-            Ok(k) => n += k,
+    let _ = r::notify(Some(pinhead));
+    loop {
+        GOTNOTE.store(false, Ordering::Relaxed);
+        let w = match r::wait() {
+            Ok(w) => w,
+            Err(_) if GOTNOTE.load(Ordering::Relaxed) => continue,
             Err(_) => {
-                let _ = r::close(fd);
-                return Err("read failed");
+                r::println!("init: wait error: {Rerr}");
+                return;
+            }
+        };
+        if w.pid != pid {
+            continue;
+        }
+        if w.msg.windows(10).any(|s| s == b"exec error") {
+            r::println!("init: exit string {}", Text(&w.msg));
+            r::println!("init: sleeping because exec failed");
+            loop {
+                let _ = r::sleep(1000);
             }
         }
-    }
-    r::close(fd).map_err(|_| "close failed")?;
-    Ok(n)
-}
-
-/// Starts `path` in a child with copies of the name space, environment
-/// and descriptors, and a note group of its own; returns its pid.
-fn start(path: &CStr, argv: &[&CStr]) -> Result<u64, &'static str> {
-    match r::rfork(F::PROC | F::NAMEG | F::ENVG | F::FDG | F::NOTEG) {
-        Err(_) => Err("rfork failed"),
-        Ok(0) => {
-            let e = r::exec(path, argv);
-            let mut why = r::Buf::new();
-            why.put(b"init: exec failed: ");
-            why.put(e.as_bytes());
-            r::exits(Some(why.as_bytes()))
+        if !w.msg.is_empty() {
+            r::println!("init: rc exit status: {}", Text(&w.msg));
         }
-        Ok(pid) => Ok(pid),
+        return;
     }
 }
 
-/// Whether wait message text `msg` (already unquoted) is the exit `want`
-/// asks of process `pid`: empty for a normal exit, else "name pid:
-/// status".
-fn exited_as(msg: &[u8], pid: u64, want: Want) -> bool {
-    let mut prefix = r::Buf::new();
-    let _ = write!(prefix, " {pid}: ");
-    let p = prefix.as_bytes();
-    let status = msg.windows(p.len()).position(|w| w == p).map(|at| &msg[at + p.len()..]);
-    match (want, status) {
-        (Want::Normal, _) => msg.is_empty(),
-        (Want::Status(s), Some(st)) => st == s,
-        (Want::Trap, Some(st)) => st.starts_with(b"sys: trap: "),
-        _ => false,
+/// The contents of `name`, which may be a device file whose length is 0;
+/// `*unknown*` if it cannot be read.
+fn readenv(name: &CStr) -> Vec<u8> {
+    let unknown = || b"*unknown*".to_vec();
+    let Ok(f) = r::open(name, mode(Access::Read)) else {
+        r::println!("init: can't open {}: {Rerr}", Text(name.to_bytes()));
+        return unknown();
+    };
+    let Ok(d) = r::dirfstat(f) else {
+        r::println!("init: can't stat {}: {Rerr}", Text(name.to_bytes()));
+        return unknown();
+    };
+    let len = d.as_dir().length;
+    // Device files can be zero length but have contents.
+    let len = if len == 0 {
+        64
+    } else {
+        usize::try_from(len).unwrap_or(64)
+    };
+    let mut val = alloc::vec![0u8; len];
+    let n = r::read(f, &mut val);
+    let _ = r::close(f);
+    let Ok(n) = n else {
+        r::println!("init: can't read {}: {Rerr}", Text(name.to_bytes()));
+        return unknown();
+    };
+    val.truncate(n);
+    val
+}
+
+fn setenv(var: &CStr, val: &[u8]) {
+    match r::create(var, mode(Access::Write), 0o644) {
+        Err(_) => r::println!("init: can't open {}", Text(var.to_bytes())),
+        Ok(fd) => {
+            let _ = r::write(fd, val);
+            let _ = r::close(fd);
+        }
+    }
+}
+
+fn cpenv(file: &CStr, var: &CStr) {
+    let Ok(fd) = r::open(file, mode(Access::Read)) else {
+        r::println!("init: can't open {}", Text(file.to_bytes()));
+        return;
+    };
+    let mut buf = alloc::vec![0u8; 8192];
+    match r::read(fd, &mut buf[..8191]) {
+        Ok(i) if i > 0 => {
+            let _ = r::close(fd);
+            setenv(var, &buf[..i]);
+        }
+        _ => r::println!("init: can't read {}: {Rerr}", Text(file.to_bytes())),
+    }
+}
+
+/// Cleans up after boot.
+fn closefds() {
+    for fd in 3..30 {
+        let _ = r::close(fd);
     }
 }

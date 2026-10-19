@@ -7,8 +7,8 @@
 //! documents, `` `{} ``, `<{}` and `>{}`, notes and `sigexit`, rcmain and
 //! the flags.
 //!
-//! `init` binds `/boot` on `/bin`, so `$path`'s default finds `echo`,
-//! `cat` and `rc`. The files the patterns match are made here first, in
+//! `/lib/namespace` binds `/$cputype/bin` on `/bin`, so `$path`'s default
+//! finds `echo`, `cat` and `rc`. The files the patterns match are made here first, in
 //! `/tmp/trc`.
 
 #![no_std]
@@ -525,7 +525,7 @@ fn rc(c: &Case) -> Result<Ran, &'static str> {
                 .collect();
             let mut cmdline: Vec<&CStr> = alloc::vec![c"rc"];
             cmdline.extend(words.iter().map(CString::as_c_str));
-            let e = r::exec(c"/boot/rc", &cmdline);
+            let e = r::exec(c"/bin/rc", &cmdline);
             r::exits(Some(e.as_bytes()))
         }
         Ok(pid) => pid,

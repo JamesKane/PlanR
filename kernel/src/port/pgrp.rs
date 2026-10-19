@@ -11,34 +11,56 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use abi::{BindFlags, RforkFlags};
 
 use crate::port::chan::{Chan, Names, Walked};
 use crate::port::devenv::Egrp;
+use crate::port::devmnt;
 use crate::port::devroot;
 use crate::port::error::{EBADFD, EMOUNT, ENOFD, ENONS, EUNMOUNT, Result};
 use crate::port::lock::SpinLock;
 use crate::port::proc::{self, Rgrp};
 
-/// A directory in a union: what is mounted, and whether creates in the
-/// union go to it.
+/// A directory in a union: what is mounted, how, and when.
 #[derive(Debug, Clone)]
 pub(crate) struct Mount {
     pub(crate) to: Arc<Chan>,
-    pub(crate) create: bool,
+    /// Plan 9's `mountid`: one more for each mount made anywhere, so the
+    /// table can be listed in the order it was built.
+    pub(crate) id: u64,
+    /// The flags it was made with (Plan 9's `mflag`): none for the mount
+    /// point itself in a union.
+    pub(crate) flags: BindFlags,
+    /// The tree asked for, for `mount`.
+    pub(crate) spec: Option<Arc<str>>,
 }
 
-/// A member of a union, as [`Pgrp::describe`] gives it.
-#[derive(Debug)]
-pub(crate) struct Member {
-    pub(crate) name: String,
+impl Mount {
+    fn new(to: Arc<Chan>, flags: BindFlags, spec: Option<Arc<str>>) -> Mount {
+        Mount {
+            to,
+            id: MOUNT_ID.fetch_add(1, Ordering::Relaxed),
+            flags,
+            spec,
+        }
+    }
+
     /// Creates in the union go to it.
-    pub(crate) create: bool,
-    /// It is the mount point itself, in a union made by `BEFORE` or
-    /// `AFTER`.
-    pub(crate) itself: bool,
+    pub(crate) fn create(&self) -> bool {
+        self.flags.contains(BindFlags::CREATE)
+    }
+}
+
+static MOUNT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// An entry of the table, as `#p/n/ns` lists them: a mount and its mount
+/// point's name.
+#[derive(Debug)]
+pub(crate) struct Entry {
+    pub(crate) from: String,
+    pub(crate) mount: Mount,
 }
 
 /// A mount point and the union mounted on it.
@@ -97,82 +119,83 @@ impl Pgrp {
             .map(|m| m.members.clone())
     }
 
-    /// Mounts `new` on `old` as `flags` say: in place of what is there, or
-    /// before or after it in a union. `new` is what walking its name gave,
-    /// so a union there joins whole; `old` is the mount point itself.
-    pub(crate) fn mount(&self, new: Walked, old: &Chan, flags: BindFlags) -> Result<()> {
+    /// Mounts `new` on `old` as `flags` say, as Plan 9's `cmount`: in
+    /// place of what is there, or before or after it in a union. `new` is
+    /// what walking its name gave, so a union there joins whole; `old` is
+    /// the mount point itself. Returns the mount's id.
+    pub(crate) fn mount(&self, new: &Walked, old: &Chan, flags: BindFlags, spec: Option<&str>) -> Result<u64> {
         if new.chan.qid.is_dir() != old.qid.is_dir() {
             return Err(EMOUNT.into());
         }
         let (before, after) = (flags.contains(BindFlags::BEFORE), flags.contains(BindFlags::AFTER));
         let union = before || after;
-        if before && after || union && !old.qid.is_dir() {
+        if !old.qid.is_dir() && union {
             return Err(EMOUNT.into());
         }
-        let create = flags.contains(BindFlags::CREATE);
-        let added: Vec<Mount> = match new.union {
-            Some(members) if union => members
-                .iter()
-                .map(|m| Mount {
-                    to: m.to.clone(),
-                    create,
-                })
-                .collect(),
-            _ => alloc::vec![Mount {
-                to: Arc::new(new.chan.unopened()),
-                create,
-            }],
-        };
-        let itself = Mount {
-            to: Arc::new(old.unopened()),
-            create: false,
-        };
-        let from = old.unopened();
+        // No creating in a union bound whole, unless it is a lone member
+        // that takes creates.
+        if flags.contains(BindFlags::CREATE)
+            && new
+                .union
+                .as_ref()
+                .is_some_and(|u| !u.is_empty() && (u.len() > 1 || !u[0].create()))
+        {
+            return Err(EMOUNT.into());
+        }
         let mut mounts = self.mounts.lock();
         let at = mounts.iter().position(|m| m.from.same_file(old));
         let old_members = match at {
             Some(i) => mounts[i].members.clone(),
             // A new union starts with the mount point itself in it.
-            None if union => Arc::from([itself]),
+            None if union => Arc::from([Mount::new(Arc::new(old.unopened()), BindFlags::empty(), None)]),
             None => Arc::from([]),
         };
-        let members: Arc<[Mount]> = if before {
-            added.iter().chain(old_members.iter()).cloned().collect()
-        } else if after {
-            old_members.iter().chain(added.iter()).cloned().collect()
+        let first = Mount::new(Arc::new(new.chan.unopened()), flags, spec.map(Arc::from));
+        let id = first.id;
+        // The rest of a union bound whole come after its first, in order.
+        let order = if before { BindFlags::BEFORE } else { BindFlags::AFTER };
+        let mut added = alloc::vec![first];
+        if let Some(u) = &new.union {
+            added.extend(
+                u.iter()
+                    .skip(1)
+                    .map(|m| Mount::new(m.to.clone(), order, m.spec.clone())),
+            );
+        }
+        let members: Arc<[Mount]> = if after {
+            old_members.iter().cloned().chain(added).collect()
+        } else if before {
+            added.into_iter().chain(old_members.iter().cloned()).collect()
         } else {
             added.into()
         };
         let old_head = if let Some(i) = at {
             Some(core::mem::replace(&mut mounts[i].members, members))
         } else {
-            mounts.push(Mhead { from, members });
+            mounts.push(Mhead {
+                from: old.unopened(),
+                members,
+            });
             None
         };
         drop(mounts);
         drop((old_head, old_members));
-        Ok(())
+        Ok(id)
     }
 
-    /// The table, for `#p/n/ns`: each mount point's name and its union's
-    /// members.
-    pub(crate) fn describe(&self) -> Vec<(String, Vec<Member>)> {
+    /// The entry after the one with id `last` (from the start if 0), in
+    /// the order the mounts were made: what `#p/n/ns` gives a read.
+    pub(crate) fn next_entry(&self, last: u64) -> Option<Entry> {
         self.mounts
             .lock()
             .iter()
-            .map(|m| {
-                let members = m
-                    .members
-                    .iter()
-                    .map(|u| Member {
-                        name: u.to.name.clone(),
-                        create: u.create,
-                        itself: u.to.same_file(&m.from),
-                    })
-                    .collect();
-                (m.from.name.clone(), members)
+            .flat_map(|h| h.members.iter().map(move |m| (h, m)))
+            .filter(|(_, m)| m.id > last)
+            .min_by_key(|(_, m)| m.id)
+            .map(|(h, m)| Entry {
+                from: h.from.name.clone(),
+                mount: m.clone(),
             })
-            .collect()
     }
 
     /// Unmounts `new` from `old`, or everything mounted there if `new` is
@@ -184,10 +207,17 @@ impl Pgrp {
             None => mounts.remove(i).members,
             Some(new) => {
                 let members = &mounts[i].members;
-                if !members.iter().any(|m| m.to.same_file(new)) {
-                    return Err(EUNMOUNT.into());
-                }
-                let left: Arc<[Mount]> = members.iter().filter(|m| !m.to.same_file(new)).cloned().collect();
+                // The first that is `new`, or is mounted from it.
+                let at = members
+                    .iter()
+                    .position(|m| m.to.same_file(new) || devmnt::transport(&m.to).is_some_and(|t| t.same_file(new)))
+                    .ok_or(EUNMOUNT)?;
+                let left: Arc<[Mount]> = members
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != at)
+                    .map(|(_, m)| m.clone())
+                    .collect();
                 if left.is_empty() {
                     mounts.remove(i).members
                 } else {

@@ -33,12 +33,17 @@ make files there), with standard input from `/dev/null`:
   NAME.root/bin $PLAN9/bin)`: `rc` is Plan 9's, the other commands
   plan9port's. plan9port is found through `$PLAN9`, else `~/plan9port`
   (`scripts/install-plan9port.sh` builds it);
-- on Plan R, by `toracle` (`cmd/utest/src/bin/toracle.rs`), booted with
-  `test=oracle`; the corpora are in the boot archive at
-  `/sys/lib/oracle`. The directories are in `/tmp`, a ramfs.
+- on Plan R, by `toracle` (`cmd/utest/src/bin/toracle.rs`), which
+  `/sys/test/oracle` runs when booted with `test=oracle`, in the name
+  space `/lib/namespace` builds, with an empty environment; the corpora
+  are in the boot archive at `/sys/lib/oracle`. The directories are in
+  `/tmp/oracle`, a ramfs, so `ns` shows names under it.
 
 Write scripts with the commands Plan R has, and only those Plan 9 has
-(there is no `true` or `false`: use `~ a a` and `~ a b`). An error in
+(there is no `true` or `false`: use `~ a a` and `~ a b`). A script that
+binds or mounts starts with `rfork n`: it shares `toracle`'s name space
+otherwise. A file named as a command (`ns >ns`) is found in `.` before
+`/bin`, as on Plan 9. An error in
 rc ends a script, so a case that makes one goes in a subshell, `@{…} ||
 echo failed`, or an `eval`, for the lines after it to run; a command
 that fails does not end it. Keep out of `rc/` and `cmd/` what differs by
@@ -59,6 +64,9 @@ system rather than by program:
   leaves it be; make files of different ages by writing them a second
   apart;
 - the name `stat` gives `.` (Plan 9's is the directory's own name);
+- a missing file's error string: Plan 9's kernel names the file
+  (`'nonesuch' file does not exist`), Plan R's does not yet, so send
+  such errors to `/dev/null`;
 - `seq -f` formats with more than one conversion (plan9port prints
   garbage for the second).
 

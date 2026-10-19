@@ -1,0 +1,22 @@
+# Plan R's name space, as Plan 9's /lib/namespace builds it
+# (see newns(2)). The root is the boot archive, already at /, so
+# there is no root file server to mount.
+
+# kernel devices
+bind #c /dev
+bind #d /fd
+bind -c #e /env
+bind #p /proc
+bind -c #s /srv
+bind -b #P /dev
+
+# standard bin
+bind /$cputype/bin /bin
+bind -a /rc/bin /bin
+
+bind -c /usr/$user/tmp /tmp
+cd /usr/$user
+
+. /lib/namespace.local
+. /lib/namespace.$sysname
+. /cfg/$sysname/namespace

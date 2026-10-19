@@ -513,11 +513,24 @@ fn proc_files() -> Check {
         ensure(contains(segs, kind), "segment misses a segment")?;
     }
     let fds = read_file(proc_file(pid, "fd").get(), &mut buf)?;
-    ensure(fds.starts_with(b"/\n"), "fd does not start with the current directory")?;
+    let mut dot = [0u8; 256];
+    let d = r::open(c".", READ).map_err(|_| "cannot open .")?;
+    let n = r::fd2path(d, &mut dot).map_err(|_| "fd2path of . failed")?;
+    r::close(d).map_err(|_| "close failed")?;
+    ensure(
+        fds.starts_with(&dot[..n]) && fds.get(n) == Some(&b'\n'),
+        "fd does not start with the current directory",
+    )?;
     let me = proc_file(pid, "fd");
     ensure(contains(fds, me.get().to_bytes()), "fd does not list itself")?;
     let ns = read_file(proc_file(pid, "ns").get(), &mut buf)?;
-    ensure(ns.ends_with(b"cd /\n"), "ns does not end with cd")?;
+    // An entry a read, the last `cd` and the current directory.
+    let cd_at = ns.len().checked_sub(n + 4).ok_or("ns is too short")?;
+    ensure(
+        &ns[cd_at..cd_at + 3] == b"cd " && ns[cd_at + 3..ns.len() - 1] == dot[..n] && ns.ends_with(b"\n"),
+        "ns does not end with cd",
+    )?;
+    ensure(ns.starts_with(b"bind "), "ns does not start with a bind")?;
 
     let fd = r::open(proc_file(pid, "mem").get(), READ).map_err(|_| "cannot open mem")?;
     SEM.store(0x5eed, Ordering::Relaxed);

@@ -576,6 +576,15 @@ pub(crate) fn attach(c: &Arc<Chan>, afile: Option<&Chan>, aname: &str) -> Result
     Ok(Chan::new(&MNT, m.id, qid, String::from("#M")).with_aux(Fid::new(&m, c, fid)))
 }
 
+/// The chan carrying the session `c` is a file of, if it is one of
+/// `#M`'s: Plan 9's `c->mchan`.
+pub(crate) fn transport(c: &Chan) -> Option<&Arc<Chan>> {
+    if c.dev.dc() != 'M' {
+        return None;
+    }
+    c.aux::<Fid>().map(|f| &f.transport)
+}
+
 fn fid(c: &Chan) -> Result<&Fid> {
     c.aux::<Fid>().ok_or_else(|| EMOUNTRPC.into())
 }
