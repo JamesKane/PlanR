@@ -178,9 +178,17 @@ compares the parse with a checked-in `summary.txt`. Its first run found
 DBG2 device fields read two bytes early, a bug the synthetic unit test
 shared. The `acpidump` boot test keeps the dump path working.
 
-**Remaining:**
-BTI once the toolchain can emit landing pads; checking SMP on the
-reference boards.
+**Reference boards done (2026-10-18).** Both pass `scripts/hwcheck.ini`
+from a USB stick:
+- **Orange Pi 6 Plus:** 12 of 12 CPUs and 17 tests. It needed EL2 to set
+  VPIDR/VMPIDR and DBG2 parsing fixed. It clears RAM on every reset, so it
+  has no log ring.
+- **Ryzen:** 24 of 24 CPUs and 21 tests, and the log ring survives a
+  reset. It needed 9boot to drop OS-defined memory types, which hang this
+  AMI firmware's ExitBootServices, and to take the console display's
+  framebuffer.
+
+**Remaining:** BTI once the toolchain can emit landing pads.
 
 - **`9boot` (UEFI loader, ours):** our own UEFI bindings (protocol
   GUIDs, Boot/Runtime Services tables, GOP, Simple File System, Loaded Image).

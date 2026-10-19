@@ -1,7 +1,7 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-18, after slice 11 and the first Orange Pi run.
+2026-10-18, after slice 11 and both reference boards.
 
 ## State
 
@@ -34,12 +34,14 @@ Where work stands, for picking it up in a new session. Last updated
 - **The plan of record** is `docs/ROADMAP.md`. Its P1 section lists what
   each slice did and, under **Remaining**, what is left.
 
-## Next steps (P1 remaining)
+## Next steps
 
-In the suggested order:
+P1 is done apart from BTI, which waits on the toolchain. Both reference
+boards pass the hardware check, and the results are recorded below. Next
+is P2 (see `docs/ROADMAP.md`).
 
-1. **Reference boards** (procedure in `docs/HARDWARE.md`, "Booting Plan R
-   on a board"):
+**Reference boards** (procedure in `docs/HARDWARE.md`, "Booting Plan R on
+a board"):
    - **Orange Pi 6 Plus: passed on 2026-10-18** with `scripts/hwcheck.ini`.
      It entered at EL2 and ran at EL1, with PAN on, 12 of 12 CPUs online,
      the DBG2 PL011 console chosen, and the 1920×1080 framebuffer at
@@ -64,10 +66,10 @@ In the suggested order:
        timer one-shot (no TSC-deadline);
      - the RTX 4070's 1920×1080 framebuffer at 0xf800000000;
      - all 21 in-kernel tests passing.
-     Still to check: log-ring survival (`hwreset.ini`). Its FADT reset
-     register is an SMI command (port 0xB2, value 0xBE), and the fallback
-     writes 6 (hard reset) to port 0xCF9; if RAM is lost, try 4 (soft
-     reset).
+     The log ring survives too (`hwreset.ini`): the FADT reset (SMI command,
+     port 0xB2 ← 0xBE) keeps RAM, and the second boot saved the first
+     boot's whole log to `\planr\last.log`. This is the Ryzen's
+     post-mortem path, since it has no serial.
 
 ## Things to know
 

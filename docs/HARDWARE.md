@@ -101,6 +101,8 @@ cycles. ACPI dumps go into `oracle/acpi-corpus/opi6p/`.
 | Network | **Realtek RTL8125 2.5 GbE**; MT7925 Wi-Fi (out of scope) | Shares the RTL8125/8126 driver with the Orange Pi |
 | USB | Chipset and CPU xHCI on PCI; USB4 router (out of scope) | — |
 | Serial | **No serial console** | See the console strategy below |
+| Firmware quirk | ExitBootServices **hangs** if any memory has an OS-defined type (`0x8000_0000`+) (BIOS F2, 2026-10-18) | 9boot allocates only `EfiLoaderData` |
+| RAM across reset | **Kept** through the FADT reset (SMI command, port 0xB2 ← 0xBE) | The log ring works: `hwreset.ini` saved boot 1's whole log |
 
 **Console strategy without serial:** (1) GOP framebuffer console from P1;
 (2) a persistent log ring in loader-reserved RAM that survives warm reset,
