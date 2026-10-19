@@ -280,7 +280,7 @@ plus a toy 9P server). All of them pass on both architectures.
 User test programs are small `no_std` Rust binaries built by `xtask`
 on a first `lib/r` (the full libr is P3).
 
-## P3: Userland bootstrap
+## P3: Userland bootstrap (in progress)
 
 - **`libr`:** the Plan R runtime. Syscall wrappers, `print`/`fmt`
   (Plan 9 `%` verbs as a Rust formatting layer), `bio`-style buffered I/O,
@@ -291,13 +291,50 @@ on a first `lib/r` (the full libr is P3).
   and client framework. The same codec is used by `#M` in the kernel.
 - Commands, in order: `rc` (full rewrite, same grammar), `echo cat ls cp mv
   rm mkdir pwd bind mount unmount ns ps kill date sleep wc grep sed awk
-  sort uniq tee test cmp diff tr du`, `mk`, `ramfs`, `srv`, `9fs`.
+  sort uniq tee test cmp diff tr du`, `mk`, `ramfs`. (`srv` and `9fs`
+  dial the network, so they moved to P5 on 2026-10-19.)
 - Boot sequence: `boot`/`init`/`termrc`/`cpurc` equivalents and `newns`
   with `/lib/namespace`.
 
 **Exit:** interactive `rc` on the serial console in QEMU. Oracle tests:
 the same `rc` scripts and text-tool pipelines give byte-identical output
 on Plan R and on host plan9port (see [TESTING.md](TESTING.md)).
+
+**Slices** (agreed 2026-10-19; one commit each):
+1. Console input: UART receive interrupts (16550, PL011) into an input
+   queue; Plan 9's line discipline in `#c/cons` (echo, backspace, ^U,
+   ^D), `consctl` raw mode, DEL posting `interrupt` to the console's note
+   group; a QEMU test that types on the serial line.
+2. libr base: a user heap (`#[global_allocator]` on `brk`), `print!` and
+   `fprint!` on `core::fmt` with helpers for `%q` and `%r`, an
+   `ARGBEGIN` replacement, UTF-8/Rune, `bio`.
+3. libr system layer: directory reads, stat helpers, `cleanname`, `/env`,
+   exec with a `$path` search, `wait`, `postnote`, time and date,
+   `tokenize`, `getfields`, `quote`.
+4. Our lib9p server framework (fid table, dispatch, file trees) on
+   `lib/9p`'s codec; `ramfs`, mounted by `init` on `/tmp`.
+5. `rc`, part 1: lexer, recursive-descent parser for rc's grammar, the
+   interpreter: commands, pipelines, redirections, `& ; && || !`, lists,
+   `^`, `$#`, `$"`, quoting, globbing, `if`/`if not`/`for`/`while`/
+   `switch`/`~`, functions, core builtins.
+6. `rc`, part 2: here documents, `` `{} ``, `<{}`/`>{}`, `$status`,
+   `$apid`, notes (`sigint`, `sigexit`), `rcmain`, `-c -e -i -l -x`,
+   the prompt; interactive `rc` on the serial console in QEMU.
+7. Oracle harness: `cargo xtask oracle` runs `oracle/rc/` scripts on host
+   plan9port (`scripts/install-plan9port.sh`) and in QEMU and compares
+   stdout, stderr and status, with an allow-file; in CI from then on.
+8. File commands: `echo cat ls cp mv rm mkdir pwd touch chmod basename
+   cleanname seq date sleep wc tee test cmp xd strings tail du`.
+9. Name-space commands (`bind mount unmount ns ps kill`), `newns` with
+   `/lib/namespace`, `root/` in the archive; the real `init` (name
+   space, `termrc`, `rc -i`); the P2 test programs under `/sys/test`,
+   run by rc scripts with `test=1`.
+10. Regexp (`libregexp` semantics), `grep sed tr sort uniq`.
+11. `awk` and `diff`.
+12. `mk`.
+13. The exit test: a scripted interactive `rc` session over serial and
+    the full oracle corpus, in CI on both arches; `test=1` on both
+    reference boards (interactive use there waits for USB HID in P4).
 
 ## P4: Devices & storage
 
@@ -326,6 +363,7 @@ on Plan R and on host plan9port (see [TESTING.md](TESTING.md)).
   CUBIC or similar).
 - `cs`, `dns`, `dial`/`announce`/`listen`, `ndb`, `ipconfig` (DHCPv4,
   SLAAC/DHCPv6).
+- `srv` and `9fs` (moved from P3: both dial a network address).
 - **Crypto library (ours):** SHA-2/3, BLAKE2/3, HMAC, HKDF, AES-GCM,
   ChaCha20-Poly1305, X25519, Ed25519, P-256, RSA (verify and legacy only),
   and a CSPRNG fed from `RDRAND`/`RNDR`/virtio-rng. Every primitive is

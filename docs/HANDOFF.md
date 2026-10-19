@@ -1,7 +1,8 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19: P2 is done, in CI and on both reference boards.
+2026-10-19: P2 is done, in CI and on both reference boards; the P3
+slice plan is agreed.
 
 ## State
 
@@ -379,13 +380,16 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-P3, the userland bootstrap (ROADMAP: `libr`, our `lib9p` server and
-client framework, `rc`, the core commands, `mk`, `ramfs`, `srv`, `9fs`,
-and `boot`/`init`/`newns` with `/lib/namespace`; exit: interactive `rc`
-on the serial console in QEMU, with oracle tests against plan9port).
-Start by proposing a slice plan for the user to approve, as for P2. It
-will need console input (`#c/cons` reads from the serial line), which P2
-never had.
+P3, the userland bootstrap. Its 13 slices were agreed on 2026-10-19 and
+are in `docs/ROADMAP.md` under P3; `srv` and `9fs` moved to P5. Next is
+slice 1, console input: UART receive interrupts on both arches, Plan 9's
+line discipline in `#c/cons`, `consctl` raw mode, DEL posting
+`interrupt`, and a QEMU test that types on the serial line.
+
+The oracle harness (slice 7) needs host plan9port, built by
+`scripts/install-plan9port.sh` (as the user, into `$PLAN9` or
+`~/plan9port`, at a fixed revision). On 2026-10-19 this host lacked
+only `libXt-devel` for it.
 
 The slice 12 plan, for reference: an `init` in the boot archive that
 builds a name space, runs the test programs and reports on the console,
