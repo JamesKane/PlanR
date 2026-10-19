@@ -1,0 +1,3 @@
+# touch: Plan 9's takes -t only as a whole number.
+touch -t 12x three || echo bad time failed
+ls three >[2]/dev/null || echo no three

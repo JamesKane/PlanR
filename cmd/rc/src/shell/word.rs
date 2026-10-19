@@ -53,15 +53,12 @@ impl Shell {
                     .collect()
             }
             Word::List(ws) => self.eval_words(ws)?,
-            Word::Backquote(split, c) => {
-                let stop = match split {
-                    Some(w) => self.glob_words(core::slice::from_ref(w))?.into_iter().next(),
-                    None => self.vars.get(b"ifs").first().cloned(),
-                };
+            Word::Backquote(c) => {
+                let stop = self.vars.get(b"ifs").first().cloned();
                 let out = self.backquote(c)?;
                 plain(split_at(&out, &stop.unwrap_or_default()))
             }
-            Word::PipeFd(kind, c) => {
+            Word::PipeFd(kind, _, c) => {
                 let fd = self.pipefd(*kind, c)?;
                 alloc::vec![Pattern::plain(format!("/fd/{fd}").into_bytes())]
             }
@@ -115,27 +112,53 @@ fn plain(l: List) -> Vec<Pattern> {
     l.into_iter().map(Pattern::plain).collect()
 }
 
-/// The words of `text` between the characters of `stop`; none are empty.
-fn split_at(text: &[u8], stop: &[u8]) -> List {
-    let mut seps = Vec::new();
-    let mut s = stop;
-    while !s.is_empty() {
-        let (_, n) = r::utf::decode(s);
-        seps.push(&s[..n]);
-        s = &s[n..];
+/// Whether the rune `utf` is in `s`, at a rune of it (Plan 9's
+/// `utfutf`).
+fn is_in(s: &[u8], utf: &[u8]) -> bool {
+    let mut i = 0;
+    while i < s.len() {
+        if s[i..].starts_with(utf) {
+            return true;
+        }
+        i += r::utf::decode(&s[i..]).1.max(1);
     }
+    false
+}
+
+/// The words of `text` between the characters of `stop`; none are empty
+/// (Plan 9's `Xbackq`). The text is read a rune at a time as `rutf`
+/// reads it: a bad sequence a byte at a time, and one the text ends in
+/// the middle of as U+FFFD for each byte.
+fn split_at(text: &[u8], stop: &[u8]) -> List {
     let mut words = Vec::new();
     let mut word = Vec::new();
     let mut i = 0;
     while i < text.len() {
-        if let Some(sep) = seps.iter().find(|&&sep| text[i..].starts_with(sep)) {
+        let c = text[i];
+        let need = match c {
+            0..0x80 => 1,
+            0x80..0xe0 => 2,
+            0xe0..0xf0 => 3,
+            _ => 4,
+        };
+        let utf: &[u8] = if c < 0x80 {
+            &text[i..=i]
+        } else if i + need <= text.len() {
+            &text[i..i + r::utf::decode(&text[i..i + need]).1]
+        } else {
+            "\u{fffd}".as_bytes()
+        };
+        i += if i + need <= text.len() || c < 0x80 {
+            utf.len()
+        } else {
+            1
+        };
+        if is_in(stop, utf) {
             if !word.is_empty() {
                 words.push(core::mem::take(&mut word));
             }
-            i += sep.len();
         } else {
-            word.push(text[i]);
-            i += 1;
+            word.extend_from_slice(utf);
         }
     }
     if !word.is_empty() {

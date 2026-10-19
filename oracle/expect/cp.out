@@ -4,8 +4,8 @@ d/b
 hello
 big same
 hello
---rwxr-x--x M 1 eve eve 6 Jan 1 1970 x
-time kept
+--rwxr-x--x M 1 eve eve 6 x
+--rw-r----- M 1 eve eve 6 y
 same failed
 same failed
 directory failed

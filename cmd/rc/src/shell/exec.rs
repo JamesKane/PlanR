@@ -85,9 +85,9 @@ impl Shell {
         self.echo.borrow_mut().flush();
         let who = r::print::Text(&self.argv0);
         if self.argv0 == b"rc" || self.argv0 == b"/bin/rc" {
-            r::eprintln!("rc: {msg}");
+            eprintln!("rc: {msg}");
         } else {
-            r::eprintln!("rc ({who}): {msg}");
+            eprintln!("rc ({who}): {msg}");
         }
         self.set_status(b"error");
         Err(Unwind::Error)
@@ -133,7 +133,7 @@ impl Shell {
             if flag::get(b's') && !self.true_status() {
                 self.echo.borrow_mut().flush();
                 let words = self.vars.get(b"status").clone();
-                r::eprintln!("status={}", Words(&words));
+                eprintln!("status={}", Words(&words));
             }
             if interactive {
                 self.set_prompt();
@@ -164,7 +164,7 @@ impl Shell {
                     break Ok(());
                 }
                 // An interrupted read: a new line, and on.
-                r::eprint!("\n");
+                eprint!("\n");
                 p.clear_eof();
                 match self.dotrap() {
                     Err(Unwind::Error) => {}
@@ -194,22 +194,27 @@ impl Shell {
         }
     }
 
+    /// Reports `e` as Plan 9's `yyerror` does: once, or for an error the
+    /// lexer gave up at, again as the parser's `syntax error`.
     fn syntax_error(&mut self, e: &SyntaxError, name: Option<&[u8]>, interactive: bool) {
         self.echo.borrow_mut().flush();
-        let mut msg = Vec::from(&b"rc: "[..]);
-        match name {
-            Some(n) if !interactive => msg.extend(format!("{}:{}: ", r::print::Text(n), e.line).bytes()),
-            Some(n) => msg.extend(format!("{}: ", r::print::Text(n)).bytes()),
-            None if !interactive => msg.extend(format!("line {}: ", e.line).bytes()),
-            None => {}
+        let msgs: &[&str] = if e.twice { &[e.msg, "syntax error"] } else { &[e.msg] };
+        for what in msgs {
+            let mut msg = Vec::from(&b"rc: "[..]);
+            match name {
+                Some(n) if !interactive => msg.extend(format!("{}:{}: ", r::print::Text(n), e.line).bytes()),
+                Some(n) => msg.extend(format!("{}: ", r::print::Text(n)).bytes()),
+                None if !interactive => msg.extend(format!("line {}: ", e.line).bytes()),
+                None => {}
+            }
+            if !e.token.is_empty() {
+                msg.extend(format!("token {}: ", r::RcQuoted(&e.token)).bytes());
+            }
+            msg.extend_from_slice(what.as_bytes());
+            msg.push(b'\n');
+            let _ = r::io::Write::write_all(&mut r::File(crate::fd::err()), &msg);
+            self.set_status(what.as_bytes());
         }
-        if !e.token.is_empty() {
-            msg.extend(format!("token {}: ", r::RcQuoted(&e.token)).bytes());
-        }
-        msg.extend_from_slice(e.msg.as_bytes());
-        msg.push(b'\n');
-        let _ = r::io::Write::write_all(&mut r::File(2), &msg);
-        self.set_status(e.msg.as_bytes());
     }
 
     /// Runs `c`. `tail` says nothing follows it in this process, which is
@@ -250,7 +255,7 @@ impl Shell {
                 Ok(())
             }
             Cmd::Subshell(c) => {
-                let pid = self.fork(F::PROC | F::FDG | F::REND | F::ENVG)?;
+                let pid = self.fork(F::PROC | F::FDG | F::REND)?;
                 if pid == 0 {
                     self.child(c);
                 }
@@ -441,7 +446,7 @@ impl Shell {
         }
         if flag::get(b'x') {
             self.echo.borrow_mut().flush();
-            r::eprintln!("{}", Words(&argv));
+            eprintln!("{}", Words(&argv));
         }
         if let Some(f) = self.vars.func(&argv[0]) {
             let rest = argv.split_off(1);
@@ -449,7 +454,7 @@ impl Shell {
         }
         if argv[0] == b"builtin" {
             if argv.len() == 1 {
-                r::eprintln!("builtin: empty argument list");
+                eprintln!("builtin: empty argument list");
                 self.set_status(b"empty arg list");
                 return Ok(());
             }
@@ -492,11 +497,15 @@ impl Shell {
             }
             Err(e) => e,
         };
+        // After the redirections, as Plan 9's Execute is: to descriptor 2.
         r::eprintln!("{}: {e}", r::print::Text(&argv[0]));
         r::exits(Some(e.as_bytes()))
     }
 
-    /// Forks: 0 in the child.
+    /// Forks: 0 in the child. As Plan 9's rc, a child shares the
+    /// environment group (`fork()` is `RFPROC|RFFDG|RFREND`; `&` is
+    /// `RFPROC|RFFDG|RFNOTEG`), so what one exports before running a
+    /// program is in `/env` for the others too.
     pub(crate) fn fork(&mut self, flags: F) -> Run<u64> {
         match r::rfork(flags) {
             Ok(0) => {
@@ -549,7 +558,7 @@ impl Shell {
             Ok(fd) => fd,
             Err(e) => return self.error_r("can't open /dev/null", &e),
         };
-        let pid = match self.fork(F::PROC | F::FDG | F::NOTEG | F::ENVG) {
+        let pid = match self.fork(F::PROC | F::FDG | F::NOTEG) {
             Ok(pid) => pid,
             Err(e) => {
                 let _ = r::close(null);
@@ -575,7 +584,7 @@ impl Shell {
             Err(e) => return self.error_r("can't get pipe", &e),
         };
         let (wr, rd) = (self.fds.adopt(wr), self.fds.adopt(rd));
-        let pid = match self.fork(F::PROC | F::FDG | F::REND | F::ENVG) {
+        let pid = match self.fork(F::PROC | F::FDG | F::REND) {
             Ok(pid) => pid,
             Err(e) => {
                 self.fds.release(&wr);
@@ -638,7 +647,7 @@ impl Shell {
                     Err(e) => {
                         self.fds.restore(s);
                         self.echo.borrow_mut().flush();
-                        r::eprint!("{}: ", r::print::Text(name));
+                        eprint!("{}: ", r::print::Text(name));
                         self.error_r("can't open", &e)
                     }
                 }
@@ -707,7 +716,7 @@ impl Shell {
             Err(e) => return self.error_r("can't make pipe", &e),
         };
         let (wr, rd) = (self.fds.adopt(wr), self.fds.adopt(rd));
-        let pid = match self.fork(F::PROC | F::FDG | F::REND | F::ENVG) {
+        let pid = match self.fork(F::PROC | F::FDG | F::REND) {
             Ok(pid) => pid,
             Err(e) => {
                 self.fds.release(&wr);
@@ -743,7 +752,7 @@ impl Shell {
             Err(e) => return self.error_r("can't get pipe", &e),
         };
         let (here, there) = (self.fds.adopt(a), self.fds.adopt(b));
-        let pid = match self.fork(F::PROC | F::FDG | F::REND | F::ENVG) {
+        let pid = match self.fork(F::PROC | F::FDG | F::REND) {
             Ok(pid) => pid,
             Err(e) => {
                 self.fds.release(&here);

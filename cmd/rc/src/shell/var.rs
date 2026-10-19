@@ -8,13 +8,11 @@
 //! does: a list as its words each followed by a NUL, a function as
 //! `fn#name` holding its definition.
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
-use rc::parse::Parser;
 use rc::tree::Cmd;
 
 use crate::fd::mode;
@@ -92,17 +90,6 @@ impl Vars {
         self.fns.insert(name.to_vec(), Func { body, changed: true });
     }
 
-    /// Defines a function as it came from the environment.
-    pub(crate) fn import_func(&mut self, name: &[u8], body: Rc<Cmd>) {
-        self.fns.insert(
-            name.to_vec(),
-            Func {
-                body: Some(body),
-                changed: false,
-            },
-        );
-    }
-
     /// Takes the variables in `/env`, as the shell starts.
     pub(crate) fn import_vars(&mut self) {
         for name in env_names() {
@@ -110,17 +97,6 @@ impl Vars {
                 && let Some(val) = r::env::getenv_list(&name)
             {
                 self.import(&name, val);
-            }
-        }
-    }
-
-    /// Takes the functions in `/env` (`fn#name`), as `finit` does.
-    pub(crate) fn import_fns(&mut self) {
-        for name in env_names() {
-            if let Some(f) = name.strip_prefix(b"fn#")
-                && let Some(body) = r::env::getenv_raw(&name).and_then(|t| function(&t))
-            {
-                self.import_func(f, body);
             }
         }
     }
@@ -176,6 +152,21 @@ pub(crate) fn definition(name: &[u8], body: &Cmd) -> Vec<u8> {
 }
 
 /// The names in `/env`.
+/// The text of each file `/env/fn#name` that is not empty, in the order
+/// the directory gives them.
+pub(crate) fn fn_files() -> Vec<Vec<u8>> {
+    let Ok(fd) = r::open(c"/env", mode(r::Access::Read, r::OpenFlags::empty())) else {
+        return Vec::new();
+    };
+    let entries = r::dirreadall(fd).unwrap_or_default();
+    let _ = r::close(fd);
+    entries
+        .into_iter()
+        .filter(|e| e.length > 0 && e.name.starts_with("fn#"))
+        .filter_map(|e| r::env::getenv_raw(e.name.as_bytes()))
+        .collect()
+}
+
 fn env_names() -> Vec<Vec<u8>> {
     let Ok(fd) = r::open(c"/env", mode(r::Access::Read, r::OpenFlags::empty())) else {
         return Vec::new();
@@ -183,13 +174,4 @@ fn env_names() -> Vec<Vec<u8>> {
     let entries = r::dirreadall(fd).unwrap_or_default();
     let _ = r::close(fd);
     entries.into_iter().map(|e| e.name.as_bytes().to_vec()).collect()
-}
-
-/// The body of the function that `fn name {body}` defines.
-fn function(text: &[u8]) -> Option<Rc<Cmd>> {
-    let mut p = Parser::new(Box::new(rc::lex::Text::new(text)));
-    match p.line() {
-        Ok(Some(Cmd::Fn(_, Some(body)))) => Some(Rc::new(*body)),
-        _ => None,
-    }
 }

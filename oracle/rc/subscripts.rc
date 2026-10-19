@@ -1,0 +1,15 @@
+# Subscripts and ranges, in and out of range.
+x=(a b c d e)
+echo $x(1) $x(5) $x(6) $#x
+echo $x(2-4)
+echo $x(4-)
+echo $x(3-2)
+echo $x(1 1 2)
+@{echo $x(0)} || echo zero
+@{echo $x(-1)} || echo negative
+@{echo $x(a)} || echo letters
+n=2
+echo $x($n) $x($n-)
+echo $x(`{echo 3})
+y=()
+echo $#y $y(1)

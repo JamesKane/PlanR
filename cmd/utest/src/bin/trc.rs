@@ -212,14 +212,15 @@ const CASES: &[Case] = &[
         "syntax-error",
         "echo a=b",
         "",
-        "rc: line 1: token '=': syntax error\n",
+        // Plan 9's count runs one ahead of the line.
+        "rc: line 2: token '=': syntax error\n",
         "syntax error",
     ),
     failing(
         "if-not-alone",
         "echo first\nif not echo x",
         "first\n",
-        "rc: line 2: `if not' does not follow `if(...)'\n",
+        "rc: line 3: `if not' does not follow `if(...)'\n",
         "`if not' does not follow `if(...)'",
     ),
     failing(
@@ -282,7 +283,7 @@ const CASES: &[Case] = &[
         "/tmp/trc/sc a b\n",
     ),
     Case {
-        err: "rc: /tmp/trc/bad:2: syntax error\n",
+        err: "rc: /tmp/trc/bad:3: syntax error\n",
         ..case(
             "script-syntax-error",
             "echo 'echo one' >/tmp/trc/bad; echo 'echo (' >>/tmp/trc/bad; echo 'echo three' >>/tmp/trc/bad\n/bin/rc /tmp/trc/bad; ~ $status *'syntax error' && echo stopped",
@@ -299,7 +300,7 @@ const CASES: &[Case] = &[
     ),
     case(
         "backquote",
-        "x=`{echo a b; echo c}; echo $#x $x; y=`:{echo -n a:b::c}; echo $#y $y; z=`{}; echo $#z\nifs=-; w=`{echo -n p-q}; echo $#w; v=`{/bin/rc -c 'exit 3'}; ~ $status *3 && echo status",
+        "x=`{echo a b; echo c}; echo $#x $x; ifs=:; y=`{echo -n a:b::c}; ifs=' '; echo $#y $y; z=`{}; echo $#z\nifs=-; w=`{echo -n p-q}; echo $#w; v=`{/bin/rc -c 'exit 3'}; ~ $status *3 && echo status",
         "3 a b c\n3 a b c\n0\n2\nstatus\n",
     ),
     case(
@@ -367,7 +368,7 @@ const CASES: &[Case] = &[
             "bad-flag",
             "echo x",
             "",
-            "Illegal flag -q\nUsage: rc [-srdiIlxepvV] [-c arg] [-m command] [file [arg ...]]\n",
+            "Illegal flag -q\nUsage: rc [-SsrdiIlxepvV] [-c arg] [-m command] [file [arg ...]]\n",
             "bad flags",
         ),
         &["-q"],

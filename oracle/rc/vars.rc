@@ -1,0 +1,27 @@
+# Variables: lists, $*, locals, assignments in front of commands, empty
+# and odd names, and their errors.
+fn show {echo $#* $*}
+show
+x=()
+show $x
+x=''
+show $x
+x=(a '' b)
+show $x
+*=(p q r)
+echo $1 $2 $3 $#* $0
+x=outer
+x=inner echo $x
+x=inner {echo $x}
+echo $x
+a=1 b=2 echo $a $b
+z=(1 2 3)
+echo $z(1)^$z(2)
+@{echo $z(x)} || echo bad subscript
+@{n=(a b); echo $$n} || echo not singleton
+@{echo (a b)^(c d e)} || echo mismatched
+@{x=(); echo a^$x} || echo null
+'odd name'=v
+echo $'odd name'
+x=(a b) y=$x echo $#y
+echo $#nonesuch $"nonesuch

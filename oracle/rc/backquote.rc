@@ -9,7 +9,10 @@ z=`{echo a:b:c}
 echo $#z $z
 ifs=' 	
 '
-w=`split{echo -n a,b,,c}
+ifs=,
+w=`{echo -n a,b,,c}
+ifs=' 	
+'
 echo $#w $w
 n=`{}
 echo $#n

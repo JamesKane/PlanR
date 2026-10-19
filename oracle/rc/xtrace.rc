@@ -1,0 +1,7 @@
+# -x, -e and -v as Plan 9's rc shows them.
+rc -x -c 'x=(a b); echo $x; fn f {echo f}; f; if(~ a a) echo y'
+rc -e -c '~ a b; echo never' || echo -e stopped
+rc -v -c 'echo verbose'
+rc -c 'echo $0'
+rc -c 'echo $*' a b c
+rc -s -c '~ a b' || echo -s

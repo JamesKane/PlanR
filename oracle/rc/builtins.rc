@@ -1,0 +1,30 @@
+# The builtins: cd, eval, exec, exit, shift, wait, ., flag, whatis.
+mkdir d
+cd d
+touch here
+cd ..
+ls d
+@{cd a b} || echo cd usage
+eval echo evaled '$x'
+x=(a b c)
+eval 'echo $#x'
+fn f {shift; echo $*; shift 2; echo $*}
+f 1 2 3 4
+fn g {shift 5}
+@{g 1} || echo shift failed
+@{shift x} || echo shift bad
+echo 'echo dot args:' >s.rc
+echo 'echo $*' >>s.rc
+. s.rc p q
+sleep 0 &
+wait $apid
+echo waited
+@{wait x y} || echo wait usage
+flag x && echo x on
+flag x || echo x off
+@{flag} || echo flag usage
+@{flag q +} || echo flag bad
+whatis x f cd
+@{whatis nonesuch} || echo whatis failed
+@{exit fine} || echo exit failed
+@{exec} && echo exec alone

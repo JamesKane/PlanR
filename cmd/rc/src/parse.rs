@@ -58,7 +58,8 @@ impl Parser {
         Err(SyntaxError {
             msg,
             token: self.lex.token.clone(),
-            line: self.lex.tok_line,
+            line: self.lex.lineno,
+            twice: false,
         })
     }
 
@@ -101,6 +102,7 @@ impl Parser {
         for h in core::mem::take(&mut self.here) {
             self.read_here(&h, subst);
         }
+        self.lex.here_done();
         r
     }
 
@@ -122,6 +124,9 @@ impl Parser {
     fn read_here(&mut self, h: &Here, subst: &dyn Fn(&[u8]) -> Vec<u8>) {
         let mut text = Vec::new();
         let mut line = Vec::new();
+        // Plan 9's readhere counts a line for each, and for each newline
+        // but the tag's.
+        self.lex.here_line();
         while let Some(c) = self.lex.raw() {
             if c != b'\n' {
                 line.push(c);
@@ -135,6 +140,7 @@ impl Parser {
             } else {
                 text.extend(subst(&line));
             }
+            self.lex.here_line();
             text.push(b'\n');
             line.clear();
         }
@@ -145,7 +151,6 @@ impl Parser {
         if *self.peek()? == Tok::Eof {
             return Ok(None);
         }
-        let start = self.lex.tok_line;
         let c = self.list(&Tok::Newline)?;
         let mut iflast = self.iflast;
         let r = check_ifnot(&c, &mut iflast);
@@ -153,7 +158,8 @@ impl Parser {
         r.map_err(|msg| SyntaxError {
             msg,
             token: Vec::new(),
-            line: start,
+            line: self.lex.lineno,
+            twice: false,
         })?;
         Ok(Some(c))
     }
@@ -337,11 +343,8 @@ impl Parser {
             Tok::Dup(fd, None) => Ok(Ok(Redir::Close(fd))),
             Tok::Redir(k, fd) => {
                 if *self.peek()? == Tok::LBrace {
-                    if !matches!(k, RedirKind::Read | RedirKind::Write) {
-                        return self.error("syntax error");
-                    }
                     let c = self.brace()?;
-                    return Ok(Err(Word::PipeFd(k, Box::new(c))));
+                    return Ok(Err(Word::PipeFd(k, fd, Box::new(c))));
                 }
                 let w = self.word()?;
                 if k != RedirKind::Here {
@@ -419,22 +422,13 @@ impl Parser {
             }
             Tok::Count => Ok(Word::Count(Box::new(self.comword()?))),
             Tok::Join => Ok(Word::Join(Box::new(self.comword()?))),
-            Tok::Backquote => {
-                let split = if *self.peek()? == Tok::LBrace {
-                    None
-                } else {
-                    Some(Box::new(self.word()?))
-                };
-                Ok(Word::Backquote(split, Box::new(self.brace()?)))
-            }
+            Tok::Backquote => Ok(Word::Backquote(Box::new(self.brace()?))),
             Tok::LParen => {
                 let ws = self.words()?;
                 self.expect(&Tok::RParen)?;
                 Ok(Word::List(ws))
             }
-            Tok::Redir(k @ (RedirKind::Read | RedirKind::Write), _) if *self.peek()? == Tok::LBrace => {
-                Ok(Word::PipeFd(k, Box::new(self.brace()?)))
-            }
+            Tok::Redir(k, fd) if *self.peek()? == Tok::LBrace => Ok(Word::PipeFd(k, fd, Box::new(self.brace()?))),
             t => {
                 self.peeked = Some(t);
                 self.error("syntax error")
@@ -620,7 +614,11 @@ mod tests {
 
     #[test]
     fn backquotes() {
-        assert_eq!(one("x=`{ls}; y=`:{a} z=`$s^x{b}"), "x=`{ls};y=`:{a} z=`$s^x{b}");
+        assert_eq!(one("x=`{ls}; y=`{a} z=`{b}"), "x=`{ls};y=`{a} z=`{b}");
+        // Plan 9's grammar has no `split{...}.
+        assert_eq!(lines("x=`:{a}\necho ok"), ["error: syntax error at \":\"", "echo ok"]);
+        // Any arrow before a brace is a pipe file, printed as written.
+        assert_eq!(one("cmp >>{a} <>[3]{b}"), "cmp >>{a} <>[3]{b}");
     }
 
     #[test]

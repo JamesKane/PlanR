@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use alloc::vec::Vec;
 
 /// The flags without an argument, as the usage message lists them.
-const LETTERS: &[u8] = b"srdiIlxepvV";
+const LETTERS: &[u8] = b"SsrdiIlxepvV";
 
 static FLAGS: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
 
@@ -35,7 +35,7 @@ pub(crate) struct Args {
 }
 
 /// Reads the flags of `argv` (after its name), up to the first word that
-/// is not one, as `getflags(argc, argv, "srdiIlxepvVc:1m:1[command]", 1)`
+/// is not one, as `getflags(argc, argv, "SsrdiIlxepvVc:1m:1[command]", 1)`
 /// does; on a mistake prints why and the usage, and exits.
 pub(crate) fn parse(argv: &[&[u8]]) -> Args {
     let name = argv.first().copied().unwrap_or(b"rc");

@@ -1,10 +1,12 @@
 //! `cargo xtask oracle`: the scripts in each corpus, `oracle/rc` (the
-//! shell) and `oracle/cmd` (the commands), run on host plan9port and on
-//! Plan R in QEMU, and what each wrote to standard output and error, and
-//! whether it exited normally, must be the same (TESTING.md, "Userland
-//! behaviour"). plan9port's rc gives only a Unix exit code, so the status
-//! compared is whether it is empty; a script that cares about a status
-//! string echoes it. A script is named by its corpus, `rc/words`.
+//! shell) and `oracle/cmd` (the commands), run on the host under Plan 9's
+//! own rc, built from the Plan 9 tree (`scripts/build-plan9-rc.sh`), with
+//! plan9port's commands, and on Plan R in QEMU; what each wrote to
+//! standard output and error, and whether it exited normally, must be the
+//! same (TESTING.md, "Userland behaviour"). On the host a program's
+//! status is a Unix exit code, so the status compared is whether it is
+//! empty; a script that cares about a status string echoes it. A script
+//! is named by its corpus, `rc/words`.
 //!
 //! `oracle/expect` holds what plan9port cannot answer (the commands it
 //! lacks, and Plan 9's own error strings): there, what each script should
@@ -12,11 +14,11 @@
 //! missing), and `NAME.fail` is there if it should fail.
 //!
 //! Each script runs as `rc NAME.rc` in an empty directory of its own,
-//! with standard input from `/dev/null`. On the host the environment is
-//! only `PLAN9` and `PATH=.:$PLAN9/bin`, so that `$path` is like Plan 9's
-//! `(. /bin)` and the commands are plan9port's; on Plan R, `toracle` runs
-//! them (see `cmd/utest/src/bin/toracle.rs`, which also gives the
-//! console format read here).
+//! with standard input from `/dev/null`. On the host it has a fresh
+//! `/env` (see [`run_host`]) whose `path` finds Plan 9's rc and then
+//! plan9port's commands; on Plan R, `toracle` runs it (see
+//! `cmd/utest/src/bin/toracle.rs`, which also gives the console format
+//! read here).
 //!
 //! Each corpus's `allow` lists its known differences, one to a line: the
 //! script, the stream (`stdout`, `stderr` or `status`) and why. A listed
@@ -39,7 +41,7 @@ use crate::{Opts, root};
 struct Ran {
     out: Vec<u8>,
     err: Vec<u8>,
-    /// Plan R's exit status after `rc pid: `, or plan9port's exit code;
+    /// Plan R's exit status after `rc pid: `, or the host's exit code;
     /// empty for a normal exit.
     status: String,
 }
@@ -66,7 +68,7 @@ impl Ran {
 /// The corpora: directories of `oracle/`.
 const CORPORA: &[&str] = &["rc", "cmd", "expect"];
 
-/// The corpus whose results are written down, not plan9port's.
+/// The corpus whose results are written down, not the host's.
 const EXPECT: &str = "expect";
 
 /// How long the oracle's boot may take at least, in seconds: the corpus
@@ -77,7 +79,7 @@ const ORACLE_TIMEOUT: u64 = 660;
 const HOST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) fn run(opts: &Opts) -> Result<(), String> {
-    let rc = plan9port()?;
+    let rc = host()?;
     let dir = root().join("oracle");
     let mut scripts = Vec::new();
     let mut allow = Vec::new();
@@ -169,21 +171,42 @@ pub(crate) fn run(opts: &Opts) -> Result<(), String> {
     }
 }
 
-/// plan9port's rc: under `$PLAN9`, else `~/plan9port`.
-fn plan9port() -> Result<PathBuf, String> {
-    let dir = match std::env::var_os("PLAN9") {
+/// The host's tools: Plan 9's rc, built from the Plan 9 tree when it is
+/// not there yet, and plan9port (`$PLAN9`, else `~/plan9port`), whose
+/// commands the scripts run.
+struct Host {
+    rc: PathBuf,
+    rcmain: PathBuf,
+    plan9: PathBuf,
+}
+
+fn host() -> Result<Host, String> {
+    let plan9 = match std::env::var_os("PLAN9") {
         Some(d) => PathBuf::from(d),
         None => PathBuf::from(std::env::var_os("HOME").ok_or("HOME is not set")?).join("plan9port"),
     };
-    let rc = dir.join("bin/rc");
-    if rc.is_file() {
-        Ok(rc)
-    } else {
-        Err(format!(
-            "no plan9port rc at {}; build it with scripts/install-plan9port.sh",
-            rc.display()
-        ))
+    if !plan9.join("bin/9c").is_file() {
+        return Err(format!(
+            "no plan9port at {}; build it with scripts/install-plan9port.sh",
+            plan9.display()
+        ));
     }
+    let out = root().join("build/plan9rc");
+    let script = root().join("scripts/build-plan9-rc.sh");
+    let stale = |p: &Path| {
+        let age = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+        age(p).is_none_or(|t| age(&script).is_some_and(|s| s > t))
+    };
+    if stale(&out.join("rc")) {
+        let mut c = Command::new("bash");
+        c.arg(&script).arg(&out).env("PLAN9", &plan9);
+        crate::sh(c)?;
+    }
+    Ok(Host {
+        rc: out.join("rc"),
+        rcmain: out.join("rcmain"),
+        plan9,
+    })
 }
 
 /// The scripts' names, without `.rc`, sorted.
@@ -238,32 +261,47 @@ fn expected(dir: &Path, name: &str) -> Result<Ran, String> {
     })
 }
 
-/// Runs script `name` (`corpus/stem`) from `dir` under plan9port's `rc`,
-/// in a fresh directory under `work`.
-fn run_host(rc: &Path, dir: &Path, name: &str, work: &Path) -> Result<Ran, String> {
+/// Runs script `name` (`corpus/stem`) from `dir` under Plan 9's rc, in a
+/// fresh directory under `work`, with a fresh `/env` (kept in
+/// `NAME.root`, where `rc` is Plan 9's too) whose `path` is `(. bin
+/// $PLAN9/bin)`, so that `rc` is Plan 9's and the commands plan9port's.
+fn run_host(host: &Host, dir: &Path, name: &str, work: &Path) -> Result<Ran, String> {
     let here = work.join(name);
-    if here.exists() {
-        fs::remove_dir_all(&here).map_err(|e| format!("{}: {e}", here.display()))?;
+    let root9 = work.join(format!("{name}.root"));
+    for d in [&here, &root9] {
+        if d.exists() {
+            fs::remove_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+        }
     }
-    fs::create_dir_all(&here).map_err(|e| format!("{}: {e}", here.display()))?;
+    for d in [here.clone(), root9.join("env"), root9.join("bin")] {
+        fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
     let stem = name.rsplit('/').next().unwrap_or(name);
     let script = format!("{stem}.rc");
     fs::copy(dir.join(format!("{name}.rc")), here.join(&script)).map_err(|e| format!("{name}.rc: {e}"))?;
+    fs::copy(&host.rcmain, root9.join("rcmain")).map_err(|e| format!("rcmain: {e}"))?;
+    std::os::unix::fs::symlink(&host.rc, root9.join("bin/rc")).map_err(|e| format!("bin/rc: {e}"))?;
+    // A Plan 9 list in /env: its words, each ended by a NUL.
+    let mut path = Vec::new();
+    for w in [Path::new("."), &root9.join("bin"), &host.plan9.join("bin")] {
+        path.extend_from_slice(w.as_os_str().as_encoded_bytes());
+        path.push(0);
+    }
+    fs::write(root9.join("env/path"), path).map_err(|e| format!("env/path: {e}"))?;
     let (out, err) = (work.join(format!("{name}.stdout")), work.join(format!("{name}.stderr")));
     let file = |p: &Path| fs::File::create(p).map_err(|e| format!("{}: {e}", p.display()));
-    let plan9 = rc.parent().and_then(Path::parent).ok_or("odd plan9port path")?;
-    let mut child = Command::new(rc)
+    let mut child = Command::new(&host.rc)
         .arg0("rc")
         .arg(&script)
         .current_dir(&here)
         .env_clear()
-        .env("PLAN9", plan9)
-        .env("PATH", format!(".:{}", plan9.join("bin").display()))
+        .env("PLAN9", &host.plan9)
+        .env("RC9ROOT", &root9)
         .stdin(Stdio::null())
         .stdout(file(&out)?)
         .stderr(file(&err)?)
         .spawn()
-        .map_err(|e| format!("{}: {e}", rc.display()))?;
+        .map_err(|e| format!("{}: {e}", host.rc.display()))?;
     let deadline = Instant::now() + HOST_TIMEOUT;
     let status = loop {
         if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
@@ -272,7 +310,7 @@ fn run_host(rc: &Path, dir: &Path, name: &str, work: &Path) -> Result<Ran, Strin
         if Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("plan9port: {script} took more than {HOST_TIMEOUT:?}"));
+            return Err(format!("Plan 9's rc: {name}.rc took more than {HOST_TIMEOUT:?}"));
         }
         std::thread::sleep(Duration::from_millis(5));
     };
@@ -380,7 +418,7 @@ fn parse_allow(text: &str, corpus: &str, scripts: &[String]) -> Result<Vec<Allow
     Ok(allow)
 }
 
-/// How `got` (Plan R) differs from `want` (plan9port) in `streams`.
+/// How `got` (Plan R) differs from `want` (the reference) in `streams`.
 fn show(want: &Ran, got: &Ran, streams: &[&str]) -> String {
     let mut s = String::new();
     for &st in streams {

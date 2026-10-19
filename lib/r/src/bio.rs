@@ -111,7 +111,7 @@ impl<R: Read> Bin<R> {
             }
             s[i] = c;
             i += 1;
-            if full_rune(&s[..i]) {
+            if utf::full_rune(&s[..i]) {
                 // A good sequence is all of the bytes, so none go back.
                 return Ok(Some(utf::decode(&s[..i]).0));
             }
@@ -159,19 +159,6 @@ impl<R: Read> Bin<R> {
     /// The reader underneath.
     pub fn get_mut(&mut self) -> &mut R {
         &mut self.r
-    }
-}
-
-/// Whether `s` is as long as its first byte says a rune is (Plan 9's
-/// `fullrune`): one byte below 0x80, two below 0xe0, three below 0xf0,
-/// else four.
-fn full_rune(s: &[u8]) -> bool {
-    match s.first() {
-        None => false,
-        Some(&c) if c < 0x80 => true,
-        Some(&c) if c < 0xe0 => s.len() >= 2,
-        Some(&c) if c < 0xf0 => s.len() >= 3,
-        Some(_) => s.len() >= 4,
     }
 }
 

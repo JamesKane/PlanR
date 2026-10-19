@@ -13,9 +13,12 @@ ls -dF d d/sub d/a
 echo hello >d/a
 ls -s d/a d/b
 ls -p d/a d/sub
-touch -t 100 d/b
-touch -t 200 d/c
-touch -t 300 d/a
+# Times from writes a second apart: b, then c, then a.
+echo 1 >d/b
+sleep 1
+echo 2 >d/c
+sleep 1
+echo 3 >d/a
 ls -t d/a d/b d/c
 ls -tr d/a d/b d/c
 cd d

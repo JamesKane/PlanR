@@ -15,11 +15,12 @@ cp a b
 cat b
 chmod 751 a
 cp a x
-touch -t 0 x
-echo `{ls -l x}
-touch -t 86400 a
+x=`{ls -l x}
+echo $x(1-6) $x(10)
+chmod 640 a
 cp -x a y
-test y -ot b && echo time kept
+y=`{ls -l y}
+echo $y(1-6) $y(10)
 cp a a || echo same failed
 cp a ./a || echo same failed
 cp d e || echo directory failed

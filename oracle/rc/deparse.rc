@@ -1,5 +1,5 @@
 # Functions as whatis prints them back: every kind of command.
-fn a {echo hi > f; cat < f; echo x >> f y; echo >[2] e z; cat >[1=2]; cat >[2=]; cat <>f; x=1 y=(a b) cmd; cmd <{x} >{y}; ! cmd; a && b || c; ~ x y; while(t) {b}; cmd &; {a; b} > f; $#x $"x; `split{x} `{y}; x=(a b); if(t) echo y; if not echo n; echo $x(1 2) $x^b a^$b; >f echo; f; >f
+fn a {echo hi > f; cat < f; echo x >> f y; echo >[2] e z; cat >[1=2]; cat >[2=]; cat <>f; x=1 y=(a b) cmd; cmd <{x} >{y} >>{z} <>[3]{w}; ! cmd; a && b || c; ~ x y; while(t) {b}; cmd &; {a; b} > f; $#x $"x; `{x} `{y}; x=(a b); if(t) echo y; if not echo n; echo $x(1 2) $x^b a^$b; >f echo; f; >f
 }
 whatis a
 fn b {

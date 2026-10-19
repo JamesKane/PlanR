@@ -1,0 +1,10 @@
+# What each builtin leaves in $status, and its usage messages.
+cd a b; echo cd: $status
+cd .; echo cd ok: $status
+eval; echo eval: $status
+eval ''; echo eval empty: $status
+shift 1 2; echo shift: $status
+fn f {shift 3; echo after}
+f a
+echo shift too far: $status
+exit a b

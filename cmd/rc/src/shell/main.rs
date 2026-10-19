@@ -1,7 +1,7 @@
 //! `rc`, the shell: Plan 9's rc, rewritten.
 //!
 //! ```text
-//! rc [-srdiIlxepvV] [-c command] [-m rcmain] [file [arg ...]]
+//! rc [-SsrdiIlxepvV] [-c command] [-m rcmain] [file [arg ...]]
 //! ```
 //!
 //! As Plan 9's, it takes its variables from `/env`, sets `$*` to the
@@ -26,6 +26,16 @@
 #![allow(clippy::result_large_err)]
 
 extern crate alloc;
+
+/// Prints to the shell's own standard error, [`fd::err`].
+macro_rules! eprint {
+    ($($arg:tt)*) => {{ let _ = r::print::fprint(crate::fd::err(), format_args!($($arg)*)); }};
+}
+
+/// Prints a line to the shell's own standard error, [`fd::err`].
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{ let _ = r::print::fprint(crate::fd::err(), format_args!("{}\n", format_args!($($arg)*))); }};
+}
 
 mod builtin;
 mod exec;
@@ -60,6 +70,7 @@ fn run(args: r::Args) -> Result<(), &'static str> {
     trap::init();
 
     let mut sh = Shell::default();
+    sh.fds.keep_err();
     sh.argv0.clone_from(&argv0);
     sh.vars.import_vars();
     if let Ok(pid) = r::getpid() {

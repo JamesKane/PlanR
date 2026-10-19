@@ -2,7 +2,8 @@
 //! second one posted in `/srv` and mounted twice. Files written, read,
 //! truncated and renamed (`dirwstat`), permissions, directories read
 //! across several messages, a megabyte file, `ORCLOSE`, a removed file
-//! still open, two processes writing at once, and the server's errors.
+//! still open (gone, as on Plan 9), two processes writing at once, and
+//! the server's errors, which are Plan 9's `ramfs.c`'s.
 
 #![no_std]
 #![no_main]
@@ -110,11 +111,7 @@ fn wstat() -> Check {
     put(c"/tmp/other", b"")?;
     let mut d = r::DirBuf::null();
     d.name = "other".into();
-    fails(
-        r::dirwstat(c"/tmp/old", &d),
-        b"file already exists",
-        "rename onto a file",
-    )?;
+    fails(r::dirwstat(c"/tmp/old", &d), b"file exists", "rename onto a file")?;
     d.name = "new".into();
     d.length = 4;
     r::dirwstat(c"/tmp/old", &d).map_err(|_| "rename failed")?;
@@ -122,12 +119,13 @@ fn wstat() -> Check {
     ensure(get(c"/tmp/new")? == b"0123", "rename and truncate")?;
     let s = r::dirstat(c"/tmp/new").map_err(|_| "dirstat failed")?;
     ensure(s.name == "new" && s.length == 4, "the stat after wstat")?;
-    // A file cannot become a directory.
+    // A file cannot become a directory: Plan 9's ramfs keeps the bit
+    // as it was, and takes the rest of the mode.
     let mut d = r::DirBuf::null();
-    d.mode = DMDIR | 0o777;
-    fails(
-        r::dirwstat(c"/tmp/new", &d),
-        b"wstat can't convert between files and directories",
+    d.mode = DMDIR | 0o640;
+    r::dirwstat(c"/tmp/new", &d).map_err(|_| "chmod with DMDIR failed")?;
+    ensure(
+        r::dirstat(c"/tmp/new").is_ok_and(|d| d.mode == 0o640),
         "a file made a directory",
     )?;
     r::remove(c"/tmp/new").map_err(|_| "remove failed")?;
@@ -150,7 +148,7 @@ fn directories() -> Check {
     )?;
     fails(
         r::open(c"/tmp/d", WRITE),
-        b"file is a directory",
+        b"permission denied",
         "a directory opened to write",
     )?;
     for i in 0..ENTRIES {
@@ -201,10 +199,10 @@ fn removed() -> Check {
     put(c"/tmp/gone", b"still here")?;
     let fd = r::open(c"/tmp/gone", READ).map_err(|_| "open failed")?;
     r::remove(c"/tmp/gone").map_err(|_| "remove failed")?;
+    // Plan 9's ramfs frees a removed file at once, open or not.
     let mut b = [0u8; 32];
-    let n = r::read(fd, &mut b).map_err(|_| "read of a removed file failed")?;
+    fails(r::read(fd, &mut b), b"file does not exist", "read of a removed file")?;
     r::close(fd).map_err(|_| "close failed")?;
-    ensure(&b[..n] == b"still here", "a removed file's contents")?;
     // ORCLOSE.
     let rclose = mode(Access::Write, OpenFlags::RCLOSE);
     let fd = r::create(c"/tmp/rclose", rclose, 0o664).map_err(|_| "create failed")?;
@@ -259,10 +257,14 @@ fn ramfs(argv: &[&CStr]) -> Check {
     }
 }
 
-/// A second `ramfs`, posted and mounted on `/n`, then mounted again from
-/// `/srv` on `/mnt`: one tree, apart from `/tmp`'s.
+/// A second `ramfs`, posted in `/srv` (with `-S` alone: as on Plan 9,
+/// `-m` would mount it instead), then mounted from there on `/n` and on
+/// `/mnt`: one tree, apart from `/tmp`'s.
 fn second() -> Check {
-    ramfs(&[c"ramfs", c"-S", c"tramfs", c"-m", c"/n"])?;
+    ramfs(&[c"ramfs", c"-S", c"tramfs"])?;
+    let fd = r::open(c"/srv/tramfs", RDWR).map_err(|_| "open /srv/tramfs failed")?;
+    r::mount(fd, None, c"/n", BindFlags::CREATE, c"").map_err(|_| "mount from /srv failed")?;
+    r::close(fd).map_err(|_| "close failed")?;
     put(c"/n/file", b"in the second")?;
     fails(
         r::dirstat(c"/tmp/file"),

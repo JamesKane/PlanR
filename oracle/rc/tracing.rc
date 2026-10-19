@@ -1,0 +1,4 @@
+# -x shows each simple command, as Plan 9's rc prints it, whatever the
+# redirections; compound commands show only the simple ones in them.
+rc -x -c 'for(i in 1 2) echo $i; while(~ a b) echo never; switch(a){case a; echo case}; x=y echo $x; f=() {echo braced}; echo out >[2=1]; @{echo sub}'
+rc -x -c 'fn g {echo in g $*}; g a b; whatis g'

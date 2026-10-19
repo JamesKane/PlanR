@@ -1,0 +1,9 @@
+# A here document is read after the whole command: inside a function's
+# braces its text is read as commands, so Plan 9's rc makes a syntax error.
+fn f {
+	cat <<EOF
+in f
+EOF
+}
+f
+echo after

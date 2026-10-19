@@ -104,6 +104,7 @@ dependencies = [
 name = "ramfs"
 version = "0.1.0"
 dependencies = [
+ "abi",
  "ninep",
  "r",
 ]

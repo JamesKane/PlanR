@@ -56,21 +56,19 @@ pub fn is_space_rune(c: char) -> bool {
     )
 }
 
-/// Whether `s` holds at least one whole rune (or a byte that can only be
-/// an error), so [`decode`] need not wait for more.
+/// Whether `s` is as long as its first byte says a rune is, so that
+/// [`decode`] need not wait for more (Plan 9's `fullrune`): one byte below
+/// 0x80, two below 0xe0, three below 0xf0, else four, whether or not the
+/// bytes make a rune.
 #[must_use]
 pub fn full_rune(s: &[u8]) -> bool {
-    let Some(&b0) = s.first() else {
-        return false;
-    };
-    let n = match b0 {
-        0xc2..=0xdf => 2,
-        0xe0..=0xef => 3,
-        0xf0..=0xf4 => 4,
-        _ => return true,
-    };
-    // A sequence already broken is whole as far as it goes.
-    s.len() >= n || s[1..].iter().any(|&b| b & 0xc0 != 0x80)
+    match s.first() {
+        None => false,
+        Some(&c) if c < 0x80 => true,
+        Some(&c) if c < 0xe0 => s.len() >= 2,
+        Some(&c) if c < 0xf0 => s.len() >= 3,
+        Some(_) => s.len() >= 4,
+    }
 }
 
 /// The bytes `c` takes.
@@ -180,8 +178,11 @@ mod tests {
         assert!(full_rune(b"a"));
         assert!(!full_rune(b"\xe4\xb8"));
         assert!(full_rune("世".as_bytes()));
-        assert!(full_rune(b"\xe4a"), "broken already");
-        assert!(full_rune(b"\xff"));
+        assert!(!full_rune(b"\xe4a"), "Plan 9's: by the first byte alone");
+        assert!(full_rune(b"\xe4ab"));
+        assert!(!full_rune(b"\xff"));
+        assert!(full_rune(b"\xffabc"));
+        assert!(!full_rune(b"\x80"));
     }
 
     #[test]

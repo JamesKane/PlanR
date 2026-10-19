@@ -1,0 +1,33 @@
+# if, if not, for, while, switch, ~, !, && and ||, and their statuses (more).
+if(~ a a) echo yes
+if not echo never
+if(~ a b) echo never
+if not echo no
+for(i in a b c) echo $i
+fn f {for(i) echo arg $i}
+f x y
+x=(c b a)
+while(! ~ $#x 0){ echo $x(1); x=$x(2-) }
+switch(abc){
+case a*
+	echo star
+case abc
+	echo exact
+}
+switch(x){
+case y
+	echo y
+case *
+	echo default
+}
+switch(){
+case ''
+	echo empty case
+}
+~ abc a?c && echo match
+~ abc '*' || echo quoted no
+~ (a b c) b && echo any
+~ x (y z x) && echo among
+! ~ a a || echo not ~ a a
+~ a a && ~ a b || echo or
+~ a a | ~ a b; ~ $status *'|no match' && echo pipe status

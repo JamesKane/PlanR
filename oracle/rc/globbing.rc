@@ -1,0 +1,20 @@
+# Globbing: * ? [ranges] [~negation], quotes, directories, no match,
+# sorting.
+touch a1 a2 b1 'c d' .hidden
+mkdir sub
+touch sub/x sub/y
+echo *
+echo a?
+echo [ab]1
+echo [~a]*
+echo [a-b]2
+echo 'a'*
+echo a'*'
+echo */*
+echo s*/?
+echo nomatch*
+echo .*
+echo [
+x=*
+echo $#x
+~ a1 [a-z][0-9] && echo class

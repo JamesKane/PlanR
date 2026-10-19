@@ -1,0 +1,13 @@
+# Redirection mistakes, each with its message.
+x=(a b)
+@{echo hi >$x} || echo list
+@{echo hi >$y} || echo none
+@{echo hi >>$x} || echo append list
+@{cat <$x} || echo read list
+@{cat <>$y} || echo rdwr none
+@{eval 'echo >[2=x] hi'} || echo bad dup
+@{eval 'echo >[x] hi'} || echo bad fd
+@{eval 'echo >[2=3x] hi'} || echo bad dup end
+echo ok >[1=2] >[2]/dev/null
+echo closed >[1=] >[2]/dev/null
+echo still here

@@ -27,11 +27,12 @@ pub enum Word {
     Concat(Box<Word>, Box<Word>),
     /// `(words)`
     List(Vec<Word>),
-    /// `` `{cmd} ``, or with the characters to split its output at,
-    /// `` `split{cmd} ``.
-    Backquote(Option<Box<Word>>, Box<Cmd>),
+    /// `` `{cmd} ``.
+    Backquote(Box<Cmd>),
     /// `<{cmd}` or `>{cmd}`: a pipe to the command, named as a file.
-    PipeFd(RedirKind, Box<Cmd>),
+    /// `<{cmd}`, `>{cmd}`: or any arrow, as Plan 9's grammar has it
+    /// (`REDIR brace`); all but `<` give the end the command reads.
+    PipeFd(RedirKind, u32, Box<Cmd>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,31 +169,36 @@ impl Display for Word {
                 words(f, ws)?;
                 f.write_char(')')
             }
-            Word::Backquote(None, c) => write!(f, "`{{{c}}}"),
-            Word::Backquote(Some(split), c) => write!(f, "`{split}{{{c}}}"),
-            Word::PipeFd(k, c) => {
-                f.write_str(if *k == RedirKind::Read { "<" } else { ">" })?;
+            Word::Backquote(c) => write!(f, "`{{{c}}}"),
+            Word::PipeFd(k, fd, c) => {
+                arrow(f, *k, *fd)?;
                 write!(f, "{{{c}}}")
             }
         }
     }
 }
 
+/// A redirection's arrow, and its descriptor if it is not the usual one.
+fn arrow(f: &mut Formatter<'_>, k: RedirKind, fd: u32) -> fmt::Result {
+    let (arrow, std) = match k {
+        RedirKind::Read => ("<", 0),
+        RedirKind::ReadWrite => ("<>", 0),
+        RedirKind::Here => ("<<", 0),
+        RedirKind::Write => (">", 1),
+        RedirKind::Append => (">>", 1),
+    };
+    f.write_str(arrow)?;
+    if fd != std {
+        write!(f, "[{fd}]")?;
+    }
+    Ok(())
+}
+
 impl Display for Redir {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Redir::File(k, fd, w) => {
-                let (arrow, std) = match k {
-                    RedirKind::Read => ("<", 0),
-                    RedirKind::ReadWrite => ("<>", 0),
-                    RedirKind::Here => ("<<", 0),
-                    RedirKind::Write => (">", 1),
-                    RedirKind::Append => (">>", 1),
-                };
-                f.write_str(arrow)?;
-                if *fd != std {
-                    write!(f, "[{fd}]")?;
-                }
+                arrow(f, *k, *fd)?;
                 write!(f, "{w}")
             }
             Redir::Dup(fd, from) => write!(f, ">[{fd}={from}]"),

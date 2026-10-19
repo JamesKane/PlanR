@@ -165,7 +165,7 @@ fn cargo() -> Command {
 }
 
 /// Runs a command, failing with its description if it does not succeed.
-fn sh(mut cmd: Command) -> Result<(), String> {
+pub(crate) fn sh(mut cmd: Command) -> Result<(), String> {
     let desc = format!("{cmd:?}");
     let status = cmd.status().map_err(|e| format!("{desc}: {e}"))?;
     if status.success() {

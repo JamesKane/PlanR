@@ -1,6 +1,7 @@
 # chmod: octal and symbolic modes, as ls -l shows them, and errors.
-touch -t 0 f
-fn show { echo $1 `{ls -l f} }
+touch f
+# ls -l without the time, which is now.
+fn show { l=`{ls -l f}; echo $1 $l(1-6) $l(10) }
 chmod 644 f
 show 644
 chmod 755 f
@@ -29,8 +30,8 @@ chmod 'ug=r' f
 show 'ug=r'
 mkdir d
 chmod 700 d
-touch -t 0 d
-echo `{ls -ld d}
+l=`{ls -ld d}
+echo $l(1-6) $l(10)
 chmod zz f || echo bad failed
 chmod u+q f || echo bad failed
 chmod 644 nonesuch && echo nonesuch ok

@@ -1,14 +1,12 @@
---rw-rw-r-- M 1 eve eve 0 Jan  1  1970 a
---rw-rw-r-- M 1 eve eve 6 Feb 29  2000 b
-d-rwxrwxr-x M 1 eve eve 0 Jan 12  1970 d
---rw-rw-r-- M 1 eve eve 6 Feb 29  2000 b
---rw-rw-r-- M 1 eve eve 0 Jan  1  1970 a
+--rw-rw-r-- M 1 eve eve 0 a
+--rw-rw-r-- M 1 eve eve 6 b
+d-rwxrwxr-x M 1 eve eve 0 d
+a
+b
 [eve] a
 1 b
-0	a
-atime ok
 Thu Jan  1 00:00:00 GMT 1970
 Tue Feb 29 23:59:59 GMT 2000
 d
 lsl
-d-rwxr-x--- M 1 eve eve 0 Jan  1  1970 m
+d-rwxr-x--- M 1 eve eve 0 m

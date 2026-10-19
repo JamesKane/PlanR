@@ -68,15 +68,15 @@ pub fn gettokens<'a>(s: &'a [u8], sep: &str) -> Vec<&'a [u8]> {
     let mut out = Vec::new();
     let mut at = 0;
     loop {
-        while at < s.len() && is_sep(s, at, sep) {
-            at += 1;
+        while let Some(n) = sep_at(s, at, sep) {
+            at += n;
         }
         if at >= s.len() {
             return out;
         }
         let start = at;
         let mut quoting = false;
-        while at < s.len() && (quoting || !is_sep(s, at, sep)) {
+        while at < s.len() && (quoting || sep_at(s, at, sep).is_none()) {
             if s[at] == b'\'' {
                 if !quoting {
                     quoting = true;
@@ -92,9 +92,14 @@ pub fn gettokens<'a>(s: &'a [u8], sep: &str) -> Vec<&'a [u8]> {
     }
 }
 
-fn is_sep(s: &[u8], at: usize, sep: &str) -> bool {
-    s[at] < utf::RUNE_SELF && sep.as_bytes().contains(&s[at])
-        || s[at] >= utf::RUNE_SELF && sep.contains(utf::decode(&s[at..]).0)
+/// Whether a rune of `sep` is at `s[at]`, and its length if it is.
+fn sep_at(s: &[u8], at: usize, sep: &str) -> Option<usize> {
+    let &b = s.get(at)?;
+    if b < utf::RUNE_SELF {
+        return sep.as_bytes().contains(&b).then_some(1);
+    }
+    let (c, n) = utf::decode(&s[at..]);
+    (c != utf::RUNE_ERROR && sep.contains(c)).then_some(n)
 }
 
 /// Splits `s` into words at blanks, as rc would: single quotes group, and
@@ -105,14 +110,16 @@ pub fn tokenize(s: &[u8]) -> Vec<Vec<u8>> {
     gettokens(s, QSEP).into_iter().map(unquote).collect()
 }
 
-/// `t` with its quoting taken out: quotes open and close quoted parts,
-/// and `''` within one is a quote.
+/// `t` with the quoting of its first word taken out: quotes open and
+/// close quoted parts, and `''` within one is a quote; from the first
+/// blank or tab outside quotes, the rest is as it was (Plan 9's
+/// `unquotestrdup`).
 #[must_use]
 pub fn unquote(t: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(t.len());
     let mut quoting = false;
     let mut i = 0;
-    while i < t.len() {
+    while i < t.len() && (quoting || (t[i] != b' ' && t[i] != b'\t')) {
         if t[i] != b'\'' {
             out.push(t[i]);
         } else if !quoting {
@@ -125,6 +132,7 @@ pub fn unquote(t: &[u8]) -> Vec<u8> {
         }
         i += 1;
     }
+    out.extend_from_slice(&t[i..]);
     out
 }
 
@@ -237,6 +245,11 @@ mod tests {
             .collect();
         assert_eq!(t, ["a", "b c", "de", "it's", "", "last"]);
         assert_eq!(strs(&gettokens(b"x:'a:b'::y", ":")), ["x", "'a:b'", "y"]);
+        // A separator of more than one byte is passed over whole.
+        assert_eq!(strs(&gettokens("aébéc".as_bytes(), "é")), ["a", "b", "c"]);
+        // Plan 9's unquotestrdup: the first word only.
+        assert_eq!(unquote(b"'a b' 'c d'"), b"a b 'c d'");
+        assert_eq!(unquote(b"\tb' :"), b"\tb' :");
         assert_eq!(tokenize(b" \t "), Vec::<Vec<u8>>::new());
     }
 

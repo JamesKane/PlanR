@@ -1,0 +1,20 @@
+# Redirections are made for the programs rc runs; whatis looks its output
+# up through them, but rc's own messages go where its stderr was.
+x=1
+whatis x >f
+echo f has: `{cat f}
+fn g {echo in g; whatis x}
+g >h
+echo h has: `{cat h}
+{whatis x; echo braced} >k
+echo k has: `{cat k}
+cd a b >[2]e
+echo e has: `{cat e}
+whatis nonesuch >[2]n
+echo n has: `{cat n}
+@{shift x} >[2]s
+echo s has: `{cat s}
+eval 'echo evaled' >v
+echo v has: `{cat v}
+rc -c 'echo child >[1=2]' >[2]c
+echo c has: `{cat c}

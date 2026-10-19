@@ -8,7 +8,7 @@
 | Property tests & fuzzing | host | 9P decode/encode round-trip, ELF parser, ACPI/AML, IP packets, fs images, TLS records. Fuzz harness ours (coverage via `-C instrument-coverage` / sancov); libFuzzer may be used in the host zone (Q1) |
 | Kernel self-tests | QEMU | In-kernel runner (`kernel/src/port/ktest.rs`, `test=1`): one `ktest:` line per test over serial, then `isa-debug-exit` / PSCI. Covers traps, fixups, kernel stack guard pages, the framebuffer console and log ring (read back), the clock tick, a self-IPI, SMP (every CPU online and ticking, cross-CPU calls, a contended spin lock) and (amd64) HPET delivery through the I/O APIC; tests a machine can't run report `skipped`. Negative tests (`test=trap`) check that a fatal trap prints its report and backtrace. `legacy-apic` reruns amd64 with `apic=xapic apictimer=oneshot`; `cons` (`test=cons`) runs `init -i`, whose `tcons` prompts on the console while the harness types its answers on QEMU's serial line, then an interactive `rc` the harness types a session to (`cargo xtask test --only cons` runs it alone); `uniprocessor` reruns both with one CPU; `log-ring` (`test=reset`) resets warm and checks that 9boot saved the first boot's log ring |
 | User integration tests | QEMU | `rc` scripts under `/sys/test`, run by `init` in test mode; TAP-style output over serial |
-| Oracle tests | host + QEMU | Same input to Plan R and a reference; byte-compare (below). `cargo xtask oracle` runs `oracle/rc` (the shell) and `oracle/cmd` (the commands) on plan9port and on both arches (`test=oracle`), and `oracle/expect` against expectations written down, in CI |
+| Oracle tests | host + QEMU | Same input to Plan R and a reference; byte-compare (below). `cargo xtask oracle` runs `oracle/rc` (the shell) and `oracle/cmd` (the commands) under Plan 9's own rc built for the host (`scripts/build-plan9-rc.sh`) and on both arches (`test=oracle`), and `oracle/expect` against expectations written down, in CI |
 | Multi-node tests | 2+ QEMU instances | `cpu`, `import`, `exportfs`, auth, TLS |
 | Hardware tests | Ryzen, Orange Pi | Netbooted nightly runs with serial capture (P7+) |
 | Visual tests | QEMU | Screendumps (QMP `screendump`) compared to reference PNGs with a tolerance |
@@ -33,20 +33,28 @@ the 2002 Plan 9 `libsec`:
 - **Constant-time checks:** dudect-style timing tests on host for
   secret-dependent primitives.
 
-### Userland behaviour: plan9port and 9front
+### Userland behaviour: Plan 9's source, plan9port and 9front
 
-"Familiar day-to-day use" is checked against working implementations:
+"Familiar day-to-day use" is checked against Plan 9 itself. The
+reference is Plan 9's own source (`../plan9`, the Fourth Edition tree):
+programs and libraries are ported from it, and checked against it:
 
-- **plan9port** on the host: reference for `rc`, `sed`, `awk`, `grep`,
-  `sort`, `mk`, `tr`, `diff`, … Corpus tests run the same script on
-  both and compare stdout, stderr and exit status. Known, intentional
-  differences are listed in an allow-file. This is `cargo xtask oracle`
-  (see `oracle/README.md`): `oracle/rc` for the shell, `oracle/cmd` for
-  the commands plan9port has; the text tools join it as they arrive.
-  What plan9port cannot answer (the commands it lacks, Plan 9's kernel
-  and error strings) is in `oracle/expect`, with each script's output
-  written down beside it, checked line by line against Plan 9's
-  behaviour.
+- **Plan 9's code on the host:** where a piece of Plan 9 runs on Linux,
+  it is the oracle. Plan 9's rc, built from the tree with plan9port's
+  libraries (`scripts/build-plan9-rc.sh`), runs `cargo xtask oracle`'s
+  `oracle/rc` and `oracle/cmd` corpora (see `oracle/README.md`); libc
+  routines (`fltfmt.c`, `strtol.c`, `cleanname.c`, `tokenize.c`, …) were
+  built the same way and compared with libr's ports on many thousands of
+  random inputs.
+- **plan9port** on the host: its commands stand in for Plan 9's in
+  `oracle/cmd` where their code is the same; it is the future reference
+  for `sed`, `awk`, `grep`, `sort`, `mk`, `tr`, `diff`, … as far as it
+  agrees with Plan 9's source. Known, intentional differences are listed
+  in an allow-file. What the host cannot answer (the commands plan9port
+  lacks, Plan 9's kernel, ramfs and error strings, and every case where
+  plan9port's code differs from Plan 9's) is in `oracle/expect`, with
+  each script's output written down beside it, checked line by line
+  against Plan 9's source.
 - **9front or Bell Labs Plan 9 in QEMU:** reference for namespace,
   `/proc`, `/net`, `rio` and 9P server behaviour where plan9port has
   nothing comparable. The Bell Labs release here is 386-only, so in
@@ -68,7 +76,7 @@ tool) is the oracle for the namespace structure.
 
 - Every commit: `xtask deps` (dependency rule), `fmt`, `clippy`, host unit
   tests, QEMU boot + kernel self-tests on amd64 and arm64, and the
-  oracle corpora (`oracle/rc`, `oracle/cmd` against plan9port,
+  oracle corpora (`oracle/rc`, `oracle/cmd` under Plan 9's rc,
   `oracle/expect`).
 - Nightly: full user integration tests, oracle suites, fuzzing (time-boxed),
   multi-node tests and, from P7 on, hardware runs.

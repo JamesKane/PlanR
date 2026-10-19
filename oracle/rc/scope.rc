@@ -1,0 +1,17 @@
+# Where variables live: for leaves its variable set, locals end with
+# their command, functions see their callers' locals, $* is per call.
+for(i in a b c) echo $i
+echo after for: $i
+fn show {echo show $x $*}
+x=global
+x=local show one
+show two
+fn outer {x=inner show $*; show $*}
+outer three
+fn args {echo $#* $*; *=(q); echo $*}
+args p r
+echo top $#*
+fn rec {if(! ~ $#* 0){echo $1; shift; rec $*}}
+rec 1 2 3
+fn nope
+whatis nope >[2]/dev/null || echo deleted

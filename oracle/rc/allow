@@ -1,6 +1,4 @@
-# Known differences between Plan R and plan9port, one to a line:
+# Known differences between Plan R and the host's Plan 9 rc, one to a line:
 # script  stream (stdout, stderr or status)  why
-syntax     stderr  plan9port's parser (2020) words errors and counts lines its own way; ours is Plan 9's
-waitstatus stdout  plan9port's statuses are Unix exit codes, not wait messages
-oserrors   stderr  the system's error strings are Unix's on plan9port
-usage      stderr  plan9port's usage line has its debugging flags, -DSY
+waitstatus stdout  on the host a program's status is a Unix exit code, not a wait message
+oserrors   stderr  the host's error strings are Unix's

@@ -716,6 +716,76 @@ oracle harness, the file commands) are done.
        syntax error, as ours does, so scripts quote it), and its `stat`
        names `.` as `.` (Plan 9's kernel names it for its directory, so
        `ls -d .` prints that).
+  The audit after slice 8 (2026-10-19, the user's rule: `../plan9` is
+  the reference, not plan9port), of rc, libr and ramfs against Plan 9's
+  source:
+     - **The oracle's host side is now Plan 9's own rc**, built from
+       `../plan9/sys/src/cmd/rc` on Linux by `scripts/build-plan9-rc.sh`
+       (plan9port's 9c, lib9, bio and libString; `scripts/plan9rc/`
+       holds the header included first and `shim.c`, which keeps Plan
+       9's `/env` and `/rc/lib/rcmain` under `$RC9ROOT` and maps `#d/N`
+       and `/fd/N` to `/dev/fd/N`; two lines of `plan9.c` change: lib9's
+       SIGCHLD note is turned off, `Fdprefix` is `/dev/fd/`). xtask builds
+       it into `build/plan9rc` when missing or older than the script, and
+       runs each script with a fresh `/env` whose `path` finds it as `rc`
+       and then plan9port's commands, so `-x` and `-s` traces, `rcmain`
+       and the environment compare exactly. Only `oserrors` and
+       `waitstatus` are allowed now (Unix error strings and exit codes).
+       The rc corpus has 39 scripts, the new ones covering lexing,
+       builtins, variables, scope, subscripts, matching, globbing, here
+       documents, tracing, statuses and redirection errors.
+     - **rc, fixed to be Plan 9's:**
+       - Syntax errors count lines as Plan 9's `lineno` does: one more
+         each time a byte is read after a newline, `\`-newline or the end
+         (`doprompt`), the first byte included, so a message names the
+         line after the one at fault; here documents count theirs as
+         `readhere` does.
+       - `` `word{cmd} `` is gone (Plan 9's grammar has only `` `{cmd} ``;
+         it was plan9port's/9atom's); any redirection before a brace is a
+         pipe file (`REDIR brace`), printed with its arrow and fd, the
+         read end for `<` only.
+       - `-S` is a flag (accepted, unused, as Plan 9's).
+       - Forks share the environment group, as Plan 9's `fork()`
+         (`RFPROC|RFFDG|RFREND`; `&` is `RFPROC|RFFDG|RFNOTEG`): what a
+         subshell exports for a program it runs is in `/env` for later
+         programs too.
+       - `finit` runs each non-empty `/env/fn#name` as commands
+         (`Xrdfn`/`execcmds`), so `-s`, `-v` and `-x` see them.
+       - rc's own messages (errors, usages, prompts, `-x` and `-v`
+         lines) go to the descriptor 2 it started with
+         (`fd::err`, a private close-on-exec copy), whatever is
+         redirected: Plan 9's rc makes redirections only for the programs
+         it runs (`doredir` in `execexec`), and `whatis` looks its output
+         up through them (`mapfd`), which ours does by redirecting the
+         shell's own fd 1 as before.
+       - A redirection's token text is Plan 9's (the digit after `[`
+         twice, `>[22=`), and an error the lexer gives up at is reported
+         twice, the second as the parser's `syntax error`.
+       - Backquote output is split a rune at a time as `rutf` reads it (a
+         sequence cut off by the end is U+FFFD).
+     - **libr:** `tokenize`, `gettokens`, `getfields`, `quotestrdup`
+       (`quote`, `rc_quote`) and `unquotestrdup` (`unquote`) were built
+       from Plan 9's C on the host and compared on 18 000 random inputs:
+       all agree now, after `unquote` was made to stop at the first
+       unquoted blank (keeping the rest) and `gettokens` to pass over a
+       many-byte separator whole. `utf::full_rune` is Plan 9's `fullrune`
+       (by the first byte alone). Known and left: `Text` (`%s`) shows a
+       byte that is not UTF-8 as U+FFFD, where Plan 9 writes it as it is
+       (Rust's formatting takes only UTF-8).
+     - **ramfs is a port of Plan 9's `ramfs.c`** (`cmd/ramfs`, on
+       `lib/9p`'s codec; `lib/9p`'s `Srv` and `RamFs` stay, as a library
+       like lib9p): its own 9P loop, slots, fids and messages (`file in
+       use`, `file exists`, `not owner`, `illegal name`, `fid not in
+       use`, …), and its rules: a new file takes its directory's group
+       and muid and its permissions masked by the directory's (a file's
+       execute bits apart), a write never changes muid, `wstat` changes
+       only mode (never the directory bit), name, group and length and
+       ignores the times (so `touch` of an existing file in `/tmp` keeps
+       its time), a removed file is gone even if open, the search
+       permission checked in a walk is the parent's, options `-Dipsu -m
+       -S` (`-m` after `-S` mounts instead of posting; the `#s` file is
+       `ORCLOSE`). `tramfs` and the oracle's scripts follow it.
+
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -735,13 +805,12 @@ moved to P5).
 
 plan9port is built on this host (2026-10-19, by
 `scripts/install-plan9port.sh`, in `~/plan9port`; `$PLAN9` is not set,
-and `xtask oracle` defaults to `~/plan9port`). Its rc reads
-`$PLAN9/rcmain` (the Unix one: different lines, so `-x`/`-s` output
-differs from ours, and the corpus leaves them out), uses `/dev/fd/N`
-for `<{}`, and `/dev/stdin` interactively. Its tools' error strings are
-Unix's, so scripts that show them send stderr to `/dev/null` or go in
-`oracle/expect`. Its `cp mv pwd chmod` are missing from `$PLAN9/bin`
-(the oracle's `PATH` has only that), so those are in `expect` too.
+and xtask defaults to `~/plan9port`). Its compiler and libraries build
+Plan 9's own rc for the oracle (`scripts/build-plan9-rc.sh`, needs
+bison), and its commands stand in for Plan 9's in `oracle/cmd`. Their
+error strings are Unix's, so scripts that show them send stderr to
+`/dev/null` or go in `oracle/expect`; `cp mv pwd chmod` are missing
+from `$PLAN9/bin`, so those are in `expect` too.
 
 The reference for behaviour is Plan 9's own tree, `../plan9`
 (`/home/jkane/Projects/OS/plan9`, Fourth Edition 2025-10-28): port from

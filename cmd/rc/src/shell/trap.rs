@@ -54,7 +54,7 @@ extern "C" fn handler(_: *mut r::Ureg, note: *const u8) {
     // Nothing here allocates: the note may have stopped the allocator.
     let Some(i) = NOTES.iter().position(|(n, _)| text.starts_with(n)) else {
         for part in [&b"rc: note: "[..], text, b"\n"] {
-            let _ = r::write(2, part);
+            let _ = r::write(crate::fd::err(), part);
         }
         let _ = r::noted(NoteHow::Dflt);
         r::exits(Some(text))
@@ -67,7 +67,7 @@ extern "C" fn handler(_: *mut r::Ureg, note: *const u8) {
         TRAPS[i].fetch_add(1, Ordering::Relaxed);
         if NTRAP.fetch_add(1, Ordering::Relaxed) + 1 >= 32 {
             for part in [&b"rc: Too many traps (trap "[..], text, b"), aborting\n"] {
-                let _ = r::write(2, part);
+                let _ = r::write(crate::fd::err(), part);
             }
             let _ = r::noted(NoteHow::Dflt);
             r::exits(Some(b"abort"))

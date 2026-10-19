@@ -1,0 +1,23 @@
+# Here documents: substitution, quoted tags, ^, several on a line, and
+# one at the end of the script.
+x=(one two)
+y=why
+cat <<EOF
+x is $x, y is $y
+caret $y^s and $"x
+not a var: $
+EOF
+cat <<'EOF'
+no $x here
+EOF
+cat <<EOF >out
+to a file $y
+EOF
+cat out
+cat <<A; cat <<B
+first
+A
+second
+B
+cat <<EOF
+EOF

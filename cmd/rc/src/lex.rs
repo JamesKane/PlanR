@@ -155,6 +155,10 @@ pub struct SyntaxError {
     /// The token's text, empty at a newline or the end.
     pub token: Vec<u8>,
     pub line: u32,
+    /// The lexer found it, and the parser then reports `syntax error`
+    /// at the same token too, as Plan 9's does when the lexer gives up
+    /// on a redirection.
+    pub twice: bool,
 }
 
 #[allow(clippy::struct_excessive_bools)] // Plan 9's lexer state, flag by flag
@@ -178,6 +182,12 @@ pub struct Lexer {
     pub line: u32,
     /// The line the last token started on.
     pub tok_line: u32,
+    /// Plan 9's `lineno`, which errors report: 1 at the start, and one
+    /// more each time a byte is read after a newline, a `\`-newline or
+    /// the end (`doprompt`), the first byte included, so it runs one
+    /// ahead of the line.
+    pub lineno: u32,
+    doprompt: bool,
     /// Whether the end of the input has been read.
     pub eof: bool,
 }
@@ -204,6 +214,8 @@ impl Lexer {
             token: Vec::new(),
             line: 1,
             tok_line: 1,
+            lineno: 1,
+            doprompt: true,
             eof: false,
         }
     }
@@ -217,24 +229,51 @@ impl Lexer {
         if self.eof {
             return (None, 0);
         }
+        self.prompted();
         let c = self.input.next();
-        if c.is_none() {
+        let r = if self.in_quote || c != Some(b'\\') {
+            (c, 0)
+        } else {
+            match self.input.next() {
+                Some(b'\n') if !self.in_comment => {
+                    self.doprompt = true;
+                    (Some(b' '), 1)
+                }
+                Some(d) => {
+                    self.back = Some(d);
+                    (c, 0)
+                }
+                None => {
+                    self.eof = true;
+                    (c, 0)
+                }
+            }
+        };
+        if r.0.is_none() {
             self.eof = true;
         }
-        if self.in_quote || c != Some(b'\\') {
-            return (c, 0);
+        self.doprompt |= matches!(r.0, None | Some(b'\n'));
+        r
+    }
+
+    /// Counts a line if one is starting (Plan 9's `pprompt`).
+    fn prompted(&mut self) {
+        if self.doprompt {
+            self.lineno += 1;
+            self.doprompt = false;
         }
-        match self.input.next() {
-            Some(b'\n') if !self.in_comment => (Some(b' '), 1),
-            Some(d) => {
-                self.back = Some(d);
-                (c, 0)
-            }
-            None => {
-                self.eof = true;
-                (c, 0)
-            }
-        }
+    }
+
+    /// A line of a here document has been read (Plan 9's `pprompt` in
+    /// `readhere`).
+    pub fn here_line(&mut self) {
+        self.doprompt = true;
+        self.prompted();
+    }
+
+    /// The here documents are read: the next byte starts a line.
+    pub fn here_done(&mut self) {
+        self.doprompt = true;
     }
 
     fn nextc(&mut self) -> Option<u8> {
@@ -341,7 +380,8 @@ impl Lexer {
         SyntaxError {
             msg,
             token: self.token.clone(),
-            line: self.tok_line,
+            line: self.lineno,
+            twice: false,
         }
     }
 
@@ -478,32 +518,48 @@ impl Lexer {
         let mut other = None;
         let mut dup = false;
         if self.nextis(b'[') {
+            // Plan 9's code, token text and all: the byte after `[` goes
+            // in the text, and again as the number's first digit; the
+            // byte that ends a number is read but not put in.
             self.token.push(b'[');
             let what = if kind.is_none() {
                 "pipe syntax"
             } else {
                 "redirection syntax"
             };
-            let Some(n) = self.number() else {
-                return Err(self.bad(what));
-            };
+            let digit = |c: Option<u8>| c.filter(u8::is_ascii_digit);
+            let mut c = self.advance();
+            self.token.extend(c);
+            if digit(c).is_none() {
+                return Err(self.lex_error(what));
+            }
+            let mut n: u32 = 0;
+            while let Some(d) = digit(c) {
+                n = n.saturating_mul(10).saturating_add(u32::from(d - b'0'));
+                self.token.push(d);
+                c = self.advance();
+            }
             fd = n;
-            if self.nextis(b'=') {
+            if c == Some(b'=') {
                 self.token.push(b'=');
                 dup = true;
-                if self.nextc().is_some_and(|c| c.is_ascii_digit()) {
-                    other = self.number();
+                c = self.advance();
+                if digit(c).is_some() {
+                    let mut m: u32 = 0;
+                    while let Some(d) = digit(c) {
+                        m = m.saturating_mul(10).saturating_add(u32::from(d - b'0'));
+                        self.token.push(d);
+                        c = self.advance();
+                    }
+                    other = Some(m);
                 } else if kind.is_none() {
-                    return Err(self.error(what));
+                    return Err(self.lex_error(what));
                 }
             }
-            if !self.nextis(b']') {
-                return Err(self.bad(what));
+            if c != Some(b']') || dup && kind.is_some_and(|k| matches!(k, RedirKind::Here | RedirKind::Append)) {
+                return Err(self.lex_error(what));
             }
             self.token.push(b']');
-            if dup && kind.is_some_and(|k| matches!(k, RedirKind::Here | RedirKind::Append)) {
-                return Err(self.error(what));
-            }
         }
         Ok(match kind.take() {
             None => {
@@ -515,23 +571,13 @@ impl Lexer {
         })
     }
 
-    /// An error at the character that should not be there, which is
-    /// shown with the token.
-    fn bad(&mut self, what: &'static str) -> SyntaxError {
-        if let Some(c) = self.advance() {
-            self.token.push(c);
+    /// An error the lexer gives up at, which the parser then reports as
+    /// a syntax error too.
+    fn lex_error(&self, what: &'static str) -> SyntaxError {
+        SyntaxError {
+            twice: true,
+            ..self.error(what)
         }
-        self.error(what)
-    }
-
-    fn number(&mut self) -> Option<u32> {
-        let mut n: Option<u32> = None;
-        while let Some(c) = self.nextc().filter(u8::is_ascii_digit) {
-            self.advance();
-            self.token.push(c);
-            n = Some(n.unwrap_or(0).saturating_mul(10).saturating_add(u32::from(c - b'0')));
-        }
-        n
     }
 }
 

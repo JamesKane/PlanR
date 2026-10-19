@@ -1,0 +1,21 @@
+# The lexer: continuations, comments, quotes, carets, keywords as words,
+# subscripts and odd tokens.
+echo a \
+	b
+echo 'not \
+joined'
+echo x # a comment \
+echo after the comment
+echo 'it''s' '' 'a b'
+x=(one two three)
+echo $x(2) $x(2-) $x(1 3) $x(3-) $x(4) $#x $"x
+echo $x^- -$x pre$x^post
+echo for in while if not switch fn case '~' '!' '@'
+echo a^b^c a^'b c'
+y=x
+echo $$y $#$y
+echo $x(2)^z $x(1)^$x(3)
+echo é^ü 世界
+echo 'a=b' | cat
+echo '#' not a comment
+echo <[0]/dev/null hi

@@ -70,9 +70,9 @@ fn cd(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
         [] => match sh.vars.get(b"home").first().cloned() {
             Some(h) => match chdir(&h) {
                 Ok(()) => sh.set_status(b""),
-                Err(e) => r::eprintln!("Can't cd {}: {e}", r::print::Text(&h)),
+                Err(e) => eprintln!("Can't cd {}: {e}", r::print::Text(&h)),
             },
-            None => r::eprintln!("Can't cd -- $home empty"),
+            None => eprintln!("Can't cd -- $home empty"),
         },
         [dir] => {
             let mut cdpath = sh.vars.get(b"cdpath").clone();
@@ -85,7 +85,7 @@ fn cd(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
                 match chdir(&full) {
                     Ok(()) => {
                         if !p.is_empty() && p != b"." {
-                            r::eprintln!("{}", r::print::Text(&full));
+                            eprintln!("{}", r::print::Text(&full));
                         }
                         sh.set_status(b"");
                         return Ok(());
@@ -94,10 +94,10 @@ fn cd(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
                 }
             }
             if let Some(e) = last {
-                r::eprintln!("Can't cd {}: {e}", r::print::Text(dir));
+                eprintln!("Can't cd {}: {e}", r::print::Text(dir));
             }
         }
-        _ => r::eprintln!("Usage: cd [directory]"),
+        _ => eprintln!("Usage: cd [directory]"),
     }
     Ok(())
 }
@@ -124,7 +124,7 @@ fn dot(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
     let fd = match fd {
         Ok(fd) => fd,
         Err(e) => {
-            r::eprint!("{}: ", r::print::Text(file));
+            eprint!("{}: ", r::print::Text(file));
             sh.set_status(b"can't open");
             return sh.error_r(".: can't open", &e);
         }
@@ -166,7 +166,7 @@ fn exec(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
 /// `exit [status]`
 fn exit(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
     if a.len() > 2 {
-        r::eprintln!("Usage: exit [status]\nExiting anyway");
+        eprintln!("Usage: exit [status]\nExiting anyway");
     }
     if let Some(s) = a.get(1) {
         sh.set_status(s);
@@ -174,9 +174,13 @@ fn exit(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
     Err(Unwind::Exit)
 }
 
-/// `finit`: defines the functions in `/env`.
+/// `finit`: runs each file `/env/fn#name` that is not empty, as commands
+/// (Plan 9's `Xrdfn` and `execcmds`), which define the functions; the
+/// shell's flags (`-s`, `-v`, `-x`) see them as any other commands.
 fn finit(sh: &mut Shell, _: &[Vec<u8>]) -> Run {
-    sh.vars.import_fns();
+    for text in crate::var::fn_files() {
+        sh.run_input(Box::new(rc::lex::Text::new(&text)), None, false)?;
+    }
     Ok(())
 }
 
@@ -228,14 +232,14 @@ fn rfork(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
         }
         sh.set_status(b"");
     } else {
-        r::eprintln!("rc: {} failed", r::print::Text(&a[0]));
+        eprintln!("rc: {} failed", r::print::Text(&a[0]));
         sh.set_status(b"rfork failed");
     }
     Ok(())
 }
 
 fn rfork_usage(sh: &mut Shell, name: &[u8]) -> Run {
-    r::eprintln!("Usage: {} [fnesFNEm]", r::print::Text(name));
+    eprintln!("Usage: {} [fnesFNEm]", r::print::Text(name));
     sh.set_status(b"rfork usage");
     Ok(())
 }
@@ -246,7 +250,7 @@ fn shift(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
         [] => 1,
         [n] => core::str::from_utf8(n).ok().and_then(|s| s.parse().ok()).unwrap_or(0),
         _ => {
-            r::eprintln!("Usage: shift [n]");
+            eprintln!("Usage: shift [n]");
             sh.set_status(b"shift usage");
             return Ok(());
         }
@@ -315,7 +319,7 @@ fn whatis(sh: &mut Shell, a: &[Vec<u8>]) -> Run {
             out.extend_from_slice(&file);
             out.push(b'\n');
         } else if !found {
-            r::eprintln!("{}: not found", r::print::Text(name));
+            eprintln!("{}: not found", r::print::Text(name));
             sh.set_status(b"not found");
         }
     }

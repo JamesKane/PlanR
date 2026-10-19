@@ -5,6 +5,11 @@
 //! are closed in every program it runs, and moved out of the way of a
 //! redirection that names them.
 //!
+//! The shell's own messages, though, go to [`err`]: what descriptor 2 was
+//! when it started. Plan 9's rc makes redirections only for the programs
+//! it runs (and `whatis` looks its output up through them), so its
+//! messages, its prompts and `-x`'s lines never follow one.
+//!
 //! Also the inputs commands are read from: a descriptor ([`FdInput`]),
 //! seen through a [`Source`] that prompts and echoes.
 
@@ -22,6 +27,14 @@ use crate::flag;
 /// Where saved copies start.
 const FIRST: Fd = 10;
 
+/// The shell's standard error, for its own messages: see the module.
+static ERR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(2);
+
+/// Where the shell's own messages go.
+pub(crate) fn err() -> Fd {
+    ERR.load(Ordering::Relaxed)
+}
+
 /// A descriptor the shell keeps for itself, which may move.
 pub(crate) type Private = Rc<Cell<Fd>>;
 
@@ -36,6 +49,8 @@ pub(crate) struct Saved {
 #[derive(Debug, Default)]
 pub(crate) struct Fds {
     private: Vec<Private>,
+    /// The copy of the first descriptor 2, which [`err`] gives.
+    err: Option<Private>,
     /// The descriptors redirected now, which a copy must not take.
     redirected: Vec<Fd>,
     /// Descriptors kept open for programs to use, which a copy must not
@@ -44,6 +59,15 @@ pub(crate) struct Fds {
 }
 
 impl Fds {
+    /// Keeps a copy of descriptor 2 for the shell's own messages.
+    pub(crate) fn keep_err(&mut self) {
+        if let Ok(fd) = r::dup(2, Some(self.free(2))) {
+            let p = self.adopt(fd);
+            ERR.store(p.get(), Ordering::Relaxed);
+            self.err = Some(p);
+        }
+    }
+
     /// Takes `fd` as the shell's own; it may be moved later.
     pub(crate) fn adopt(&mut self, fd: Fd) -> Private {
         let p = Rc::new(Cell::new(fd));
@@ -95,6 +119,9 @@ impl Fds {
         if r::dup(fd, Some(to)).is_ok() {
             let _ = r::close(fd);
             p.set(to);
+            if self.err.as_ref().is_some_and(|e| Rc::ptr_eq(e, &p)) {
+                ERR.store(to, Ordering::Relaxed);
+            }
         }
     }
 
@@ -208,7 +235,7 @@ pub(crate) struct Echo {
 impl Echo {
     pub(crate) fn flush(&mut self) {
         if !self.echoed.is_empty() {
-            let _ = r::io::Write::write_all(&mut r::File(2), &self.echoed);
+            let _ = r::io::Write::write_all(&mut r::File(err()), &self.echoed);
             self.echoed.clear();
         }
     }

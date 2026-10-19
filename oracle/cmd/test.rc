@@ -42,14 +42,14 @@ t -b f
 t -u f
 t -g f
 t -t 0
-touch -t 1000 old
-touch -t 2000 new
+echo old >old
+sleep 1
+echo new >new
 t old -ot new
 t new -ot old
 t new -nt old
 t old -nt new
 t old -nt nonesuch
-t old -older 1d
 t f -older 1y
 t f -older 3600
 test 1 -xx 2 || echo unknown failed

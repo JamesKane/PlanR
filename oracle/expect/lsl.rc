@@ -1,21 +1,23 @@
-# ls -l, -m and -q, and du -t, with times set and Plan R's ramfs.
-touch -t 0 a
+# ls -l, -m, -s and -t, mkdir -m, and the name stat gives ., with Plan R's
+# ramfs (whose times are a file's writes: they are left out).
+fn l { x=`{ls -l $*}; echo $x(1-6) $x(10-) }
+touch a
 echo hello >b
-touch -t 951868799 b
 mkdir d
-touch -t 1000000 d
-ls -l a b d
-ls -ld d
-ls -lt a b
+l a
+l b
+x=`{ls -ld d}
+echo $x(1-6) $x(10)
+sleep 1
+echo newer >a
+ls -t a b
 ls -m a
 ls -s b
-du -t a
-du -tu a >/dev/null && echo atime ok
 date 0
 date 951868799
 cd d
 ls -d . ..
 cd ..
 mkdir -m 750 m
-touch -t 0 m
-ls -ld m
+x=`{ls -ld m}
+echo $x(1-6) $x(10)

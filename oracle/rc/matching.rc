@@ -1,0 +1,32 @@
+# ~ and switch patterns: classes, negation, quoting, lists, no pattern.
+fn m {if(~ $1 $2) echo $1 matches $2; if not echo $1 not $2}
+m abc 'a*'
+m abc a*
+m abc '[a-c]bc'
+m abc '[~a]bc'
+m xbc '[~a]bc'
+m 'a]' 'a[]]'
+m - '[-]'
+m a.b '*.*'
+m '' ''
+m '' '*'
+m 'a b' 'a?b'
+m / '*'
+~ abc a* && echo literal star
+~ abc [a-c]bc && echo literal class
+~ xbc [~a]bc && echo literal negation
+~ abc [~a]bc || echo literal negation fails
+~ a] a[]] && echo bracket in class
+~ - [-] && echo dash class
+~ a.b *.* && echo dots
+~ '' * && echo empty star
+~ / * || echo slash not star
+~ a/b a*b && echo star crosses slash
+~ x; echo no pattern: $status
+~ (); echo nothing: $status
+switch(b){
+case a c
+	echo a or c
+case [b]
+	echo class b
+}
