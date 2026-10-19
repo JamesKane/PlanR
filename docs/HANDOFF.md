@@ -403,7 +403,14 @@ and `tsleep`; `nsec`; `semacquire`/`tsemacquire`/`semrelease`;
 `segattach`/`segdetach`/`segfree`.
 
 **Reference boards** (`docs/HARDWARE.md`, "Booting Plan R on a board"):
-no runs until P2's exit test. P1 results, for reference:
+P2 results:
+   - **Orange Pi 6 Plus: passed on 2026-10-19** with `hwcheck.ini`
+     (`2a5cf34`): 41 of 41 ktests (the four `init -q` runs of
+     `memory_freed` all clean), then `init: 11 passed, 0 failed`,
+     `kernel: init exited normally`, `kernel: ok`.
+   - **Ryzen:** still to run.
+
+P1 results, for reference:
    - **Orange Pi 6 Plus: passed on 2026-10-18** with `scripts/hwcheck.ini`:
      EL2 entry, PAN, 12 of 12 CPUs, DBG2 PL011 console, 1920×1080
      framebuffer, 17 of 17 in-kernel tests. It clears RAM on every reset
