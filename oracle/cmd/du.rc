@@ -1,0 +1,16 @@
+# du: files, directories, -a -s -n -b, and -f (times and qids differ by
+# system).
+echo hello >a
+mkdir d d/s
+echo x >d/f
+echo yy >d/s/g
+du a
+du -n a
+du -b 512 a
+du -b 4k a
+du -s d
+du d
+du -a d/s
+du -n d/s
+du -s d a
+du -f nonesuch

@@ -1,7 +1,7 @@
 //! libr: the Plan R user runtime. It will replace libc, lib9, bio and
 //! thread. So far: the start-up code, the system calls, an exit on panic,
 //! the heap ([`heap`]), formatted output ([`print`]), options ([`arg`]),
-//! UTF-8 ([`utf`]), buffered I/O ([`bio`], on [`io`]), directory entries
+//! UTF-8 ([`utf`]), numbers in text ([`num`]), buffered I/O ([`bio`], on [`io`]), directory entries
 //! ([`dir`]), the environment and `$path` ([`env`]), waiting and notes
 //! ([`proc`]), time ([`time`]) and text utilities ([`text`]).
 //!
@@ -30,6 +30,7 @@ pub mod dir;
 pub mod env;
 pub mod heap;
 pub mod io;
+pub mod num;
 pub mod print;
 pub mod proc;
 pub mod text;
@@ -47,7 +48,7 @@ pub use bio::{Bin, Bout};
 pub use dir::{DirBuf, dirfstat, dirfwstat, dirread, dirreadall, dirstat, dirwstat};
 pub use env::{exec_path, getenv, getenv_list, putenv, putenv_list};
 pub use io::{File, Read, STDERR, STDIN, STDOUT, Write};
-pub use print::{Quoted, RcQuoted, Rerr, Text};
+pub use print::{Mode, Quoted, RcQuoted, Rerr, Text};
 pub use proc::{Waitmsg, Whom, getpid, postnote, wait, waitpid};
 pub use text::{cleanname, getfields, gettokens, quote, rc_quote, tokenize, unquote};
 
@@ -700,6 +701,46 @@ pub fn chdir(name: &CStr) -> Result<(), Error> {
 pub fn bind(name: &CStr, old: &CStr, flags: BindFlags) -> Result<(), Error> {
     // SAFETY: both names are NUL-terminated.
     unsafe { call_n(Sys::Bind, [ptr(name), ptr(old), flags.bits(), 0, 0, 0]) }.map(drop)
+}
+
+/// What [`access`] checks: that the file exists, or that it may be
+/// opened to execute, write or read it (or'd together).
+pub const AEXIST: u32 = 0;
+pub const AEXEC: u32 = 1;
+pub const AWRITE: u32 = 2;
+pub const AREAD: u32 = 4;
+
+/// Whether `name` exists ([`AEXIST`]) or may be opened as `mode` says,
+/// as Plan 9's `access`: by a `stat`, or by opening it.
+pub fn access(name: &CStr, mode: u32) -> Result<(), Error> {
+    if mode == AEXIST {
+        return dirstat(name).map(drop);
+    }
+    let access = match mode & 7 {
+        AEXEC | 5 => Access::Exec,
+        AWRITE => Access::Write,
+        AREAD => Access::Read,
+        _ => Access::ReadWrite,
+    };
+    let fd = open(
+        name,
+        OpenMode {
+            access,
+            flags: OpenFlags::empty(),
+        },
+    )?;
+    let _ = close(fd);
+    Ok(())
+}
+
+/// Prints the process's error text on standard error, after `s` and a
+/// colon if `s` is not empty (Plan 9's `perror`).
+pub fn perror(s: &[u8]) {
+    if s.is_empty() {
+        eprintln!("{Rerr}");
+    } else {
+        eprintln!("{}: {Rerr}", Text(s));
+    }
 }
 
 /// `b` as a C string; fails if it holds a NUL.

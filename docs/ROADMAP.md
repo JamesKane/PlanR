@@ -323,9 +323,10 @@ on Plan R and on host plan9port (see [TESTING.md](TESTING.md)).
 7. ✅ Oracle harness: `cargo xtask oracle` runs `oracle/rc/` scripts on host
    plan9port (`scripts/install-plan9port.sh`) and in QEMU and compares
    stdout, stderr and status, with an allow-file; in CI from then on.
-8. File commands: `echo` and `cat` (done in slices 5 and 6, for rc's
+8. ✅ File commands: `echo` and `cat` (done in slices 5 and 6, for rc's
    tests) `ls cp mv rm mkdir pwd touch chmod basename
-   cleanname seq date sleep wc tee test cmp xd strings tail du`.
+   cleanname seq date sleep wc tee test cmp xd strings tail du`, with
+   the `oracle/cmd` and `oracle/expect` corpora.
 9. Name-space commands (`bind mount unmount ns ps kill`), `newns` with
    `/lib/namespace`, `root/` in the archive; the real `init` (name
    space, `termrc`, `rc -i`); the P2 test programs under `/sys/test`,

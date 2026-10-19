@@ -1,0 +1,34 @@
+# tail: lines and characters, from the end and the start, -r, files and
+# pipes, and usage.
+seq 1 20 >n
+echo -n 'no newline
+at the end' >nn
+touch e
+tail n
+tail -3 n
+tail +18 n
+tail -n 2 n
+tail -n2 n
+tail -n +19 n
+tail -c 5 n
+tail +48c n
+tail -2c n
+tail -r n
+tail -3r n
+tail -1 nn
+tail -r nn
+tail e
+tail -r e
+seq 1 20 | tail -3
+seq 1 20 | tail +18
+seq 1 20 | tail -c 4
+seq 1 20 | tail -r
+seq 1 20 | tail -2r
+seq 1 20 | tail
+echo -n 'a
+b' | tail -1
+tail <n
+tail -rc3 n >[2]/dev/null || echo incompatible failed
+tail -x n || echo usage failed
+tail n n || echo usage failed
+tail -n || echo usage failed

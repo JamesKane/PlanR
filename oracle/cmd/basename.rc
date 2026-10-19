@@ -1,0 +1,13 @@
+# basename: the last element, a suffix taken off, and -d.
+basename /a/b/c.c
+basename /a/b/c.c .c
+basename c.c c.c
+basename c.c x.c
+basename a/
+basename /
+basename ''
+basename -d /a/b/c
+basename -d c
+basename -d /c
+basename a b c || echo usage failed
+basename || echo usage failed

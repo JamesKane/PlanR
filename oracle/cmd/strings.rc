@@ -1,0 +1,18 @@
+# strings: runs of printable runes, their offsets, long runs, several
+# files, and standard input.
+echo 'hello world, this is a string' >a
+echo 'ab
+short
+x six!
+exactly6
+then a longer one' >b
+echo 'déjà vu, ça marche' >u
+echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx >long
+strings a
+strings b
+strings u
+strings long
+strings a b
+strings <b
+touch e
+strings e

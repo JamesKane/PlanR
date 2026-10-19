@@ -1,0 +1,25 @@
+# ls: sorting, prefixes, quoting, -d -p -F -Q -r -s -t, and errors.
+mkdir d d/sub
+touch d/b d/a d/c 'd/with space' 'd/q''uote' 'd/x=y'
+ls d
+ls -p d
+ls -d d
+ls -F d
+ls -Q d
+ls -r d
+ls d/a d/b d
+ls d/
+ls d//a
+ls -dF d d/sub d/a
+echo hello >d/a
+ls -s d/a d/b
+ls -p d/a d/sub
+touch -t 100 d/b
+touch -t 200 d/c
+touch -t 300 d/a
+ls -t d/a d/b d/c
+ls -tr d/a d/b d/c
+cd d
+ls -F sub
+ls nonesuch >[2]/dev/null || echo nonesuch failed
+ls -x || echo usage failed

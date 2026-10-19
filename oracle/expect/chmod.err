@@ -1,0 +1,4 @@
+chmod: bad mode: zz
+chmod: bad mode: u+q
+chmod: can't stat nonesuch: file does not exist
+usage: chmod 0777 file ... or chmod [who]op[rwxalt] file ...

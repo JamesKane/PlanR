@@ -1,0 +1,6 @@
+mv: c and ./c are the same
+mv: h not a directory
+mv: can't stat nonesuch: file does not exist
+mv: e is a directory, not copied to g/sub
+usage: mv fromfile tofile
+	  mv fromfile ... todir

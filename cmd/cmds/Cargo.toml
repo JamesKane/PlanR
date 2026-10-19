@@ -8,8 +8,50 @@ publish.workspace = true
 autobins = false
 
 [[bin]]
+name = "basename"
+path = "src/bin/basename.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "cat"
 path = "src/bin/cat.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "chmod"
+path = "src/bin/chmod.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "cleanname"
+path = "src/bin/cleanname.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "cmp"
+path = "src/bin/cmp.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "cp"
+path = "src/bin/cp.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "date"
+path = "src/bin/date.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "du"
+path = "src/bin/du.rs"
 test = false
 bench = false
 
@@ -19,7 +61,92 @@ path = "src/bin/echo.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "ls"
+path = "src/bin/ls.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "mkdir"
+path = "src/bin/mkdir.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "mv"
+path = "src/bin/mv.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "pwd"
+path = "src/bin/pwd.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rm"
+path = "src/bin/rm.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "seq"
+path = "src/bin/seq.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "sleep"
+path = "src/bin/sleep.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "strings"
+path = "src/bin/strings.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "tail"
+path = "src/bin/tail.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "tee"
+path = "src/bin/tee.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "test"
+path = "src/bin/test.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "touch"
+path = "src/bin/touch.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "wc"
+path = "src/bin/wc.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "xd"
+path = "src/bin/xd.rs"
+test = false
+bench = false
+
 [dependencies]
+abi = { path = "../../lib/abi" }
 r = { path = "../../lib/r" }
 
 [lints]

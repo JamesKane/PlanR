@@ -1,0 +1,13 @@
+# pwd: the current directory, as the kernel names it.
+cd /
+pwd
+cd /tmp
+pwd
+basename `{pwd}
+mkdir -p a/b
+cd a/b
+pwd | basename `{cat}
+cd ..
+basename `{pwd}
+cd //tmp/./
+pwd

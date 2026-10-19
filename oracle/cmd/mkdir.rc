@@ -1,0 +1,12 @@
+# mkdir: directories, -p, and errors.
+mkdir a b
+ls -d a b
+mkdir a || echo exists failed
+mkdir -p x/y/z
+ls -d x x/y x/y/z
+mkdir -p x/y/z && echo again ok
+mkdir -p a/new && ls -d a/new
+mkdir -m 1777 q || echo mode failed
+mkdir -m || echo usage failed
+mkdir -z || echo usage failed
+mkdir nonesuch/sub >[2]/dev/null || echo create failed

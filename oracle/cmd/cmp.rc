@@ -1,0 +1,27 @@
+# cmp: same, different, -s -l -L, ends, offsets and usage.
+echo hello >a
+echo hello >b
+echo help >c
+echo hello world >d
+echo 'line one
+line two' >m
+echo 'line one
+line 2' >n
+cmp a b && echo same
+cmp a c || echo differ
+cmp -s a c || echo silent
+cmp -l a c || echo listed
+cmp -L a c
+cmp -L m n
+cmp m n
+cmp a d || echo eof
+cmp d a || echo eof
+cmp -s a d || echo eof silent
+cmp a b 1 1 && echo offsets same
+cmp a c 4 4
+cmp a d 0x2 2
+cmp nonesuch a >[2]/dev/null || echo open failed
+cmp -s nonesuch a || echo open silent
+cmp a || echo usage failed
+cmp a b 1 1 1 || echo usage failed
+cmp -x a b || echo usage failed

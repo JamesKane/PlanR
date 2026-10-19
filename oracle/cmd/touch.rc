@@ -1,0 +1,15 @@
+# touch: creating, -c, and times that order ls -t.
+touch a
+ls a
+touch -c b >[2]/dev/null || echo nocreate failed
+ls b >[2]/dev/null || echo no b
+touch -t 1000 old
+touch -t 2000 new
+ls -t old new
+ls -tr old new
+touch -c -t 3000 old
+ls -t old new
+touch -t 0x100 hex
+ls -t hex old
+touch || echo usage failed
+touch -t || echo usage failed

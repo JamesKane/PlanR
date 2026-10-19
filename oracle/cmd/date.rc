@@ -1,0 +1,10 @@
+# date: a given time, in GMT or as seconds (the local zone differs by
+# system, and now by when).
+date -n 0
+date -u 0
+date -u 951868799
+date -u 1792413296
+date -u 0x10
+date -n -u 86400
+date -un 1792413296
+date -x || echo usage failed

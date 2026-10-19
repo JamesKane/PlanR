@@ -1,0 +1,18 @@
+644 --rw-r--r-- M 1 eve eve 0 Jan 1 1970 f
+755 --rwxr-xr-x M 1 eve eve 0 Jan 1 1970 f
+0 ----------- M 1 eve eve 0 Jan 1 1970 f
++r --r--r--r-- M 1 eve eve 0 Jan 1 1970 f
+u+w --rw-r--r-- M 1 eve eve 0 Jan 1 1970 f
+go+x --rw-r-xr-x M 1 eve eve 0 Jan 1 1970 f
+a-x --rw-r--r-- M 1 eve eve 0 Jan 1 1970 f
+=rw --rw-rw-rw- M 1 eve eve 0 Jan 1 1970 f
+o-rw --rw-rw---- M 1 eve eve 0 Jan 1 1970 f
++a a-rw-rw---- M 1 eve eve 0 Jan 1 1970 f
++l alrw-rw---- M 1 eve eve 0 Jan 1 1970 f
+-al --rw-rw---- M 1 eve eve 0 Jan 1 1970 f
+ug=r --r--r----- M 1 eve eve 0 Jan 1 1970 f
+d-rwx------ M 1 eve eve 0 Jan 1 1970 d
+bad failed
+bad failed
+nonesuch ok
+usage failed

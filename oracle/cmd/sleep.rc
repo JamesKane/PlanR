@@ -1,0 +1,5 @@
+# sleep: whole seconds; none, or nonsense, is no wait.
+sleep 1 && echo slept
+sleep 0 && echo zero
+sleep && echo none
+sleep x && echo nonsense

@@ -1,0 +1,11 @@
+# tee: to files and standard output, -a, and none.
+echo hi | tee a b
+cat a b
+echo more | tee -a a
+cat a
+echo new | tee -a fresh
+cat fresh
+echo x | tee
+echo again | tee a
+cat a
+echo y | tee -z || echo usage failed

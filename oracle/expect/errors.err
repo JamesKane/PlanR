@@ -1,0 +1,17 @@
+ls: nonesuch: file does not exist
+mkdir: can't create nonesuch/x: file does not exist
+rm: nonesuch: file does not exist
+rm: nonesuch: file does not exist
+rm: full: directory not empty
+touch: nonesuch/x: cannot create: file does not exist
+touch: nonesuch: cannot wstat: file does not exist
+nonesuch: file does not exist
+nonesuch: file does not exist
+open: file does not exist
+du: nonesuch: file does not exist
+tail: nonesuch: file does not exist
+tee: cannot open nonesuch/x: file does not exist
+cp: can't stat nonesuch: file does not exist
+chmod: can't stat nonesuch: file does not exist
+mv: can't stat nonesuch: file does not exist
+cat: can't open nonesuch: file does not exist

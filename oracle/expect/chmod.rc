@@ -1,0 +1,37 @@
+# chmod: octal and symbolic modes, as ls -l shows them, and errors.
+touch -t 0 f
+fn show { echo $1 `{ls -l f} }
+chmod 644 f
+show 644
+chmod 755 f
+show 755
+chmod 0 f
+show 0
+chmod +r f
+show +r
+chmod u+w f
+show u+w
+chmod go+x f
+show go+x
+chmod a-x f
+show a-x
+chmod '=rw' f
+show '=rw'
+chmod o-rw f
+show o-rw
+chmod +a f
+show +a
+chmod +l f
+show +l
+chmod -al f
+show -al
+chmod 'ug=r' f
+show 'ug=r'
+mkdir d
+chmod 700 d
+touch -t 0 d
+echo `{ls -ld d}
+chmod zz f || echo bad failed
+chmod u+q f || echo bad failed
+chmod 644 nonesuch && echo nonesuch ok
+chmod 644 || echo usage failed

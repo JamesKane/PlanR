@@ -1,0 +1,30 @@
+# cp: to a name, into a directory, -x, and each error.
+echo hello >a
+cp a b
+cat b
+mkdir d
+cp a b d
+ls d
+cp a d/c
+cat d/c
+seq 1 3000 >big
+cp big big2
+cmp big big2 && echo big same
+echo again >b
+cp a b
+cat b
+chmod 751 a
+cp a x
+touch -t 0 x
+echo `{ls -l x}
+touch -t 86400 a
+cp -x a y
+test y -ot b && echo time kept
+cp a a || echo same failed
+cp a ./a || echo same failed
+cp d e || echo directory failed
+cp a b nonesuch || echo usage failed
+cp nonesuch x || echo stat failed
+cp a nonesuch/x || echo create failed
+cp a || echo usage failed
+cp -z a b || echo usage failed

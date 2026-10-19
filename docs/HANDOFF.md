@@ -1,9 +1,9 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19: P3 slices 1 to 7 (console input, libr base, libr system
+2026-10-19: P3 slices 1 to 8 (console input, libr base, libr system
 layer, the 9P server framework and `ramfs`, `rc` parts 1 and 2, the
-oracle harness) are done.
+oracle harness, the file commands) are done.
 
 ## State
 
@@ -661,6 +661,48 @@ oracle harness) are done.
      - plan9port's rc has no `return` (nor has Plan 9's; ours has none).
      - `boot_main`'s `test=trap` arm is now `trap_test()` (clippy's line
        limit), so the `trap` boot test looks for `kernel::trap_test+0x`.
+  8. The file commands:
+     - `cmd/cmds` (a binary each, in the archive's `/boot`, so `/bin`):
+       `ls cp mv rm mkdir pwd touch chmod basename cleanname seq date
+       sleep wc tee test cmp xd strings tail du`, ported from plan9port's
+       sources where it has them (`~/plan9port/src/cmd/*.c`), and from
+       Plan 9's behaviour for `cp mv pwd chmod`. Flags, messages, exit
+       statuses and quirks are Plan 9's, deliberately: `strings`
+       reports a run at offset 0 as at 1 and prints file names ahead of
+       buffered strings; `xd -r` drops the bytes read past a repeated
+       line; `cmp -l` exits normally when the lengths match; `chmod`
+       exits normally after errors; `du`'s total takes `-t` over `-q`;
+       `tail -rc3` ignores the `c3`; `test`'s `-o`/`-a` do not read
+       their right side once decided.
+     - libr: `num` (`strtol`, `strtoul`, `atol`, `strtod`, `atof`, C's
+       `%e %f %g` as `format_float`/`printf_float`, for `seq -f`),
+       `access` with `AEXIST AEXEC AWRITE AREAD`, `perror`, and `Mode`
+       (`%M`, `d-rwxr-xr-x`). `cmds` now depends on `abi` too.
+     - Kernel: `seek` on a pipe fails with "seek on a stream", as Plan
+       9's, which `tail` relies on to tell a pipe from a file. `test=oracle`
+       allows init 600 s (the corpus takes minutes on arm64 under
+       emulation; other modes keep 60), and xtask's oracle boot at least
+       660.
+     - The oracle has three corpora now, scripts named `CORPUS/NAME`
+       (`oracle/README.md`, moved up from `oracle/rc/`): `rc`, `cmd` (16
+       scripts, a command each, against plan9port's commands) and
+       `expect` (`pwd cp mv chmod`, `ls -l`/`-m`/`du -t`/`mkdir -m`/the
+       local zone, and each command's errors with Plan 9's strings),
+       whose expected output is written down in `NAME.out`, `NAME.err`
+       and `NAME.fail`, each line checked against Plan 9's behaviour.
+       `allow` is optional. `toracle` runs every corpus under
+       `/sys/lib/oracle`.
+     - Differences found that are plan9port's, not ours, so kept out of
+       `cmd/`: a bare `=` argument (plan9port's 2020 parser takes it;
+       Plan 9's grammar makes it a syntax error, so the scripts quote
+       it); the name `stat` gives `.` (Plan 9's kernel names it for its
+       directory, so `ls -d .` prints that; in `expect/lsl`); `seq -f`
+       with two conversions (C varargs garbage).
+     - Open: libr's `cleanname` treats `#c` as a root, so
+       `cleanname '#c/../x'` gives `#c/x`; plan9port's (and, as far as
+       I know, Plan 9 libc's) gives `x`. The kernel's own cleaning does
+       keep `#c`. Left alone and out of the corpus; decide when a
+       program needs it.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -670,12 +712,13 @@ oracle harness) are done.
 
 ## Next steps
 
-P3 slice 8: the file commands, `ls cp mv rm mkdir pwd touch chmod
-basename cleanname seq date sleep wc tee test cmp xd strings tail du`
-(`echo` and `cat` are done), each with oracle scripts where plan9port
-has the command (in `oracle/rc`, or a new `oracle/cmd` corpus run the
-same way). The P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`;
-`srv` and `9fs` moved to P5).
+P3 slice 9: the name-space commands (`bind mount unmount ns ps kill`),
+`newns` with `/lib/namespace`, `root/` in the archive; the real `init`
+(name space, `termrc`, `rc -i`); the P2 test programs under
+`/sys/test`, run by rc scripts with `test=1`. plan9port has none of
+these as Plan 9 has them, so their scripts go in `oracle/expect`. The
+P3 slices were agreed on 2026-10-19 (`docs/ROADMAP.md`; `srv` and `9fs`
+moved to P5).
 
 plan9port is built on this host (2026-10-19, by
 `scripts/install-plan9port.sh`, in `~/plan9port`; `$PLAN9` is not set,
@@ -683,7 +726,9 @@ and `xtask oracle` defaults to `~/plan9port`). Its rc reads
 `$PLAN9/rcmain` (the Unix one: different lines, so `-x`/`-s` output
 differs from ours, and the corpus leaves them out), uses `/dev/fd/N`
 for `<{}`, and `/dev/stdin` interactively. Its tools' error strings are
-Unix's, so scripts that show them need an allow line.
+Unix's, so scripts that show them send stderr to `/dev/null` or go in
+`oracle/expect`. Its `cp mv pwd chmod` are missing from `$PLAN9/bin`
+(the oracle's `PATH` has only that), so those are in `expect` too.
 
 The slice 12 plan, for reference: an `init` in the boot archive that
 builds a name space, runs the test programs and reports on the console,

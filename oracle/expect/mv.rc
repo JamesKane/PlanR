@@ -1,0 +1,30 @@
+# mv: renaming, into a directory and out (a copy), replacing, directories,
+# and each error.
+echo one >a
+mv a b
+ls
+cat b
+mkdir d
+mv b d
+ls d
+mv d/b .
+ls d
+cat b
+echo two >c
+mv b c
+cat c
+mv d f
+ls -d f
+mkdir e
+mv f e
+ls -d e f >[2]/dev/null
+echo x >p
+echo y >q
+mkdir g
+mv p q g
+ls g
+mv c c || echo same failed
+mv g/p g/q h || echo usage failed
+mv nonesuch x || echo stat failed
+mv e g/sub || echo directory failed
+mv a || echo usage failed

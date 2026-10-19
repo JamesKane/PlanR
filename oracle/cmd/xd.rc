@@ -1,0 +1,40 @@
+# xd: each format and size, addresses, swapping, runes, repeats, several
+# files, standard input, and errors.
+echo hello world, and more than sixteen >a
+echo 'héllo wörld' >u
+echo 0123456789abcde >r
+cat r r r r a >rr
+touch e
+xd a
+xd -c a
+xd -b a
+xd -1x a
+xd -1o a
+xd -1d a
+xd -w a
+xd -2o a
+xd -2d a
+xd -4d a
+xd -l a
+xd -v a
+xd -8x a
+xd -8o a
+xd -8d a
+xd -ad -c a
+xd -ao a
+xd -c -x a
+xd -x -c -1d a
+xd -s a
+xd -S a
+xd -R u
+xd -c u
+xd -r -c rr
+xd -c rr
+xd e
+xd <a
+xd a e
+xd nonesuch || echo nonesuch failed
+xd -z a || echo usage failed
+xd -cx a || echo usage failed
+xd -ax a
+xd -rx a || echo usage failed

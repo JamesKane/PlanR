@@ -51,6 +51,7 @@ pub(crate) const ENONEXIST: &str = "file does not exist";
 pub(crate) const EEXIST: &str = "file already exists";
 pub(crate) const EPERM: &str = "permission denied";
 pub(crate) const EISDIR: &str = "file is a directory";
+pub(crate) const EISSTREAM: &str = "seek on a stream";
 pub(crate) const ENOTDIR: &str = "not a directory";
 pub(crate) const EBADFD: &str = "fd out of range or not open";
 pub(crate) const EBADUSEFD: &str = "inappropriate use of fd";

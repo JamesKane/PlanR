@@ -1,9 +1,15 @@
-//! `cargo xtask oracle`: the scripts in `oracle/rc` run on host plan9port
-//! and on Plan R in QEMU, and what each wrote to standard output and
-//! error, and whether it exited normally, must be the same (TESTING.md,
-//! "Userland behaviour"). plan9port's rc gives only a Unix exit code, so
-//! the status compared is whether it is empty; a script that cares about
-//! a status string echoes it.
+//! `cargo xtask oracle`: the scripts in each corpus, `oracle/rc` (the
+//! shell) and `oracle/cmd` (the commands), run on host plan9port and on
+//! Plan R in QEMU, and what each wrote to standard output and error, and
+//! whether it exited normally, must be the same (TESTING.md, "Userland
+//! behaviour"). plan9port's rc gives only a Unix exit code, so the status
+//! compared is whether it is empty; a script that cares about a status
+//! string echoes it. A script is named by its corpus, `rc/words`.
+//!
+//! `oracle/expect` holds what plan9port cannot answer (the commands it
+//! lacks, and Plan 9's own error strings): there, what each script should
+//! write is written down beside it, in `NAME.out` and `NAME.err` (none if
+//! missing), and `NAME.fail` is there if it should fail.
 //!
 //! Each script runs as `rc NAME.rc` in an empty directory of its own,
 //! with standard input from `/dev/null`. On the host the environment is
@@ -12,7 +18,7 @@
 //! them (see `cmd/utest/src/bin/toracle.rs`, which also gives the
 //! console format read here).
 //!
-//! `oracle/rc/allow` lists the known differences, one to a line: the
+//! Each corpus's `allow` lists its known differences, one to a line: the
 //! script, the stream (`stdout`, `stderr` or `status`) and why. A listed
 //! difference that has gone away is an error too, so the list stays true.
 //! Both sides' results are kept in `build/oracle/`.
@@ -57,19 +63,41 @@ impl Ran {
     }
 }
 
+/// The corpora: directories of `oracle/`.
+const CORPORA: &[&str] = &["rc", "cmd", "expect"];
+
+/// The corpus whose results are written down, not plan9port's.
+const EXPECT: &str = "expect";
+
+/// How long the oracle's boot may take at least, in seconds: the corpus
+/// takes minutes on arm64 under emulation (the kernel allows init 600).
+const ORACLE_TIMEOUT: u64 = 660;
+
 /// How long a script may take on the host.
 const HOST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) fn run(opts: &Opts) -> Result<(), String> {
     let rc = plan9port()?;
-    let dir = root().join("oracle/rc");
-    let scripts = corpus(&dir)?;
-    let allow = parse_allow(&read(&dir.join("allow"))?, &scripts)?;
+    let dir = root().join("oracle");
+    let mut scripts = Vec::new();
+    let mut allow = Vec::new();
+    for c in CORPORA {
+        let these = corpus(&dir.join(c))?;
+        let list = dir.join(c).join("allow");
+        if list.exists() {
+            allow.extend(parse_allow(&read(&list)?, c, &these)?);
+        }
+        scripts.extend(these.into_iter().map(|n| format!("{c}/{n}")));
+    }
     let out = root().join("build/oracle");
 
     let mut host = BTreeMap::new();
     for name in &scripts {
-        let ran = run_host(&rc, &dir, name, &out.join("host"))?;
+        let ran = if name.starts_with(&format!("{EXPECT}/")) {
+            expected(&dir, name)?
+        } else {
+            run_host(&rc, &dir, name, &out.join("host"))?
+        };
         save(&out.join("host"), name, &ran)?;
         host.insert(name.clone(), ran);
     }
@@ -90,14 +118,14 @@ pub(crate) fn run(opts: &Opts) -> Result<(), String> {
             crate::FOUR_CPUS,
             &expect,
             &[],
-            opts.timeout,
+            opts.timeout.max(ORACLE_TIMEOUT),
         )
         .map_err(|e| format!("{arch} oracle boot: {e}"))?;
         let log = read(&qemu::log_path(arch, "oracle", profile))?;
         let planr = parse_log(&log)?;
         for name in &scripts {
             let Some(got) = planr.get(name) else {
-                return Err(format!("{arch}: Plan R did not run {name}.rc"));
+                return Err(format!("{arch}: Plan R did not run oracle/{name}.rc"));
             };
             save(&out.join(arch.name()), name, got)?;
             let want = &host[name];
@@ -121,8 +149,9 @@ pub(crate) fn run(opts: &Opts) -> Result<(), String> {
         }
     }
     for (a, _) in allow.iter().zip(&used).filter(|(_, u)| !**u) {
+        let corpus = a.script.split('/').next().unwrap_or_default();
         println!(
-            "xtask: oracle {}: {} no longer differs; take it out of oracle/rc/allow",
+            "xtask: oracle {}: {} no longer differs; take it out of oracle/{corpus}/allow",
             a.script, a.stream
         );
         failed.push(format!("allow {} {}", a.script, a.stream));
@@ -170,32 +199,56 @@ fn corpus(dir: &Path) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
-/// The scripts, for the boot archive: their names there and contents.
+/// The scripts, for the boot archive: their names there
+/// (`sys/lib/oracle/CORPUS/NAME.rc`) and contents.
 pub(crate) fn archive_files() -> Result<Vec<(String, Vec<u8>)>, String> {
-    let dir = root().join("oracle/rc");
-    corpus(&dir)?
-        .into_iter()
-        .map(|n| {
-            let data = fs::read(dir.join(format!("{n}.rc"))).map_err(|e| format!("{n}.rc: {e}"))?;
-            Ok((format!("sys/lib/oracle/rc/{n}.rc"), data))
-        })
-        .collect()
+    let mut files = Vec::new();
+    for c in CORPORA {
+        let dir = root().join("oracle").join(c);
+        for n in corpus(&dir)? {
+            let data = fs::read(dir.join(format!("{n}.rc"))).map_err(|e| format!("{c}/{n}.rc: {e}"))?;
+            files.push((format!("sys/lib/oracle/{c}/{n}.rc"), data));
+        }
+    }
+    Ok(files)
 }
 
 fn read(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Runs script `name` from `dir` under plan9port's `rc`, in a fresh
-/// directory under `work`.
+/// What script `name` in `dir` should do, as written down beside it.
+fn expected(dir: &Path, name: &str) -> Result<Ran, String> {
+    let file = |ext: &str| {
+        let p = dir.join(format!("{name}.{ext}"));
+        if p.exists() {
+            fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    Ok(Ran {
+        out: file("out")?,
+        err: file("err")?,
+        status: if dir.join(format!("{name}.fail")).exists() {
+            "failed".into()
+        } else {
+            String::new()
+        },
+    })
+}
+
+/// Runs script `name` (`corpus/stem`) from `dir` under plan9port's `rc`,
+/// in a fresh directory under `work`.
 fn run_host(rc: &Path, dir: &Path, name: &str, work: &Path) -> Result<Ran, String> {
     let here = work.join(name);
     if here.exists() {
         fs::remove_dir_all(&here).map_err(|e| format!("{}: {e}", here.display()))?;
     }
     fs::create_dir_all(&here).map_err(|e| format!("{}: {e}", here.display()))?;
-    let script = format!("{name}.rc");
-    fs::copy(dir.join(&script), here.join(&script)).map_err(|e| format!("{script}: {e}"))?;
+    let stem = name.rsplit('/').next().unwrap_or(name);
+    let script = format!("{stem}.rc");
+    fs::copy(dir.join(format!("{name}.rc")), here.join(&script)).map_err(|e| format!("{name}.rc: {e}"))?;
     let (out, err) = (work.join(format!("{name}.stdout")), work.join(format!("{name}.stderr")));
     let file = |p: &Path| fs::File::create(p).map_err(|e| format!("{}: {e}", p.display()));
     let plan9 = rc.parent().and_then(Path::parent).ok_or("odd plan9port path")?;
@@ -237,7 +290,9 @@ fn run_host(rc: &Path, dir: &Path, name: &str, work: &Path) -> Result<Ran, Strin
 
 /// Keeps what script `name` did in `dir`.
 fn save(dir: &Path, name: &str, ran: &Ran) -> Result<(), String> {
-    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let parent = dir.join(name);
+    let parent = parent.parent().unwrap_or(dir);
+    fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     for (ext, data) in [
         ("stdout", &ran.out[..]),
         ("stderr", &ran.err),
@@ -296,14 +351,16 @@ struct Allow {
     stream: &'static str,
 }
 
-fn parse_allow(text: &str, scripts: &[String]) -> Result<Vec<Allow>, String> {
+/// Reads corpus `corpus`'s allow-file, which names its `scripts` without
+/// the corpus.
+fn parse_allow(text: &str, corpus: &str, scripts: &[String]) -> Result<Vec<Allow>, String> {
     let mut allow = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let bad = |why: &str| format!("oracle/rc/allow:{}: {why}", n + 1);
+        let bad = |why: &str| format!("oracle/{corpus}/allow:{}: {why}", n + 1);
         let mut f = line.split_whitespace();
         let (Some(script), Some(stream), Some(_why)) = (f.next(), f.next(), f.next()) else {
             return Err(bad("want a script, a stream and why"));
@@ -314,13 +371,11 @@ fn parse_allow(text: &str, scripts: &[String]) -> Result<Vec<Allow>, String> {
         let Some(stream) = STREAMS.into_iter().find(|&s| s == stream) else {
             return Err(bad(&format!("{stream} is not one of {}", STREAMS.join(", "))));
         };
+        let script = format!("{corpus}/{script}");
         if allow.iter().any(|a: &Allow| a.script == script && a.stream == stream) {
             return Err(bad("listed twice"));
         }
-        allow.push(Allow {
-            script: script.to_string(),
-            stream,
-        });
+        allow.push(Allow { script, stream });
     }
     Ok(allow)
 }
@@ -330,10 +385,10 @@ fn show(want: &Ran, got: &Ran, streams: &[&str]) -> String {
     let mut s = String::new();
     for &st in streams {
         if st == "status" {
-            let _ = writeln!(s, "  status: plan9port {:?}, Plan R {:?}", want.status, got.status);
+            let _ = writeln!(s, "  status: wanted {:?}, Plan R {:?}", want.status, got.status);
             continue;
         }
-        let _ = writeln!(s, "  {st}, plan9port:");
+        let _ = writeln!(s, "  {st}, wanted:");
         lines(&mut s, want.stream(st));
         let _ = writeln!(s, "  {st}, Plan R:");
         lines(&mut s, got.stream(st));
@@ -369,24 +424,24 @@ mod tests {
     #[test]
     fn reads_the_allow_file() {
         let scripts = ["a".to_string(), "b".to_string()];
-        let a = parse_allow("# known\n\na stderr  messages differ\nb status x\n", &scripts).unwrap();
+        let a = parse_allow("# known\n\na stderr  messages differ\nb status x\n", "rc", &scripts).unwrap();
         assert_eq!(
             a,
             [
                 Allow {
-                    script: "a".into(),
+                    script: "rc/a".into(),
                     stream: "stderr"
                 },
                 Allow {
-                    script: "b".into(),
+                    script: "rc/b".into(),
                     stream: "status"
                 }
             ]
         );
-        assert!(parse_allow("c stdout why\n", &scripts).is_err());
-        assert!(parse_allow("a stdin why\n", &scripts).is_err());
-        assert!(parse_allow("a stdout\n", &scripts).is_err());
-        assert!(parse_allow("a stdout x\na stdout y\n", &scripts).is_err());
+        assert!(parse_allow("c stdout why\n", "rc", &scripts).is_err());
+        assert!(parse_allow("a stdin why\n", "rc", &scripts).is_err());
+        assert!(parse_allow("a stdout\n", "rc", &scripts).is_err());
+        assert!(parse_allow("a stdout x\na stdout y\n", "rc", &scripts).is_err());
     }
 
     #[test]

@@ -1,0 +1,7 @@
+# cleanname: names cleaned lexically, and -d.
+cleanname /a/b/../c ./x//y/ a/../.. /.. . a/./b/.
+cleanname ../../a /../a
+cleanname -d /usr/glenda ../x y /abs ./z
+cleanname -d rel x/.. y
+cleanname || echo usage failed
+cleanname -d || echo usage failed

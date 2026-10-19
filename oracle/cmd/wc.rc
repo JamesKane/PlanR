@@ -1,0 +1,21 @@
+# wc: lines, words and bytes; each count alone; files, totals, input.
+echo hello world >a
+echo -n 'no newline' >b
+echo 'héllo wörld, ünïcode' >u
+echo '  spaced	out  ' >s
+wc a
+wc a b
+wc a b u
+wc -l a
+wc -w a
+wc -c a
+wc -r u
+wc -c u
+wc -lwrbc a b u s
+echo one two | wc
+wc <a
+wc -l <u
+touch e
+wc e
+wc nonesuch >[2]/dev/null || echo nonesuch failed
+wc -x || echo usage failed

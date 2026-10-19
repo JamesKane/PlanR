@@ -1,10 +1,10 @@
-//! The Plan R half of `cargo xtask oracle`: runs each script in
-//! `/sys/lib/oracle/rc` (the tree's `oracle/rc`, in the boot archive) as
-//! `rc NAME.rc`, in a directory of its own in `/tmp` with nothing else
-//! in it, standard input from `/dev/null`, and a copy of this
-//! environment. Then it prints on the console what the script wrote to
-//! standard output and error, and how it exited, for `xtask` to compare
-//! with plan9port's:
+//! The Plan R half of `cargo xtask oracle`: runs each script of each
+//! corpus in `/sys/lib/oracle` (the tree's `oracle/rc`, `oracle/cmd`, in
+//! the boot archive) as `rc NAME.rc`, in a directory of its own in `/tmp`
+//! with nothing else in it, standard input from `/dev/null`, and a copy
+//! of this environment. Then it prints on the console what the script
+//! wrote to standard output and error, and how it exited, for `xtask` to
+//! compare with plan9port's; a script is named `CORPUS/NAME`:
 //!
 //! ```text
 //! oracle: begin NAME
@@ -45,25 +45,36 @@ const fn mode(access: Access) -> OpenMode {
 const READ: OpenMode = mode(Access::Read);
 const WRITE: OpenMode = mode(Access::Write);
 
-/// Where the scripts are, and where they run.
-const SCRIPTS: &str = "/sys/lib/oracle/rc";
+/// Where the corpora are, and where their scripts run.
+const SCRIPTS: &str = "/sys/lib/oracle";
 const WORK: &str = "/tmp/oracle";
 
 /// Bytes of output on each line.
 const CHUNK: usize = 48;
 
-fn run(_: r::Args) -> Check {
-    let fd = r::open(&cstr(SCRIPTS), READ).map_err(|_| "no oracle scripts")?;
-    // The scripts' names, without `.rc`.
-    let mut stems: Vec<String> = r::dir::dirreadall(fd)
-        .map_err(|_| "cannot read the oracle scripts")?
-        .into_iter()
-        .filter(|d| !d.is_dir())
-        .filter_map(|d| d.name.strip_suffix(".rc").map(String::from))
-        .collect();
+/// The entries of directory `name`.
+fn entries(name: &str) -> Result<Vec<r::DirBuf>, &'static str> {
+    let fd = r::open(&cstr(name), READ).map_err(|_| "no oracle scripts")?;
+    let all = r::dir::dirreadall(fd).map_err(|_| "cannot read the oracle scripts")?;
     r::close(fd).map_err(|_| "close failed")?;
-    stems.sort();
+    Ok(all)
+}
+
+fn run(_: r::Args) -> Check {
     mkdir(WORK)?;
+    // The scripts' names, `corpus/name` without `.rc`.
+    let mut stems: Vec<String> = Vec::new();
+    for corpus in entries(SCRIPTS)?.into_iter().filter(r::DirBuf::is_dir) {
+        let c = &corpus.name;
+        mkdir(&format!("{WORK}/{c}"))?;
+        stems.extend(
+            entries(&format!("{SCRIPTS}/{c}"))?
+                .into_iter()
+                .filter(|d| !d.is_dir())
+                .filter_map(|d| d.name.strip_suffix(".rc").map(|n| format!("{c}/{n}"))),
+        );
+    }
+    stems.sort();
     for stem in &stems {
         say(&format!("oracle: begin {stem}\n"));
         let ran = script(stem)?;
@@ -86,12 +97,12 @@ struct Ran {
     status: Vec<u8>,
 }
 
-/// Runs script `stem.rc`.
+/// Runs script `stem.rc`, `corpus/name`.
 fn script(stem: &str) -> Result<Ran, &'static str> {
-    let name = format!("{stem}.rc");
+    let name = format!("{}.rc", stem.rsplit('/').next().unwrap_or(stem));
     let dir = format!("{WORK}/{stem}");
     mkdir(&dir)?;
-    let text = r::read_all(&cstr(&format!("{SCRIPTS}/{name}"))).map_err(|_| "cannot read a script")?;
+    let text = r::read_all(&cstr(&format!("{SCRIPTS}/{stem}.rc"))).map_err(|_| "cannot read a script")?;
     put(&format!("{dir}/{name}"), &text)?;
     let (out, err) = (format!("{WORK}/{stem}.out"), format!("{WORK}/{stem}.err"));
     let pid = match r::rfork(F::PROC | F::FDG | F::ENVG | F::NOTEG) {

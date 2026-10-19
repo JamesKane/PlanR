@@ -17,7 +17,9 @@ use crate::port::chan::{self, Chan, Walked, last_elem};
 use crate::port::dev::Dev;
 use crate::port::devmnt;
 use crate::port::devpipe::PIPE;
-use crate::port::error::{EBADARG, EBADCHAR, EBADSTAT, EBADUSEFD, EISDIR, ENOATTACH, ENOTDIR, ESHORTSTAT, Result};
+use crate::port::error::{
+    EBADARG, EBADCHAR, EBADSTAT, EBADUSEFD, EISDIR, EISSTREAM, ENOATTACH, ENOTDIR, ESHORTSTAT, Result,
+};
 use crate::port::pgrp::{self, NameSpace};
 use crate::port::uaccess;
 
@@ -208,9 +210,12 @@ pub(crate) fn fwstat(fd: u64, buf: u64, n: u64) -> Result<u64> {
 }
 
 /// `seek(fd, offset, whence) -> offset`: a directory seeks only to its
-/// start.
+/// start, and a pipe not at all.
 pub(crate) fn seek(fd: u64, offset: u64, whence: u64) -> Result<u64> {
     let c = chan_of(fd)?;
+    if c.dev.dc() == '|' {
+        return Err(EISSTREAM.into());
+    }
     let whence = Whence::from_raw(whence).ok_or(EBADARG)?;
     #[allow(clippy::cast_possible_wrap)] // the offset is an i64
     let off = offset as i64;

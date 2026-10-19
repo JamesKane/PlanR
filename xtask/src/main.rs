@@ -33,7 +33,7 @@ commands:
   test     host unit tests, then headless QEMU boot tests
   deps     check the dependency rule (ADR 0001)
   acpidump boot QEMU and write its ACPI tables to oracle/acpi-corpus
-  oracle   run oracle/rc's scripts on plan9port and in QEMU, and compare
+  oracle   run oracle/{rc,cmd}'s scripts on plan9port and in QEMU, and compare
   ci       everything CI runs: fmt, clippy, deps, test, oracle
 
 options:
@@ -190,7 +190,34 @@ const USER_PROGRAMS: &[(&str, &[&str])] = &[
     ("init", &["init"]),
     ("ramfs", &["ramfs"]),
     ("rc", &["rc"]),
-    ("cmds", &["cat", "echo"]),
+    (
+        "cmds",
+        &[
+            "basename",
+            "cat",
+            "chmod",
+            "cleanname",
+            "cmp",
+            "cp",
+            "date",
+            "du",
+            "echo",
+            "ls",
+            "mkdir",
+            "mv",
+            "pwd",
+            "rm",
+            "seq",
+            "sleep",
+            "strings",
+            "tail",
+            "tee",
+            "test",
+            "touch",
+            "wc",
+            "xd",
+        ],
+    ),
     (
         "utest",
         &[

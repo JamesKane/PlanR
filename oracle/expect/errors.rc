@@ -1,0 +1,22 @@
+# Each command's errors, with Plan 9's error strings.
+ls nonesuch
+mkdir nonesuch/x
+rm nonesuch
+rm -r nonesuch
+mkdir full
+touch full/f
+rm full
+touch nonesuch/x
+touch -c nonesuch
+wc nonesuch
+cmp nonesuch nonesuch
+strings nonesuch
+du nonesuch
+tail nonesuch
+tee nonesuch/x </dev/null
+cp nonesuch x
+chmod 644 nonesuch
+mv nonesuch x
+cat nonesuch
+cd /tmp
+echo end

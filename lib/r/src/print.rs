@@ -176,6 +176,37 @@ impl fmt::Display for RcQuoted<'_> {
     }
 }
 
+/// `%M`: a file's mode as `ls -l` shows it, `d-rwxr-xr-x`: `d` for a
+/// directory, `a` for append-only, `A` for an authentication file, `l`
+/// for exclusive use, then the owner's, group's and others' permissions.
+#[derive(Debug, Clone, Copy)]
+pub struct Mode(pub u32);
+
+impl fmt::Display for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let m = self.0;
+        let kind = if m & abi::DMDIR != 0 {
+            'd'
+        } else if m & abi::DMAPPEND != 0 {
+            'a'
+        } else if m & abi::DMAUTH != 0 {
+            'A'
+        } else {
+            '-'
+        };
+        let mut s = [0u8; 11];
+        s[0] = kind as u8;
+        s[1] = if m & abi::DMEXCL != 0 { b'l' } else { b'-' };
+        for (i, shift) in [6, 3, 0].into_iter().enumerate() {
+            let p = (m >> shift) & 7;
+            s[2 + 3 * i] = if p & 4 != 0 { b'r' } else { b'-' };
+            s[3 + 3 * i] = if p & 2 != 0 { b'w' } else { b'-' };
+            s[4 + 3 * i] = if p & 1 != 0 { b'x' } else { b'-' };
+        }
+        f.write_str(core::str::from_utf8(&s).unwrap_or("?"))
+    }
+}
+
 /// `%r`: the process's error text, which is left as it was.
 #[derive(Debug, Clone, Copy)]
 pub struct Rerr;
@@ -213,6 +244,13 @@ mod tests {
         assert_eq!(rq("a$b"), "'a$b'");
         assert_eq!(rq("x=1"), "'x=1'");
         assert_eq!(rq("é"), "é");
+    }
+
+    #[test]
+    fn modes() {
+        assert_eq!(format!("{}", Mode(abi::DMDIR | 0o775)), "d-rwxrwxr-x");
+        assert_eq!(format!("{}", Mode(abi::DMAPPEND | abi::DMEXCL | 0o640)), "alrw-r-----");
+        assert_eq!(format!("{}", Mode(0o4)), "--------r--");
     }
 
     #[test]

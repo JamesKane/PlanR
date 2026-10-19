@@ -1,0 +1,61 @@
+# test: strings, integers, files, times, operators and syntax errors.
+fn t { if(test $*) echo true $*; if not echo false $* }
+t a '=' a
+t a '=' b
+t a '!=' b
+t -n x
+t -z ''
+t -n ''
+t x
+t ''
+t 1 -eq 1
+t 2 -gt 1
+t 1 -ge 2
+t -1 -lt 0
+t 3 -le 3
+t 3 -ne 3
+t 0x10 -eq 16
+t ! a '=' a
+t ! ! a '=' a
+t a '=' a -a b '=' b
+t a '=' a -a b '=' c
+t a '=' b -o b '=' b
+t a '=' b -o b '=' c
+t '(' a '=' b ')' -o x
+t '(' a '=' a -o b '=' c ')' -a x '=' x
+touch f
+mkdir d
+echo x >g
+t -f f
+t -f d
+t -d d
+t -d f
+t -e f
+t -e nonesuch
+t -r f
+t -w f
+t -x f
+t -s f
+t -s g
+t -c f
+t -b f
+t -u f
+t -g f
+t -t 0
+touch -t 1000 old
+touch -t 2000 new
+t old -ot new
+t new -ot old
+t new -nt old
+t old -nt new
+t old -nt nonesuch
+t old -older 1d
+t f -older 1y
+t f -older 3600
+test 1 -xx 2 || echo unknown failed
+test a b || echo operand failed
+test '(' a || echo paren failed
+test -n || echo argument failed
+test f -older 1x || echo time failed
+test -t x || echo fd failed
+test || echo empty failed

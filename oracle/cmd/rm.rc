@@ -1,0 +1,17 @@
+# rm: files, -r, -f and errors.
+touch a b c
+rm a b
+ls
+mkdir -p d/e/f
+touch d/x d/e/y d/e/f/z
+rm -r d
+ls
+rm nonesuch >[2]/dev/null || echo nonesuch failed
+rm -f nonesuch && echo quiet ok
+mkdir full
+touch full/f
+rm full >[2]/dev/null || echo not empty failed
+ls full
+rm -rf full c
+ls
+rm -x || echo usage failed

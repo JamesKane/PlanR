@@ -135,10 +135,10 @@ extern "C" fn boot_main(info: usize) -> ! {
         Some(TestMode::Run) => {
             let failed = ktest::run();
             assert!(failed == 0, "{failed} kernel tests failed");
-            run_init(&["init"])
+            run_init(&["init"], INIT_SECS)
         }
-        Some(TestMode::Cons) => run_init(&["init", "-i"]),
-        Some(TestMode::Oracle) => run_init(&["init", "-o"]),
+        Some(TestMode::Cons) => run_init(&["init", "-i"], INIT_SECS),
+        Some(TestMode::Oracle) => run_init(&["init", "-o"], ORACLE_SECS),
         Some(TestMode::Trap) => trap_test(),
         Some(TestMode::Overflow) => overflow_test(),
         Some(TestMode::AcpiDump) => {
@@ -171,17 +171,23 @@ fn trap_test() -> ! {
     panic!("read of unmapped {:#x} returned {v:#x}", trap::UNMAPPED);
 }
 
+/// How long init may take to run the test programs.
+const INIT_SECS: u64 = 60;
+/// How long it may take to run the oracle's scripts, on arm64 under
+/// emulation too.
+const ORACLE_SECS: u64 = 600;
+
 /// After the in-kernel tests: what a real boot does, but waited for. Init
 /// runs the test programs (with `-i`, the one that reads the console) and
-/// must exit normally.
-fn run_init(argv: &'static [&'static str]) -> ! {
+/// must exit normally within `secs` seconds.
+fn run_init(argv: &'static [&'static str], secs: u64) -> ! {
     let exit = match exec::start_init(argv) {
         Ok(exit) => exit,
         Err(e) => panic!("cannot start /boot/init: {e}"),
     };
     assert!(
-        clock::wait_until(|| exit.lock().is_some(), 60_000_000_000),
-        "init did not finish within 60 s"
+        clock::wait_until(|| exit.lock().is_some(), secs * 1_000_000_000),
+        "init did not finish within {secs} s"
     );
     let msg = exit.lock().take().unwrap_or_default();
     assert!(
