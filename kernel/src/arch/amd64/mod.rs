@@ -1,6 +1,7 @@
 //! amd64 support.
 
 mod apic;
+pub(crate) mod context;
 mod cpu;
 mod ioapic;
 pub(crate) mod mmu;

@@ -1,5 +1,6 @@
 //! arm64 support.
 
+pub(crate) mod context;
 mod gic;
 pub(crate) mod mmu;
 pub(crate) mod protect;

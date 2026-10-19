@@ -32,6 +32,8 @@ pub(crate) const STACK_SLOT: u64 = 128 * 1024;
 /// The size of a kernel stack, and the most a slot holds. arm64 stacks
 /// must be this size, so the bit-16 test catches any overflow.
 pub(crate) const STACK_PAGES: u64 = STACK_SLOT / 2 / PAGE;
+const STACK_PAGES_USIZE: usize = 128 * 1024 / 2 / PAGE_BYTES;
+const _: () = assert!(STACK_PAGES_USIZE as u64 == STACK_PAGES);
 
 /// How a mapping should behave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,21 +153,88 @@ pub(crate) fn low_pages(n: u64) -> Option<u64> {
 }
 
 /// Allocates a kernel stack of `pages` pages (at most [`STACK_PAGES`]) in
-/// a [`STACK_SLOT`] of its own, and returns the address of its top.
+/// a [`STACK_SLOT`] of its own, and returns the address of its top. The
+/// stack is never freed; [`Stack`] is one that is.
 pub(crate) fn alloc_stack(pages: u64) -> Option<u64> {
     if pages > STACK_PAGES {
         return None;
     }
-    let slot = STACK_NEXT.fetch_add(STACK_SLOT, Ordering::Relaxed);
-    if slot + STACK_SLOT > STACK_LIMIT {
-        return None;
-    }
+    let reused = FREE_SLOTS.lock().pop();
+    let slot = if let Some(slot) = reused {
+        slot
+    } else {
+        let slot = STACK_NEXT.fetch_add(STACK_SLOT, Ordering::Relaxed);
+        if slot + STACK_SLOT > STACK_LIMIT {
+            return None;
+        }
+        slot
+    };
     let top = slot + STACK_SLOT / 2;
     let mut k = mmu::kernel();
     for i in 1..=pages {
-        k.map(top - i * PAGE, alloc_frame()?, MapKind::NormalReadWrite).ok()?;
+        let mapped = alloc_frame().map(|f| k.map(top - i * PAGE, f, MapKind::NormalReadWrite));
+        if mapped != Some(Ok(())) {
+            drop(k);
+            // SAFETY: nothing has seen the stack; the pages mapped so far
+            // are ours.
+            unsafe { free_stack(top, i - 1) };
+            return None;
+        }
     }
     Some(top)
+}
+
+/// Stack slots given back by [`free_stack`], for reuse.
+static FREE_SLOTS: SpinLock<alloc::vec::Vec<u64>> = SpinLock::new(alloc::vec::Vec::new());
+
+/// Unmaps the `pages` pages below `top`, flushes them from every CPU, and
+/// frees them and their slot. Must be called with no spin lock held
+/// (`port/mmu.rs`).
+///
+/// # Safety
+///
+/// [`alloc_stack`] returned `top` for `pages` pages, and nothing runs on
+/// or points into the stack any more.
+pub(crate) unsafe fn free_stack(top: u64, pages: u64) {
+    let mut frames = [0; STACK_PAGES_USIZE];
+    let mut k = mmu::kernel();
+    for (i, f) in (1..=pages).zip(frames.iter_mut()) {
+        *f = k.unmap(top - i * PAGE).unwrap_or(0);
+    }
+    drop(k);
+    mmu::shootdown(u64::MAX, top - pages * PAGE, pages);
+    for f in frames.into_iter().filter(|&f| f != 0) {
+        // SAFETY: unmapped and flushed everywhere.
+        unsafe { free_frames(f, 0) };
+    }
+    FREE_SLOTS.lock().push(top - STACK_SLOT / 2);
+}
+
+/// A kernel stack of [`STACK_PAGES`], freed when dropped.
+#[derive(Debug)]
+pub(crate) struct Stack {
+    top: u64,
+}
+
+impl Stack {
+    pub(crate) fn new() -> Option<Stack> {
+        Some(Stack {
+            top: alloc_stack(STACK_PAGES)?,
+        })
+    }
+
+    /// The address just above the stack.
+    pub(crate) fn top(&self) -> u64 {
+        self.top
+    }
+}
+
+impl Drop for Stack {
+    /// Must happen with no spin lock held, and off this stack.
+    fn drop(&mut self) {
+        // SAFETY: the stack is ours, and whoever drops it is done with it.
+        unsafe { free_stack(self.top, STACK_PAGES) };
+    }
 }
 
 /// True if `[phys, phys+len)` is RAM covered by the direct map.
@@ -207,7 +276,7 @@ pub(crate) fn map_phys(phys: u64, len: u64, kind: MapKind) -> Option<u64> {
 pub(crate) mod ktests {
     use bootinfo::phys_to_virt;
 
-    use super::{MapKind, PAGE, alloc_frame, alloc_frames, alloc_stack, frame_counts, free_frames};
+    use super::{MapKind, PAGE, Stack, alloc_frame, alloc_frames, alloc_stack, frame_counts, free_frames};
     use crate::arch;
     use crate::port::ktest::TestResult;
     use crate::port::lock::SpinLock;
@@ -258,6 +327,25 @@ pub(crate) mod ktests {
         unsafe { free_frames(block, ORDER) };
         if frame_counts().0 != before {
             return Err("free count not restored".into());
+        }
+        Ok(())
+    }
+
+    /// A freed stack's slot and frames are reused, and its pages fault.
+    pub(crate) fn stacks_free() -> TestResult {
+        // Once first, so the free-slot list has room and is not counted.
+        drop(Stack::new().ok_or("no stack")?);
+        let before = frame_counts().0;
+        let top = Stack::new().ok_or("no stack")?.top();
+        if frame_counts().0 != before {
+            return Err("stack frames not freed".into());
+        }
+        if arch::probe_read(top - 8).is_some() {
+            return Err("freed stack still mapped".into());
+        }
+        let again = Stack::new().ok_or("no stack")?;
+        if again.top() != top {
+            return Err("slot not reused".into());
         }
         Ok(())
     }

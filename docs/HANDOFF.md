@@ -26,6 +26,15 @@ Where work stands, for picking it up in a new session. Last updated
      with no process runs. APs start through a `StartupMap`, which maps
      the entry code at its physical address and is freed afterwards.
      `shootdown(mask, va, pages)` flushes the TLBs.
+  4. Threads (`port/proc.rs`, `arch/*/context.rs`). `proc::spawn(name,
+     f)` makes a kernel thread on an `mm::Stack` (freed on drop through
+     `free_stack`, which unmaps, shoots down and reuses the slot).
+     `yield_now` is cooperative round-robin over one global `READY`
+     queue. A CPU's own context is not a `Proc`: it runs only when nothing
+     is ready. A thread that was switched away from is requeued or freed
+     only in `finish_switch`, run by the context switched to, so no other
+     CPU can resume it half-saved. arm64 saves d8-d15 because its kernel
+     target uses FP; amd64's is soft-float.
 - **P1** is done apart from BTI, which waits on the toolchain. Its slices
   and the board results are in `docs/ROADMAP.md` and in git history
   (`5905e4d`..`96d70d8`).
@@ -35,12 +44,18 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-Slice 4, threads: a `Proc` (kernel part only for now), kernel stacks
-from `mm::alloc_stack` with a matching `free_stack` (unmap, then
-`shootdown`, then free the frames), and a context switch on each arch,
-switching `Space` too. Then slice 5 (the scheduler), and so on down the
-ROADMAP list. Each slice gets its own commit after `cargo xtask ci`, and
-this file is updated with it.
+Slice 5, the scheduler, building on `port/proc.rs`:
+- per-CPU run queues with priorities, in place of the global `READY`;
+- preemption from the clock tick, done on the way out of the interrupt,
+  never inside a handler with a spin lock held;
+- APs running threads from their idle loop;
+- sleep/wakeup (Plan 9 `Rendez`) and `QLock`/`RWLock` taking a
+  `Sleepable` token (`docs/DRIVER-MODEL.md`);
+- `rendezvous` in kernel form.
+
+With preemption, the window between a switch's return and
+`finish_switch` must stay closed to interrupts. Each slice gets its own
+commit after `cargo xtask ci`, and this file is updated with it.
 
 **Reference boards** (`docs/HARDWARE.md`, "Booting Plan R on a board"):
 no runs until P2's exit test. P1 results, for reference:

@@ -5,7 +5,7 @@
 //! `cargo xtask test` reads the console.
 
 use crate::arch;
-use crate::port::{clock, console, cpu, heap, intr, mm, mmu, trap};
+use crate::port::{clock, console, cpu, heap, intr, mm, mmu, proc, trap};
 use crate::println;
 
 /// Why a test did not pass.
@@ -46,7 +46,11 @@ const TESTS: &[(&str, TestFn)] = &[
     ),
     ("mm: frames free and align", mm::ktests::frames_free_and_align),
     ("mm: kernel stack has a guard page", mm::ktests::stack_has_guard),
+    ("mm: freed stacks are reused", mm::ktests::stacks_free),
     ("mmu: kernel text translates", mmu::ktests::image_translates),
+    ("proc: threads take turns", proc::ktests::threads_take_turns),
+    ("proc: state survives a switch", proc::ktests::state_survives_switch),
+    ("proc: dead threads are freed", proc::ktests::dead_threads_freed),
     ("mmu: address spaces are separate", mmu::ktests::spaces_are_separate),
     ("heap: collections allocate", heap::ktests::collections_work),
     ("heap: empty slabs return", heap::ktests::slabs_return),
