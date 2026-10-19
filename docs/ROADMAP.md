@@ -218,7 +218,7 @@ from a USB stick:
 in, the timer interrupt ticks on all of them, and a kernel self-test suite
 reports pass/fail through `isa-debug-exit` / PSCI `SYSTEM_OFF` status.
 
-## P2: Kernel core (in progress)
+## P2: Kernel core (done 2026-10-19)
 
 The Plan 9 `port/` layer, redesigned in Rust.
 
@@ -274,11 +274,11 @@ plus a toy 9P server). All of them pass on both architectures.
 9. ✅ `rfork` with copy-on-write; `qio`/`Block`; `#|` and `#s`.
 10. ✅ Notes, `#p`, `alarm`, `nsec`, `semacquire`/`tsemacquire`, `segattach`.
 11. ✅ `#M` with a first 9P codec (`lib/9p`), `mount`, `fversion`, `fauth`.
-12. ✅ The exit test: `init` and the user test programs, in CI on both arches
-    (the board runs are still to do).
+12. ✅ The exit test: `init` and the user test programs, in CI on both arches,
+    and on both reference boards (2026-10-19).
 
 User test programs are small `no_std` Rust binaries built by `xtask`
-on a first `lib/r` (the full libr is P3). The board runs come next.
+on a first `lib/r` (the full libr is P3).
 
 ## P3: Userland bootstrap
 

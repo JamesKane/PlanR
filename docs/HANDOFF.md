@@ -1,12 +1,12 @@
 # Handoff
 
 Where work stands, for picking it up in a new session. Last updated
-2026-10-19, after P2 slice 12 (in CI; the board runs are next).
+2026-10-19: P2 is done, in CI and on both reference boards.
 
 ## State
 
-- **Phase:** P2 (kernel core), started 2026-10-18. The slice plan is in
-  `docs/ROADMAP.md` under P2. Done so far:
+- **Phase:** P2 (kernel core), 2026-10-18 to 2026-10-19, is done; P3
+  (userland bootstrap) is next. The P2 slices, as in `docs/ROADMAP.md`:
   1. Frame allocator: `lib/frames` (binary buddy, orders up to 1 GiB,
      free lists threaded through free pages, one state byte per page in
      each arena's first pages). `mm::alloc_frame`, `alloc_frames(order)`
@@ -379,13 +379,13 @@ Where work stands, for picking it up in a new session. Last updated
 
 ## Next steps
 
-The board runs, P2's last step, under the rules in the memory file and
-`docs/HARDWARE.md`. They are the user's to run: write the medium with
-`scripts/hwcheck.ini` as for P1, boot it through our own boot entry and
-`BootNext`, and read the screen. Passing means every ktest ok, then
-`init: 11 passed, 0 failed` and `kernel: init exited normally`, then
-`kernel: ok` (with `exit=halt` it stays on screen). Then mark P2 done in
-the ROADMAP and move on to P3.
+P3, the userland bootstrap (ROADMAP: `libr`, our `lib9p` server and
+client framework, `rc`, the core commands, `mk`, `ramfs`, `srv`, `9fs`,
+and `boot`/`init`/`newns` with `/lib/namespace`; exit: interactive `rc`
+on the serial console in QEMU, with oracle tests against plan9port).
+Start by proposing a slice plan for the user to approve, as for P2. It
+will need console input (`#c/cons` reads from the serial line), which P2
+never had.
 
 The slice 12 plan, for reference: an `init` in the boot archive that
 builds a name space, runs the test programs and reports on the console,
@@ -408,7 +408,10 @@ P2 results:
      (`2a5cf34`): 41 of 41 ktests (the four `init -q` runs of
      `memory_freed` all clean), then `init: 11 passed, 0 failed`,
      `kernel: init exited normally`, `kernel: ok`.
-   - **Ryzen:** still to run.
+   - **Ryzen: passed on 2026-10-19** with `hwcheck.ini` (`2a5cf34`): 45
+     of 45 ktests (SMEP/SMAP/UMIP on every CPU, TSC 4691343 kHz against
+     the HPET's 4691434), then `init: 11 passed, 0 failed`, `kernel: init
+     exited normally`, `kernel: ok`.
 
 P1 results, for reference:
    - **Orange Pi 6 Plus: passed on 2026-10-18** with `scripts/hwcheck.ini`:
